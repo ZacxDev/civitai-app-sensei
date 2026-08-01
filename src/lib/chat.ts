@@ -1,0 +1,91 @@
+import type { Message } from '../types.js';
+
+const ROLE_LABELS: Record<string, string> = {
+  system: 'System',
+  user: 'You',
+  assistant: 'Sensei',
+  tool: 'Tool',
+};
+
+export function formatRoleLabel(role: Message['role']): string {
+  return ROLE_LABELS[role] ?? role;
+}
+
+/**
+ * Heuristic token estimation (English ~4 chars per token).
+ * Good enough for display; not for billing.
+ */
+export function estimateTokens(text: string): number {
+  if (!text) return 0;
+  return Math.ceil(text.length / 4);
+}
+
+export interface ApiMessage {
+  role: string;
+  content: string;
+  tool_call_id?: string;
+}
+
+/**
+ * Inject the system prompt into a messages array.
+ * Strips any existing system message first to avoid duplicates.
+ */
+export function withSystemPrompt(
+  messages: Array<{ role: string; content: string }>,
+  systemPrompt: string,
+): ApiMessage[] {
+  const withoutSystem = messages.filter((m) => m.role !== 'system');
+  if (!systemPrompt) return withoutSystem;
+  return [{ role: 'system', content: systemPrompt }, ...withoutSystem];
+}
+
+export interface StoredMessage {
+  id: string;
+  role: string;
+  content: string;
+  timestamp: number;
+  toolCallId?: string;
+  toolCalls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+}
+
+/**
+ * Serialize messages for KV storage (preserves all fields including id).
+ */
+export function serializeMessages(messages: Message[]): StoredMessage[] {
+  return messages.map((m) => ({
+    id: m.id,
+    role: m.role,
+    content: m.content,
+    timestamp: m.timestamp,
+    ...(m.toolCallId ? { toolCallId: m.toolCallId } : {}),
+    ...(m.toolCalls ? { toolCalls: m.toolCalls } : {}),
+  }));
+}
+
+/**
+ * Deserialize messages from KV storage (preserves original IDs).
+ */
+export function deserializeMessages(stored: StoredMessage[]): Message[] {
+  return stored.map((m) => ({
+    id: m.id,
+    role: m.role as Message['role'],
+    content: m.content,
+    timestamp: m.timestamp,
+    ...(m.toolCallId ? { toolCallId: m.toolCallId } : {}),
+    ...(m.toolCalls ? { toolCalls: m.toolCalls as Message['toolCalls'] } : {}),
+  }));
+}
+
+/**
+ * Assemble streaming chunks into a full response string.
+ */
+export function assembleChunks(chunks: string[]): string {
+  return chunks.join('');
+}
+
+/**
+ * Generate a unique message ID.
+ */
+export function generateMessageId(): string {
+  return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}

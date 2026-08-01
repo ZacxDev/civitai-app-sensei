@@ -1,0 +1,36 @@
+{
+  "$schema": "https://civitai.com/schemas/app-block/v1.json",
+  "blockId": "sensei",
+  "version": "0.1.0",
+  "name": "Civitai Sensei",
+  "type": "block",
+  "category": "tool",
+  "scopes": [
+    "ai:write:budgeted",
+    "buzz:read:self",
+    "apps:storage:read",
+    "apps:storage:write"
+  ],
+  "scopeJustifications": {
+    "ai:write:budgeted": "Generates chat completions via the orchestrator; each response spends the viewer's Buzz within the per-message budget.",
+    "buzz:read:self": "Reads the viewer's Buzz balance to display it and gate generation when balance is insufficient.",
+    "apps:storage:read": "Reads session history and settings from per-user KV storage.",
+    "apps:storage:write": "Writes session history and settings to per-user KV storage."
+  },
+  "page": {
+    "path": "/",
+    "title": "Civitai Sensei",
+    "icon": "sparkles",
+    "buzzBudgetPerGen": 50
+  },
+  "iframe": {
+    "minHeight": 640,
+    "maxHeight": 4000,
+    "resizable": true,
+    "sandbox": "allow-scripts allow-forms"
+  },
+  "contentRating": "pg13",
+  "minApiVersion": "1.0",
+  "buildCommand": "npm run build",
+  "outputDir": "dist"
+}
