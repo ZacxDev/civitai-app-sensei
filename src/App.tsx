@@ -14,7 +14,8 @@ import { palette, pageStyle, token, radius, mutedText } from './theme.js';
 import type { AppSettings, Message, Session } from './types.js';
 import { DEFAULT_SETTINGS } from './types.js';
 import { hasGenerateScope } from './scopes.js';
-import { submitChatCompletion, __STUB_ENABLED__ } from './lib/orchestrator-stub.js';
+import { createOrchestrator, type OrchestratorAdapter } from './lib/orchestrator.js';
+import { __STUB_ENABLED__ } from './lib/orchestrator-stub.js';
 import { CIVITAI_TOOLS, parseToolArguments } from './lib/tools.js';
 import * as sessionsLib from './lib/sessions.js';
 import * as researchLib from './lib/research.js';
@@ -75,6 +76,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
   const streamingRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
+  const orchestratorRef = useRef<OrchestratorAdapter>(createOrchestrator());
 
   // ---- Load sessions on mount ----
   useEffect(() => {
@@ -199,7 +201,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       let maxToolRounds = 5;
 
       while (maxToolRounds > 0) {
-        response = await submitChatCompletion({
+        response = await orchestratorRef.current.submitChatCompletion({
           model: settings.model,
           messages: apiMessages,
           temperature: settings.temperature,

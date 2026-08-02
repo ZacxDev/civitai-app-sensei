@@ -10,6 +10,12 @@ vi.mock('@civitai/blocks-react', () => ({
   useBlockResize: () => {},
   useBlockToken: () => ({ scopes: ['ai:write:budgeted', 'buzz:read:self'] }),
   useBuzzBalance: () => ({ balance: { blue: 100, green: 0, yellow: 200 } }),
+  useBuzzWorkflow: () => ({
+    estimate: vi.fn().mockResolvedValue({ cost: 10 }),
+    submit: vi.fn().mockResolvedValue({ id: 'buzz-1', status: 'pending' }),
+    poll: vi.fn().mockResolvedValue({ status: 'completed' }),
+    cancel: vi.fn().mockResolvedValue(undefined),
+  }),
 }));
 
 describe('App', () => {

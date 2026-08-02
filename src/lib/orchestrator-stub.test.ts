@@ -5,6 +5,7 @@ import {
   getStubToolResult,
   __STUB_ENABLED__,
 } from './orchestrator-stub.js';
+import type { OrchestratorAdapter } from './orchestrator.js';
 
 describe('orchestrator-stub', () => {
   beforeEach(() => {
@@ -70,6 +71,11 @@ describe('orchestrator-stub', () => {
       expect(result.choices[0].message.tool_calls).toBeUndefined();
       expect(result.choices[0].finish_reason).toBe('stop');
     });
+
+    it('implements OrchestratorAdapter interface', () => {
+      const adapter: OrchestratorAdapter = { submitChatCompletion };
+      expect(adapter.submitChatCompletion).toBe(submitChatCompletion);
+    });
   });
 
   describe('resetStubCounter', () => {
@@ -83,7 +89,6 @@ describe('orchestrator-stub', () => {
         model: 'test',
         messages: [{ role: 'user', content: 'b' }],
       });
-      // After reset, IDs should be based on counter=1 again
       expect(r1.id.split('-')[2]).toBe(r2.id.split('-')[2]);
     });
   });

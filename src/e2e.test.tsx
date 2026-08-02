@@ -10,51 +10,47 @@ vi.mock('@civitai/blocks-react', () => ({
   useBlockResize: () => {},
   useBlockToken: () => ({ scopes: ['ai:write:budgeted', 'buzz:read:self'] }),
   useBuzzBalance: () => ({ balance: { blue: 100, green: 0, yellow: 200 } }),
+  useBuzzWorkflow: () => ({
+    estimate: vi.fn().mockResolvedValue({ cost: 10 }),
+    submit: vi.fn().mockResolvedValue({ id: 'buzz-1', status: 'pending' }),
+    poll: vi.fn().mockResolvedValue({ status: 'completed' }),
+    cancel: vi.fn().mockResolvedValue(undefined),
+  }),
 }));
 
 describe('E2E: Sensei App', () => {
   it('full flow: create session → send message → see response', async () => {
     render(<App />);
 
-    // Wait for loading to finish
     await waitFor(() => {
       expect(screen.queryByTestId('app-loading')).toBeNull();
     });
 
-    // Start with no active session
     expect(screen.getByText('Start a new conversation with Sensei')).toBeTruthy();
 
-    // Create a new session
     fireEvent.click(screen.getByTestId('new-session-button'));
 
-    // Should now show chat area
     await waitFor(() => {
       expect(screen.getByTestId('chat-input')).toBeTruthy();
     });
 
-    // Type a message
     const input = screen.getByTestId('chat-input');
     fireEvent.change(input, { target: { value: 'Hello Sensei' } });
 
-    // Send it
     fireEvent.click(screen.getByTestId('send-button'));
 
-    // Should see the user message
     await waitFor(() => {
       expect(screen.getByText('Hello Sensei')).toBeTruthy();
     });
 
-    // Should see streaming indicator
     await waitFor(() => {
       expect(screen.getByTestId('streaming-indicator')).toBeTruthy();
     });
 
-    // Wait for response to complete
     await waitFor(() => {
       expect(screen.queryByTestId('streaming-indicator')).toBeNull();
     }, { timeout: 5000 });
 
-    // Should see the assistant response
     await waitFor(() => {
       expect(screen.getByText(/stub response/)).toBeTruthy();
     });
@@ -67,19 +63,16 @@ describe('E2E: Sensei App', () => {
       expect(screen.queryByTestId('app-loading')).toBeNull();
     });
 
-    // Create first session
     fireEvent.click(screen.getByTestId('new-session-button'));
     await waitFor(() => {
       expect(screen.getByTestId('chat-input')).toBeTruthy();
     });
 
-    // Create second session
     fireEvent.click(screen.getByTestId('new-session-button'));
     await waitFor(() => {
       expect(screen.getByTestId('chat-input')).toBeTruthy();
     });
 
-    // Should have 2 session items
     await waitFor(() => {
       const items = screen.getAllByTestId(/^session-item-/);
       expect(items.length).toBeGreaterThanOrEqual(2);
@@ -102,7 +95,6 @@ describe('E2E: Sensei App', () => {
     await waitFor(() => {
       expect(screen.queryByTestId('app-loading')).toBeNull();
     });
-    // Initially closed - should have open button
     expect(screen.getByTestId('open-research')).toBeTruthy();
     fireEvent.click(screen.getByTestId('open-research'));
     await waitFor(() => {

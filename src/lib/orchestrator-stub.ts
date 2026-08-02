@@ -1,47 +1,9 @@
-// Orchestrator Chat Completion Stub
-// TODO: Replace with real bridge when civitai/civitai#3527 ships
-// When the real bridge ships, replace this with:
-//   import { useBuzzWorkflow } from '@civitai/blocks-react';
-//   const { submit } = useBuzzWorkflow();
-//   submit({ kind: 'chatCompletion', model, messages, ... });
+import type { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from './completion-types.js';
+import type { OrchestratorAdapter } from './orchestrator.js';
+import { simulateStreaming } from './streaming.js';
 
-export interface ChatCompletionRequest {
-  model: string;
-  messages: Array<{ role: string; content: string; tool_call_id?: string }>;
-  max_tokens?: number;
-  temperature?: number;
-  stream?: boolean;
-  tools?: ToolDefinition[];
-  tool_choice?: string;
-  response_format?: { type: string };
-}
+export type { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from './completion-types.js';
 
-export interface ChatCompletionResponse {
-  id: string;
-  choices: Array<{
-    index: number;
-    message: { role: string; content: string; tool_calls?: ToolCall[] };
-    finish_reason: string;
-  }>;
-  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
-}
-
-export interface ToolDefinition {
-  type: 'function';
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  };
-}
-
-export interface ToolCall {
-  id: string;
-  type: 'function';
-  function: { name: string; arguments: string };
-}
-
-// Stub flag for detection/testing
 export const __STUB_ENABLED__ = true;
 
 let callCount = 0;
@@ -85,11 +47,10 @@ const STUB_RESPONSES: Record<string, string> = {
  * Stub implementation of the orchestrator chat completion API.
  * Returns canned responses for testing; will be replaced with real bridge.
  */
-export async function submitChatCompletion(
+export const submitChatCompletion: OrchestratorAdapter['submitChatCompletion'] = async (
   request: ChatCompletionRequest,
   onChunk?: (chunk: string) => void,
-): Promise<ChatCompletionResponse> {
-  // Check if any tool was called in previous messages
+): Promise<ChatCompletionResponse> => {
   const lastMessage = request.messages[request.messages.length - 1];
   const isToolResult = lastMessage?.role === 'tool';
 
@@ -97,16 +58,13 @@ export async function submitChatCompletion(
   let toolCalls: ToolCall[] | undefined;
 
   if (isToolResult) {
-    // After tool result, give a final answer
     content = 'Based on the search results, here is what I found about your query. This is a stub response — the real orchestrator will provide actual AI-generated content.';
     toolCalls = undefined;
   } else if (request.tools && request.tools.length > 0) {
-    // Decide whether to call a tool based on the last user message
     const userMsg = request.messages.findLast((m: { role: string }) => m.role === 'user');
     const text = userMsg?.content?.toLowerCase() ?? '';
 
     if (text.includes('search') || text.includes('find') || text.includes('look for')) {
-      // Simulate tool call
       toolCalls = [{
         id: generateId(),
         type: 'function',
@@ -125,13 +83,8 @@ export async function submitChatCompletion(
     toolCalls = undefined;
   }
 
-  // Simulate streaming
   if (onChunk && content) {
-    const words = content.split(' ');
-    for (const word of words) {
-      onChunk(word + ' ');
-      await new Promise((r) => setTimeout(r, 20));
-    }
+    await simulateStreaming(content, onChunk);
   }
 
   const promptTokens = request.messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
@@ -150,7 +103,7 @@ export async function submitChatCompletion(
       total_tokens: promptTokens + completionTokens,
     },
   };
-}
+};
 
 /** Reset the stub's call counter (for tests). */
 export function resetStubCounter(): void {

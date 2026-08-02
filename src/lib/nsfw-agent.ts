@@ -1,4 +1,5 @@
-import { submitChatCompletion, type ChatCompletionResponse } from './orchestrator-stub.js';
+import type { ChatCompletionResponse } from './completion-types.js';
+import { submitChatCompletion } from './orchestrator-stub.js';
 
 const NSFW_MODEL = 'cognitivecomputations/dolphin-mistral-24b-venice-edition';
 
