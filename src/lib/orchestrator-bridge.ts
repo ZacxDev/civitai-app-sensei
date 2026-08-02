@@ -47,14 +47,13 @@ function delay(ms: number): Promise<void> {
 /**
  * Create a bridge adapter that uses the host-mediated useBuzzWorkflow helpers
  * to communicate with the orchestrator via postMessage.
- *
- * @param signal Optional AbortSignal to cancel the polling loop.
  */
-export function createBridgeAdapter(workflow: WorkflowHelpers, signal?: AbortSignal): OrchestratorAdapter {
+export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdapter {
   return {
     async submitChatCompletion(
       request: ChatCompletionRequest,
       onChunk?: (chunk: string) => void,
+      signal?: AbortSignal,
     ): Promise<ChatCompletionResponse> {
       // Bridge is always non-streaming — we simulate streaming post-poll.
       // The stream field from ChatCompletionRequest is ignored.

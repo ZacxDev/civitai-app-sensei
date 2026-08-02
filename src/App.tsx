@@ -206,23 +206,27 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       let maxToolRounds = 5;
 
       while (maxToolRounds > 0) {
-        response = await orchestrator.submitChatCompletion({
-          model: settings.model,
-          messages: apiMessages,
-          temperature: settings.temperature,
-          max_tokens: settings.maxTokens,
-          tools: CIVITAI_TOOLS,
-          stream: true,
-        }, (chunk) => {
-          if (!streamingRef.current) return;
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last.id === assistantMsg.id) {
-              return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
-            }
-            return prev;
-          });
-        });
+        response = await orchestrator.submitChatCompletion(
+          {
+            model: settings.model,
+            messages: apiMessages,
+            temperature: settings.temperature,
+            max_tokens: settings.maxTokens,
+            tools: CIVITAI_TOOLS,
+            stream: true,
+          },
+          (chunk) => {
+            if (!streamingRef.current) return;
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              if (last.id === assistantMsg.id) {
+                return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
+              }
+              return prev;
+            });
+          },
+          abortControllerRef.current?.signal,
+        );
 
         const choice = response.choices[0];
 

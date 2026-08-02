@@ -6,6 +6,7 @@ export interface OrchestratorAdapter {
   submitChatCompletion(
     request: ChatCompletionRequest,
     onChunk?: (chunk: string) => void,
+    signal?: AbortSignal,
   ): Promise<ChatCompletionResponse>;
 }
 
@@ -27,5 +28,10 @@ export function createOrchestrator(workflow?: WorkflowHelpers): OrchestratorAdap
     return createBridgeAdapter(workflow);
   }
   _bridgeMode = false;
-  return { submitChatCompletion: stubSubmit };
+  return {
+    submitChatCompletion: async (request, onChunk, _signal) => {
+      // Stub ignores signal — it's synchronous
+      return stubSubmit(request, onChunk);
+    },
+  };
 }
