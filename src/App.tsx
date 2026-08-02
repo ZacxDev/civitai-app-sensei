@@ -15,8 +15,7 @@ import { palette, pageStyle, token, radius, mutedText } from './theme.js';
 import type { AppSettings, Message, Session } from './types.js';
 import { DEFAULT_SETTINGS } from './types.js';
 import { hasGenerateScope } from './scopes.js';
-import { createOrchestrator, type OrchestratorAdapter } from './lib/orchestrator.js';
-import { __STUB_ENABLED__ } from './lib/orchestrator-stub.js';
+import { createOrchestrator, isBridgeMode } from './lib/orchestrator.js';
 import { CIVITAI_TOOLS, parseToolArguments } from './lib/tools.js';
 import * as sessionsLib from './lib/sessions.js';
 import * as researchLib from './lib/research.js';
@@ -76,9 +75,12 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const [loading, setLoading] = useState(true);
 
   const streamingRef = useRef(false);
-  const abortRef = useRef<AbortController | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const { estimate, submit, poll } = useBuzzWorkflow();
-  const orchestratorRef = useRef<OrchestratorAdapter>(createOrchestrator({ estimate, submit, poll }));
+  const orchestrator = useMemo(
+    () => createOrchestrator({ estimate, submit, poll }),
+    [estimate, submit, poll],
+  );
 
   // ---- Load sessions on mount ----
   useEffect(() => {
@@ -184,6 +186,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
     setIsStreaming(true);
     streamingRef.current = true;
+    abortControllerRef.current = new AbortController();
 
     const assistantMsg: Message = {
       id: generateMessageId(),
@@ -203,7 +206,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       let maxToolRounds = 5;
 
       while (maxToolRounds > 0) {
-        response = await orchestratorRef.current.submitChatCompletion({
+        response = await orchestrator.submitChatCompletion({
           model: settings.model,
           messages: apiMessages,
           temperature: settings.temperature,
@@ -325,7 +328,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const handleStopStream = useCallback(() => {
     streamingRef.current = false;
     setIsStreaming(false);
-    abortRef.current?.abort();
+    abortControllerRef.current?.abort();
   }, []);
 
   const handleRegenerate = useCallback(async (messageId: string) => {
@@ -433,7 +436,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
                 {buzzTotal.toLocaleString()} Buzz
               </Badge>
             )}
-            {__STUB_ENABLED__ && (
+            {!isBridgeMode() && (
               <Badge variant="outline" size="sm" color="yellow" data-testid="stub-badge">
                 Stub Mode
               </Badge>

@@ -16,7 +16,8 @@ vi.mock('@civitai/blocks-react', () => ({
     poll: vi.fn().mockResolvedValue({
       workflowId: 'buzz-1',
       status: 'succeeded',
-      content: 'This is a stub response — the real orchestrator will provide actual AI-generated content.',
+      cost: { total: 10 },
+      steps: [{ output: { text: 'This is a stub response — the real orchestrator will provide actual AI-generated content.' } }],
     }),
     cancel: vi.fn().mockResolvedValue(undefined),
     status: 'idle',

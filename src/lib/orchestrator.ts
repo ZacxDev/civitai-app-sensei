@@ -9,6 +9,13 @@ export interface OrchestratorAdapter {
   ): Promise<ChatCompletionResponse>;
 }
 
+let _bridgeMode = false;
+
+/** Returns true when the orchestrator is using real workflow helpers (bridge mode). */
+export function isBridgeMode(): boolean {
+  return _bridgeMode;
+}
+
 /**
  * Create an orchestrator adapter.
  * When workflow helpers are provided, uses the real bridge (estimate → submit → poll).
@@ -16,7 +23,9 @@ export interface OrchestratorAdapter {
  */
 export function createOrchestrator(workflow?: WorkflowHelpers): OrchestratorAdapter {
   if (workflow) {
+    _bridgeMode = true;
     return createBridgeAdapter(workflow);
   }
+  _bridgeMode = false;
   return { submitChatCompletion: stubSubmit };
 }

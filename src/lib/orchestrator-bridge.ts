@@ -1,7 +1,6 @@
 import type { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from './completion-types.js';
 import type { OrchestratorAdapter } from './orchestrator.js';
 import { simulateStreaming } from './streaming.js';
-import { buildWorkflowBody } from '@civitai/app-sdk';
 import type { WorkflowBody, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks';
 
 export type { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from './completion-types.js';
@@ -48,26 +47,34 @@ function delay(ms: number): Promise<void> {
 /**
  * Create a bridge adapter that uses the host-mediated useBuzzWorkflow helpers
  * to communicate with the orchestrator via postMessage.
+ *
+ * @param signal Optional AbortSignal to cancel the polling loop.
  */
-export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdapter {
+export function createBridgeAdapter(workflow: WorkflowHelpers, signal?: AbortSignal): OrchestratorAdapter {
   return {
     async submitChatCompletion(
       request: ChatCompletionRequest,
       onChunk?: (chunk: string) => void,
     ): Promise<ChatCompletionResponse> {
-      const body = buildWorkflowBody({
-        $type: 'chatCompletion',
-        name: 'chat',
-        input: {
+      // Bridge is always non-streaming — we simulate streaming post-poll.
+      // The stream field from ChatCompletionRequest is ignored.
+
+      // Construct a WorkflowBody directly. The host accepts kind: 'step' for
+      // chatCompletion via #3527. Cast to WorkflowBody since the SDK types
+      // haven't been updated to include this variant yet.
+      const body = {
+        kind: 'step' as const,
+        step: 'chatCompletion',
+        params: {
           model: request.model,
           messages: request.messages,
+          max_tokens: request.max_tokens ?? 4096,
+          temperature: request.temperature,
           tools: request.tools,
           tool_choice: request.tool_choice,
-          temperature: request.temperature,
-          max_tokens: request.max_tokens,
           response_format: request.response_format,
         },
-      }) as WorkflowBody;
+      } as unknown as WorkflowBody;
 
       const estimateSnap = await workflow.estimate(body);
       const cost = estimateSnap.cost?.total ?? 0;
@@ -87,6 +94,7 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       let snap: ChatCompletionSnapshot = submitSnap;
 
       while (Date.now() < deadline) {
+        if (signal?.aborted) throw new Error('Aborted');
         snap = await workflow.poll(workflowId);
         if (snap.status === 'succeeded' || snap.status === 'failed' || snap.status === 'expired' || snap.status === 'canceled') {
           break;
@@ -103,6 +111,28 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       const content = extractContent(snap);
       const toolCalls = extractToolCalls(snap);
 
+      if (!content && (!toolCalls || toolCalls.length === 0)) {
+        throw new Error('Chat completion returned empty response');
+      }
+
+      // Tool calls — no text content to stream, skip streaming simulation.
+      if (toolCalls && toolCalls.length > 0) {
+        return {
+          id: workflowId,
+          choices: [{
+            index: 0,
+            message: { role: 'assistant', content, tool_calls: toolCalls },
+            finish_reason: 'tool_calls',
+          }],
+          usage: {
+            prompt_tokens: request.messages.reduce((sum, m) => sum + estimateTokens(m.content), 0),
+            completion_tokens: estimateTokens(content),
+            total_tokens: request.messages.reduce((sum, m) => sum + estimateTokens(m.content), 0) + estimateTokens(content),
+          },
+        };
+      }
+
+      // Only simulate streaming if there's text content and no tool calls
       if (onChunk && content) {
         await simulateStreaming(content, onChunk);
       }
@@ -115,7 +145,7 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
         choices: [{
           index: 0,
           message: { role: 'assistant', content, tool_calls: toolCalls },
-          finish_reason: toolCalls ? 'tool_calls' : 'stop',
+          finish_reason: 'stop',
         }],
         usage: {
           prompt_tokens: promptTokens,
