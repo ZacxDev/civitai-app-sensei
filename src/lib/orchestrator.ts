@@ -8,6 +8,7 @@ export interface OrchestratorAdapter {
     onChunk?: (chunk: string) => void,
     signal?: AbortSignal,
   ): Promise<ChatCompletionResponse>;
+  cancel?(workflowId?: string): Promise<void>;
 }
 
 let _bridgeMode = false;
@@ -33,5 +34,6 @@ export function createOrchestrator(workflow?: WorkflowHelpers): OrchestratorAdap
       // Stub ignores signal — it's synchronous
       return stubSubmit(request, onChunk);
     },
+    cancel: async () => {},
   };
 }

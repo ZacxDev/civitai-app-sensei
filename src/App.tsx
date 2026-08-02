@@ -76,10 +76,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
   const streamingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const { estimate, submit, poll } = useBuzzWorkflow();
+  const { estimate, submit, poll, cancel } = useBuzzWorkflow();
   const orchestrator = useMemo(
-    () => createOrchestrator({ estimate, submit, poll }),
-    [estimate, submit, poll],
+    () => createOrchestrator({ estimate, submit, poll, cancel }),
+    [estimate, submit, poll, cancel],
   );
 
   // ---- Load sessions on mount ----
@@ -333,7 +333,8 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     streamingRef.current = false;
     setIsStreaming(false);
     abortControllerRef.current?.abort();
-  }, []);
+    orchestrator.cancel?.();
+  }, [orchestrator]);
 
   const handleRegenerate = useCallback(async (messageId: string) => {
     // Find the last user message before this assistant message

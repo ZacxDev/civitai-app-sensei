@@ -10,6 +10,7 @@ export interface WorkflowHelpers {
   estimate: (body: WorkflowBody) => Promise<BlockWorkflowSnapshot>;
   submit: (body: WorkflowBody) => Promise<BlockWorkflowSnapshot>;
   poll: (workflowId: string) => Promise<BlockWorkflowSnapshot>;
+  cancel: (workflowId: string) => Promise<BlockWorkflowSnapshot>;
 }
 
 const POLL_INTERVAL_MS = 1000;
@@ -49,6 +50,8 @@ function delay(ms: number): Promise<void> {
  * to communicate with the orchestrator via postMessage.
  */
 export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdapter {
+  let lastWorkflowId: string | undefined;
+
   return {
     async submitChatCompletion(
       request: ChatCompletionRequest,
@@ -88,6 +91,8 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       if (!workflowId) {
         throw new Error('Workflow submit did not return a workflowId');
       }
+
+      lastWorkflowId = workflowId;
 
       const deadline = Date.now() + POLL_TIMEOUT_MS;
       let snap: ChatCompletionSnapshot = submitSnap;
@@ -152,6 +157,14 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
           total_tokens: promptTokens + completionTokens,
         },
       };
+    },
+
+    async cancel(workflowId: string): Promise<void> {
+      const id = workflowId || lastWorkflowId;
+      if (id) {
+        await workflow.cancel(id);
+        lastWorkflowId = undefined;
+      }
     },
   };
 }
