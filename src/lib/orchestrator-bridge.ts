@@ -1,6 +1,7 @@
 import type { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from './completion-types.js';
 import type { OrchestratorAdapter } from './orchestrator.js';
 import { simulateStreaming } from './streaming.js';
+import { HOST_READY } from './host-readiness.js';
 import type { WorkflowBody, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks';
 
 export type { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from './completion-types.js';
@@ -16,6 +17,15 @@ export interface WorkflowHelpers {
 const POLL_INTERVAL_MS = 1000;
 const POLL_TIMEOUT_MS = 60_000;
 
+// These fields MUST be derived inside snapshotFromWorkflow on the host side,
+// not passed as submit-time extras. If added at submit time, they appear on
+// the submit reply but vanish on poll (see civitai/civitai#3535 for a live
+// example of this trap). The host extracts from the workflow step output:
+//   content      ← steps[0].output.choices[0].message.content
+//   tool_calls   ← steps[0].output.choices[0].message.tool_calls
+//   usage        ← step-level usage totals
+// This adapter reads them via extractContent/extractToolCalls below, which
+// handle both the derived-snapshot shape and fallback paths.
 interface ChatCompletionSnapshot extends BlockWorkflowSnapshot {
   steps?: Array<{ output?: { text?: string; content?: string; tool_calls?: ToolCall[] } }>;
   content?: string;
@@ -58,6 +68,14 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       onChunk?: (chunk: string) => void,
       signal?: AbortSignal,
     ): Promise<ChatCompletionResponse> {
+      if (!HOST_READY) {
+        throw new Error(
+          "HOST_NOT_READY: The Civitai host has not yet shipped chatCompletion support (civitai/civitai#3527). " +
+          "The Sensei chat feature requires the host to add kind: 'step' to blockWorkflowBodySchema. " +
+          'Set HOST_READY = true in orchestrator-bridge.ts once the host deploys.',
+        );
+      }
+
       // Bridge is always non-streaming — we simulate streaming post-poll.
       // The stream field from ChatCompletionRequest is ignored.
 
