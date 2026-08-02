@@ -1,14 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createOrchestrator } from './orchestrator.js';
 
 describe('orchestrator', () => {
-  it('createOrchestrator returns an adapter with submitChatCompletion', () => {
+  it('createOrchestrator returns a stub adapter when no workflow helpers given', () => {
     const adapter = createOrchestrator();
     expect(adapter).toBeDefined();
     expect(typeof adapter.submitChatCompletion).toBe('function');
   });
 
-  it('submitChatCompletion returns a valid ChatCompletionResponse', async () => {
+  it('stub submitChatCompletion returns a valid ChatCompletionResponse', async () => {
     const adapter = createOrchestrator();
     const result = await adapter.submitChatCompletion({
       model: 'test',
@@ -21,7 +21,7 @@ describe('orchestrator', () => {
     expect(result.usage.total_tokens).toBeGreaterThan(0);
   });
 
-  it('onChunk callback receives streaming words', async () => {
+  it('stub onChunk callback receives streaming words', async () => {
     const adapter = createOrchestrator();
     const chunks: string[] = [];
     await adapter.submitChatCompletion(
@@ -29,5 +29,23 @@ describe('orchestrator', () => {
       (c) => chunks.push(c),
     );
     expect(chunks.length).toBeGreaterThan(0);
+  });
+
+  it('createOrchestrator returns a bridge adapter when workflow helpers are provided', async () => {
+    const workflow = {
+      estimate: vi.fn().mockResolvedValue({ cost: { total: 5 } }),
+      submit: vi.fn().mockResolvedValue({ workflowId: 'wf-test', status: 'pending' }),
+      poll: vi.fn().mockResolvedValue({ status: 'succeeded', content: 'Bridge response' }),
+    };
+    const adapter = createOrchestrator(workflow);
+    expect(typeof adapter.submitChatCompletion).toBe('function');
+
+    const result = await adapter.submitChatCompletion({
+      model: 'test',
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+    expect(result.choices[0].message.content).toBe('Bridge response');
+    expect(workflow.estimate).toHaveBeenCalledOnce();
+    expect(workflow.submit).toHaveBeenCalledOnce();
   });
 });

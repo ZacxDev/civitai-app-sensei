@@ -6,6 +6,7 @@ import {
   useBlockResize,
   useBlockToken,
   useBuzzBalance,
+  useBuzzWorkflow,
 } from '@civitai/blocks-react';
 import type { UseAppStorage } from '@civitai/blocks-react';
 import { Badge, Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
@@ -76,7 +77,8 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
   const streamingRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
-  const orchestratorRef = useRef<OrchestratorAdapter>(createOrchestrator());
+  const { estimate, submit, poll } = useBuzzWorkflow();
+  const orchestratorRef = useRef<OrchestratorAdapter>(createOrchestrator({ estimate, submit, poll }));
 
   // ---- Load sessions on mount ----
   useEffect(() => {
