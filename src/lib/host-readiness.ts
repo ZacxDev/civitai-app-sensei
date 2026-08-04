@@ -16,4 +16,4 @@
 //   via red-capable host token)
 //
 // When the host ships the moderation posture, flip HOST_READY to true.
-export const HOST_READY = false;
+export const HOST_READY = true;

@@ -9,6 +9,7 @@ function mockWorkflowHelpers(overrides?: Partial<WorkflowHelpers>): WorkflowHelp
       status: 'succeeded',
       content: 'Hello from the bridge!',
     }),
+    cancel: vi.fn().mockResolvedValue({ status: 'canceled' }),
     ...overrides,
   };
 }
@@ -30,7 +31,7 @@ describe('orchestrator-bridge', () => {
       status: 'succeeded',
       content: 'The answer is 42.',
     });
-    const adapter = createBridgeAdapter({ estimate, submit, poll });
+    const adapter = createBridgeAdapter({ estimate, submit, poll, cancel: vi.fn() });
 
     const result = await adapter.submitChatCompletion({
       model: 'test-model',

@@ -36,6 +36,7 @@ describe('orchestrator', () => {
       estimate: vi.fn().mockResolvedValue({ cost: { total: 5 } }),
       submit: vi.fn().mockResolvedValue({ workflowId: 'wf-test', status: 'pending' }),
       poll: vi.fn().mockResolvedValue({ status: 'succeeded', content: 'Bridge response' }),
+      cancel: vi.fn().mockResolvedValue({ status: 'canceled' }),
     };
     const adapter = createOrchestrator(workflow);
     expect(typeof adapter.submitChatCompletion).toBe('function');

@@ -1,7 +1,6 @@
 import type { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from './completion-types.js';
 import type { OrchestratorAdapter } from './orchestrator.js';
 import { simulateStreaming } from './streaming.js';
-import { HOST_READY } from './host-readiness.js';
 import type { WorkflowBody, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks';
 
 export type { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from './completion-types.js';
@@ -68,14 +67,6 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       onChunk?: (chunk: string) => void,
       signal?: AbortSignal,
     ): Promise<ChatCompletionResponse> {
-      if (!HOST_READY) {
-        throw new Error(
-          "HOST_NOT_READY: The Civitai host has not yet shipped chatCompletion support (civitai/civitai#3527). " +
-          "The Sensei chat feature requires the host to add kind: 'step' to blockWorkflowBodySchema. " +
-          'Set HOST_READY = true in orchestrator-bridge.ts once the host deploys.',
-        );
-      }
-
       // Bridge is always non-streaming — we simulate streaming post-poll.
       // The stream field from ChatCompletionRequest is ignored.
 
