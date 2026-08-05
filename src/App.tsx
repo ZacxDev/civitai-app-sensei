@@ -83,6 +83,30 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     [estimate, submit, poll, cancel],
   );
 
+  // ── DEV-ONLY dogfood handle ────────────────────────────────────────────────
+  // 🔴 STRIPPED FROM A PRODUCTION BUILD by the `import.meta.env.DEV` guard —
+  // Vite statically replaces it with `false` and drops the branch.
+  //
+  // WHY IT EXISTS. Every path to the orchestrator ran through a button inside a
+  // CROSS-ORIGIN iframe, and the bridge's only tool for that dispatches
+  // SYNTHETIC clicks. That left the moderated (withheld) branch executable ONLY
+  // in a fixture — a fixture that, until this commit, encoded a reply shape the
+  // host never sends. A capability nobody can drive is a capability nobody has
+  // verified. This gives a dev tunnel a direct handle on the real adapter, so a
+  // clean AND a flagged completion can each be driven against the deployed step.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as Record<string, unknown>).__senseiDogfood = {
+      send: (content: string, model: string = settings.model) =>
+        orchestrator.submitChatCompletion({
+          model,
+          messages: [{ role: 'user', content }],
+          max_tokens: 256,
+          temperature: 0.7,
+        }),
+    };
+  }, [orchestrator, settings.model]);
+
   // ---- Load sessions on mount ----
   useEffect(() => {
     if (!ready) return;
