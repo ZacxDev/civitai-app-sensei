@@ -56,9 +56,15 @@ export function SettingsBar({ settings, onChange }: SettingsBarProps) {
         <span style={{ fontSize: 12, color: token.dimmed, whiteSpace: 'nowrap' }}>
           Max Tokens
         </span>
+        {/*
+          🔴 CEILING IS THE HOST'S, NOT A UI CHOICE. `chat-completion` bounds
+          `maxTokens` at 4,000 (`.max(CHAT_COMPLETION_MAX_OUTPUT_TOKENS)`), so
+          the old 8,192 ceiling let a user drag the slider into a guaranteed
+          BAD_REQUEST. Mirrors `MAX_OUTPUT_TOKENS` in lib/orchestrator-bridge.ts.
+        */}
         <Slider
           min={256}
-          max={8192}
+          max={4000}
           step={256}
           value={settings.maxTokens}
           onChange={(v) => onChange({ maxTokens: v })}

@@ -1,5 +1,5 @@
 import type { ChatCompletionResponse } from './completion-types.js';
-import { submitChatCompletion } from './orchestrator-stub.js';
+import type { OrchestratorAdapter } from './orchestrator.js';
 
 const NSFW_MODEL = 'cognitivecomputations/dolphin-mistral-24b-venice-edition';
 
@@ -14,6 +14,7 @@ export interface NsfwDelegationRequest {
  * Uses the uncensored model for mature content queries.
  */
 export async function delegateToNsfwAgent(
+  orchestrator: OrchestratorAdapter,
   request: NsfwDelegationRequest,
   onChunk?: (chunk: string) => void,
 ): Promise<ChatCompletionResponse> {
@@ -28,7 +29,7 @@ export async function delegateToNsfwAgent(
     { role: 'user', content: request.task },
   ];
 
-  return submitChatCompletion({
+  return orchestrator.submitChatCompletion({
     model: NSFW_MODEL,
     messages,
     temperature: 0.7,
@@ -40,7 +41,7 @@ export async function delegateToNsfwAgent(
  * Check if the NSFW model is available.
  */
 export function isNsfwModelAvailable(): boolean {
-  return true; // Always available via stub
+  return true;
 }
 
 export { NSFW_MODEL };

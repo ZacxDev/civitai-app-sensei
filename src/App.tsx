@@ -15,7 +15,8 @@ import { palette, pageStyle, token, radius, mutedText } from './theme.js';
 import type { AppSettings, Message, Session } from './types.js';
 import { DEFAULT_SETTINGS } from './types.js';
 import { hasGenerateScope } from './scopes.js';
-import { createOrchestrator, isBridgeMode } from './lib/orchestrator.js';
+import { createOrchestrator } from './lib/orchestrator.js';
+import { TextOutputWithheldError } from './lib/orchestrator-bridge.js';
 import { CIVITAI_TOOLS, parseToolArguments } from './lib/tools.js';
 import * as sessionsLib from './lib/sessions.js';
 import * as researchLib from './lib/research.js';
@@ -250,7 +251,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             let result: string;
 
             if (tc.function.name === 'delegate_to_nsfw_agent') {
-              const nsfwResult = await delegateToNsfwAgent({
+              const nsfwResult = await delegateToNsfwAgent(orchestrator, {
                 task: (args.task as string) ?? '',
                 context: (args.context as string) ?? content,
               });
@@ -315,14 +316,24 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       };
       await sessionsLib.appendMessage(depsRef.current.appStorage, activeSessionId, finalMsg);
     } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : 'Failed to get response';
+      // 🔴 A WITHHOLD IS NOT AN ERROR. The host scanned the generated reply and
+      // refused to release it; the Buzz was spent and the capability worked as
+      // designed. Rendering the host's own user-facing reason — rather than
+      // "Error: …" — is the difference between reporting a policy outcome and
+      // reporting a bug. The reason is deliberately generic and never names the
+      // labels that triggered.
+      const withheld = e instanceof TextOutputWithheldError;
+      const body = withheld
+        ? (e as TextOutputWithheldError).reason
+        : `Error: ${e instanceof Error ? e.message : 'Failed to get response'}`;
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last.id === assistantMsg.id) {
-          return [...prev.slice(0, -1), { ...last, content: `Error: ${errorMsg}` }];
+          return [...prev.slice(0, -1), { ...last, content: body, withheld }];
         }
         return prev;
       });
+      if (withheld) depsRef.current.track('completion_withheld');
     } finally {
       setIsStreaming(false);
       streamingRef.current = false;
@@ -439,11 +450,6 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             {buzzTotal != null && (
               <Badge variant="light" size="sm" data-testid="buzz-balance">
                 {buzzTotal.toLocaleString()} Buzz
-              </Badge>
-            )}
-            {!isBridgeMode() && (
-              <Badge variant="outline" size="sm" color="yellow" data-testid="stub-badge">
-                Stub Mode
               </Badge>
             )}
             <Button

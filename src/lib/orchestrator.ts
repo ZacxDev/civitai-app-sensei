@@ -1,5 +1,4 @@
 import type { ChatCompletionRequest, ChatCompletionResponse } from './completion-types.js';
-import { submitChatCompletion as stubSubmit } from './orchestrator-stub.js';
 import { createBridgeAdapter, type WorkflowHelpers } from './orchestrator-bridge.js';
 
 export interface OrchestratorAdapter {
@@ -11,29 +10,19 @@ export interface OrchestratorAdapter {
   cancel?(workflowId?: string): Promise<void>;
 }
 
-let _bridgeMode = false;
-
-/** Returns true when the orchestrator is using real workflow helpers (bridge mode). */
-export function isBridgeMode(): boolean {
-  return _bridgeMode;
-}
-
 /**
- * Create an orchestrator adapter.
- * When workflow helpers are provided, uses the real bridge (estimate → submit → poll).
- * Otherwise falls back to the stub.
+ * Create an orchestrator adapter over the host's `useBuzzWorkflow` helpers.
+ *
+ * 🔴 THERE IS NO STUB FALLBACK ANY MORE, AND THAT IS THE POINT. The previous
+ * `createOrchestrator(workflow?)` returned a canned-response stub when the
+ * helpers were absent — but `useBuzzWorkflow()` always returns them, so the
+ * fallback was unreachable in the app while remaining the ONLY path the tests
+ * exercised. The result was a "Stub Mode" badge that could never light and a
+ * bridge nothing executed. Requiring the helpers makes the real path the only
+ * path; tests inject a fake `WorkflowHelpers` instead of a whole fake adapter,
+ * so what they exercise is the body-building and snapshot-reading code that
+ * actually ships.
  */
-export function createOrchestrator(workflow?: WorkflowHelpers): OrchestratorAdapter {
-  if (workflow) {
-    _bridgeMode = true;
-    return createBridgeAdapter(workflow);
-  }
-  _bridgeMode = false;
-  return {
-    submitChatCompletion: async (request, onChunk, _signal) => {
-      // Stub ignores signal — it's synchronous
-      return stubSubmit(request, onChunk);
-    },
-    cancel: async () => {},
-  };
+export function createOrchestrator(workflow: WorkflowHelpers): OrchestratorAdapter {
+  return createBridgeAdapter(workflow);
 }

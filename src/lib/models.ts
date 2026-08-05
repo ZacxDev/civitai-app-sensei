@@ -9,46 +9,57 @@ export interface ModelConfig {
   maxContext: number;
 }
 
+/**
+ * The models this block may reach.
+ *
+ * 🔴 THIS LIST IS THE HOST'S ALLOWLIST, NOT A PREFERENCE. `chat-completion`'s
+ * `paramSchema` bounds `model` with a `z.enum` over `CHAT_COMPLETION_MODELS`, so
+ * anything not below is rejected at parse. It previously carried
+ * `deepseek/deepseek-r1`, `google/gemini-2.0-flash` and
+ * `anthropic/claude-3.5-sonnet` — none of which are registered; picking one
+ * would have produced a BAD_REQUEST on every send.
+ *
+ * Keep in lockstep with `CHAT_COMPLETION_MODELS` in `./orchestrator-bridge.ts`,
+ * which the tests pin against this list.
+ *
+ * 🔴 `supportsTools` IS `false` FOR EVERY ENTRY, and that is a property of the
+ * BRIDGE, not of the models. The step exposes no `tools` param and its
+ * `extractText` does not read `tool_calls`, so no model reachable from a block
+ * can make a tool call regardless of what it supports natively.
+ *
+ * Costs are indicative only — the block is charged a FLAT 1 Buzz per call
+ * (`prepaidFixed`), independent of model and token count.
+ */
 export const AVAILABLE_MODELS: ModelConfig[] = [
   {
     id: 'deepseek/deepseek-chat',
     name: 'DeepSeek V3',
     provider: 'DeepSeek',
-    supportsTools: true,
-    supportsStreaming: true,
-    costPer1kInput: 0.00014,
-    costPer1kOutput: 0.00028,
-    maxContext: 64000,
-  },
-  {
-    id: 'deepseek/deepseek-r1',
-    name: 'DeepSeek R1',
-    provider: 'DeepSeek',
     supportsTools: false,
-    supportsStreaming: true,
+    supportsStreaming: false,
     costPer1kInput: 0.00014,
     costPer1kOutput: 0.00028,
     maxContext: 64000,
   },
   {
-    id: 'google/gemini-2.0-flash',
-    name: 'Gemini 2.0 Flash',
-    provider: 'Google',
-    supportsTools: true,
-    supportsStreaming: true,
-    costPer1kInput: 0.0001,
-    costPer1kOutput: 0.0004,
-    maxContext: 1048576,
+    id: 'openai/gpt-4o-mini',
+    name: 'GPT-4o mini',
+    provider: 'OpenAI',
+    supportsTools: false,
+    supportsStreaming: false,
+    costPer1kInput: 0.00015,
+    costPer1kOutput: 0.0006,
+    maxContext: 128000,
   },
   {
-    id: 'anthropic/claude-3.5-sonnet',
-    name: 'Claude 3.5 Sonnet',
-    provider: 'Anthropic',
-    supportsTools: true,
-    supportsStreaming: true,
-    costPer1kInput: 0.003,
-    costPer1kOutput: 0.0015,
-    maxContext: 200000,
+    id: 'cognitivecomputations/dolphin-mistral-24b-venice-edition',
+    name: 'Dolphin Mistral 24B (uncensored)',
+    provider: 'Cognitive Computations',
+    supportsTools: false,
+    supportsStreaming: false,
+    costPer1kInput: 0.0002,
+    costPer1kOutput: 0.0002,
+    maxContext: 32000,
   },
 ];
 

@@ -5,6 +5,12 @@ export interface Message {
   toolCallId?: string;
   toolCalls?: ToolCall[];
   timestamp: number;
+  /**
+   * Set when the host's output scan withheld this reply. The content is then the
+   * host's user-facing reason, not model output — render it as a policy notice
+   * rather than as an assistant turn.
+   */
+  withheld?: boolean;
 }
 
 export interface ToolCall {
