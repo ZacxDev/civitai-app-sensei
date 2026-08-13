@@ -8,7 +8,7 @@ vi.mock('@civitai/blocks-react', () => ({
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
   useBlockResize: () => {},
-  useBlockToken: () => ({ scopes: ['ai:write:budgeted', 'buzz:read:self'] }),
+  useBlockToken: () => ({ raw: 'block-jwt-test', scopes: ['ai:write:budgeted', 'buzz:read:self'] }),
   useBuzzBalance: () => ({ balance: { blue: 100, green: 0, yellow: 200 } }),
   useBuzzWorkflow: () => ({
     estimate: vi.fn().mockResolvedValue({ cost: { total: 10 } }),

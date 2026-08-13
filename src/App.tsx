@@ -17,11 +17,9 @@ import { DEFAULT_SETTINGS } from './types.js';
 import { hasGenerateScope } from './scopes.js';
 import { createOrchestrator } from './lib/orchestrator.js';
 import { TextOutputWithheldError } from './lib/orchestrator-bridge.js';
-import { CIVITAI_TOOLS, parseToolArguments } from './lib/tools.js';
 import * as sessionsLib from './lib/sessions.js';
 import * as researchLib from './lib/research.js';
-import { delegateToNsfwAgent } from './lib/nsfw-agent.js';
-import { generateMessageId, withSystemPrompt } from './lib/chat.js';
+import { generateMessageId, withSystemPrompt, withRetrievalContext } from './lib/chat.js';
 import { generateTitle } from './lib/sessions.js';
 
 import { ChatArea } from './components/ChatArea.js';
@@ -222,120 +220,85 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setMessages([...updatedMessages, assistantMsg]);
 
     try {
-      const apiMessages = withSystemPrompt(
-        updatedMessages.map((m) => ({ role: m.role, content: m.content })),
-        settings.systemPrompt,
+      // ── (a) RETRIEVE, then (b) INJECT, then (c) ONE completion. ────────────
+      //
+      // 🔴 THIS REPLACES A LOOP THAT COULD NEVER RUN. The old code sent
+      // `tools: CIVITAI_TOOLS` and looped up to 5 rounds on `tool_calls` — but
+      // the host's params schema is `.strict()`, so `tools` was a
+      // `BAD_REQUEST`, and even had it not been, a `'textOutput'` step cannot
+      // return a tool call at all. The loop was unreachable code that made the
+      // system prompt's claim of catalog access look supported.
+      //
+      // Retrieval is deterministic and needs no model call: a search engine
+      // handles free text, so the user's own words ARE the query. It runs
+      // before the single completion and costs no Buzz — a wasted search is one
+      // HTTP request, never a charge. Failures are swallowed on purpose: an
+      // ungrounded answer is much better than no answer, and the rewritten
+      // system prompt tells the model to say when nothing was attached.
+      let catalogContext = '';
+      if (researchLib.shouldRetrieve(content)) {
+        setIsSearching(true);
+        try {
+          const results = await researchLib.searchModels(
+            content,
+            { token: token_.raw },
+            { limit: researchLib.MAX_CONTEXT_MODELS },
+          );
+          catalogContext = researchLib.formatCatalogContext(results, content);
+          // The ResearchPanel then shows exactly what grounded the answer —
+          // the user can SEE the sources rather than take them on trust.
+          setSearchResults(results);
+        } catch {
+          catalogContext = '';
+        } finally {
+          setIsSearching(false);
+        }
+      }
+
+      const apiMessages = withRetrievalContext(
+        withSystemPrompt(
+          updatedMessages.map((m) => ({ role: m.role, content: m.content })),
+          settings.systemPrompt,
+        ),
+        catalogContext,
       );
 
-      let response;
-      let maxToolRounds = 5;
-
-      while (maxToolRounds > 0) {
-        response = await orchestrator.submitChatCompletion(
-          {
-            model: settings.model,
-            messages: apiMessages,
-            temperature: settings.temperature,
-            max_tokens: settings.maxTokens,
-            tools: CIVITAI_TOOLS,
-            stream: true,
-          },
-          (chunk) => {
-            if (!streamingRef.current) return;
-            setMessages((prev) => {
-              const last = prev[prev.length - 1];
-              if (last.id === assistantMsg.id) {
-                return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
-              }
-              return prev;
-            });
-          },
-          abortControllerRef.current?.signal,
-        );
-
-        const choice = response.choices[0];
-
-        // Handle tool calls
-        if (choice.message.tool_calls && choice.message.tool_calls.length > 0) {
-          // Add the assistant message with tool calls
+      const response = await orchestrator.submitChatCompletion(
+        {
+          model: settings.model,
+          messages: apiMessages,
+          temperature: settings.temperature,
+          max_tokens: settings.maxTokens,
+        },
+        (chunk) => {
+          if (!streamingRef.current) return;
           setMessages((prev) => {
             const last = prev[prev.length - 1];
             if (last.id === assistantMsg.id) {
-              return [...prev.slice(0, -1), {
-                ...last,
-                toolCalls: choice.message.tool_calls,
-              }];
+              return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
             }
             return prev;
           });
+        },
+        abortControllerRef.current?.signal,
+      );
 
-          // Execute tools and add results
-          for (const tc of choice.message.tool_calls) {
-            const args = parseToolArguments(tc.function.arguments);
-            let result: string;
-
-            if (tc.function.name === 'delegate_to_nsfw_agent') {
-              const nsfwResult = await delegateToNsfwAgent(orchestrator, {
-                task: (args.task as string) ?? '',
-                context: (args.context as string) ?? content,
-              });
-              result = nsfwResult.choices[0].message.content;
-            } else if (tc.function.name === 'search_models') {
-              const searchRes = await researchLib.searchModels(
-                (args.query as string) ?? '',
-                { type: args.type as string, sort: args.sort as string, limit: args.limit as number },
-              );
-              result = JSON.stringify(searchRes);
-              setSearchResults(searchRes);
-            } else if (tc.function.name === 'get_model_details') {
-              const details = await researchLib.getModelDetails(args.modelId as number);
-              result = JSON.stringify(details);
-            } else if (tc.function.name === 'search_images') {
-              const images = await researchLib.searchImages({
-                modelId: args.modelId as number,
-                query: args.query as string,
-                sort: args.sort as string,
-                limit: args.limit as number,
-              });
-              result = JSON.stringify(images);
-            } else {
-              result = `Unknown tool: ${tc.function.name}`;
-            }
-
-            const toolMsg: Message = {
-              id: generateMessageId(),
-              role: 'tool',
-              content: result,
-              toolCallId: tc.id,
-              timestamp: Date.now(),
-            };
-            setMessages((prev) => [...prev, toolMsg]);
-            apiMessages.push({ role: 'tool', content: result, tool_call_id: tc.id });
+      const replyText = response.choices[0].message.content;
+      if (replyText) {
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last.id === assistantMsg.id) {
+            return [...prev.slice(0, -1), { ...last, content: replyText }];
           }
-
-          maxToolRounds -= 1;
-          continue;
-        }
-
-        // No tool calls — we have a final text response
-        if (choice.message.content) {
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last.id === assistantMsg.id) {
-              return [...prev.slice(0, -1), { ...last, content: choice.message.content }];
-            }
-            return prev;
-          });
-        }
-        break;
+          return prev;
+        });
       }
 
       // Persist final assistant message
       const finalMsg: Message = {
         id: assistantMsg.id,
         role: 'assistant',
-        content: response?.choices[0].message.content ?? '',
-        toolCalls: response?.choices[0].message.tool_calls,
+        content: replyText ?? '',
         timestamp: assistantMsg.timestamp,
       };
       await sessionsLib.appendMessage(depsRef.current.appStorage, activeSessionId, finalMsg);
@@ -362,7 +325,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       setIsStreaming(false);
       streamingRef.current = false;
     }
-  }, [activeSessionId, isStreaming, messages, settings, sessions, canGenerate, viewer]);
+  }, [activeSessionId, isStreaming, messages, settings, sessions, canGenerate, viewer, token_.raw]);
 
   const handleStopStream = useCallback(() => {
     streamingRef.current = false;
@@ -386,14 +349,14 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const handleResearchSearch = useCallback(async (query: string) => {
     setIsSearching(true);
     try {
-      const results = await researchLib.searchModels(query);
+      const results = await researchLib.searchModels(query, { token: token_.raw });
       setSearchResults(results);
     } catch {
       setSearchResults(null);
     } finally {
       setIsSearching(false);
     }
-  }, []);
+  }, [token_.raw]);
 
   const handleInsertResearch = useCallback((text: string) => {
     // Append the model name to the chat input area (handled by ChatArea internally)

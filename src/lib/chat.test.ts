@@ -3,6 +3,7 @@ import {
   formatRoleLabel,
   estimateTokens,
   withSystemPrompt,
+  withRetrievalContext,
   serializeMessages,
   deserializeMessages,
   assembleChunks,
@@ -61,13 +62,62 @@ describe('chat', () => {
     });
   });
 
+  describe('withRetrievalContext', () => {
+    const base = [
+      { role: 'system', content: 'prompt' },
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'reply' },
+      { role: 'user', content: 'best anime lora?' },
+    ];
+
+    it('splices the context IMMEDIATELY BEFORE the latest user turn', () => {
+      const result = withRetrievalContext(base, 'CATALOG');
+      expect(result).toHaveLength(5);
+      expect(result[3]).toEqual({ role: 'system', content: 'CATALOG' });
+      expect(result[4]).toEqual({ role: 'user', content: 'best anime lora?' });
+      // The app's own system prompt still leads.
+      expect(result[0].content).toBe('prompt');
+    });
+
+    it('returns the array UNCHANGED for empty context', () => {
+      // An empty `content` is `.min(1)` on the host — a BAD_REQUEST for the
+      // whole request, not a message that gets dropped.
+      expect(withRetrievalContext(base, '')).toEqual(base);
+      expect(withRetrievalContext(base, '   ')).toEqual(base);
+    });
+
+    it('appends when there is no user turn at all', () => {
+      const result = withRetrievalContext([{ role: 'system', content: 'p' }], 'CATALOG');
+      expect(result[result.length - 1]).toEqual({ role: 'system', content: 'CATALOG' });
+    });
+
+    it('targets the LAST user turn, not the first', () => {
+      const result = withRetrievalContext(base, 'CATALOG');
+      const idx = result.findIndex((m) => m.content === 'CATALOG');
+      expect(result.slice(0, idx).filter((m) => m.role === 'user')).toHaveLength(1);
+    });
+  });
+
   describe('serializeMessages', () => {
     it('preserves all fields including id', () => {
       const messages: Message[] = [
-        { id: 'msg-1', role: 'user', content: 'hello', timestamp: 1000, toolCalls: [] },
+        { id: 'msg-1', role: 'user', content: 'hello', timestamp: 1000 },
       ];
       const result = serializeMessages(messages);
-      expect(result).toEqual([{ id: 'msg-1', role: 'user', content: 'hello', timestamp: 1000, toolCalls: [] }]);
+      expect(result).toEqual([{ id: 'msg-1', role: 'user', content: 'hello', timestamp: 1000 }]);
+    });
+
+    it('round-trips the withheld flag', () => {
+      const messages: Message[] = [
+        { id: 'm', role: 'assistant', content: 'policy reason', timestamp: 1, withheld: true },
+      ];
+      expect(deserializeMessages(serializeMessages(messages))[0].withheld).toBe(true);
+    });
+
+    it("deserializes a LEGACY stored 'tool' message rather than dropping it", () => {
+      // Sessions written by the tool-loop build are still in KV storage.
+      const stored = [{ id: 't', role: 'tool', content: '{"items":[]}', timestamp: 2 }];
+      expect(deserializeMessages(stored)[0].role).toBe('tool');
     });
   });
 

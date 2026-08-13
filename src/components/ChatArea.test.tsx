@@ -75,16 +75,15 @@ describe('ChatArea', () => {
     expect(screen.getByTestId('send-button')).toBeDisabled();
   });
 
-  it('renders tool call cards', () => {
+  it("renders nothing for a LEGACY stored 'tool' message", () => {
+    // Sessions written by the removed tool loop still hold raw JSON tool
+    // payloads. They must not surface as chat bubbles.
     const messages = [
-      makeMessage('assistant', ''),
+      makeMessage('user', 'Hello'),
+      makeMessage('tool', '{"items":[{"id":1,"name":"Leaked Tool Payload"}]}'),
     ];
-    messages[0].toolCalls = [{
-      id: 'tc-1',
-      type: 'function',
-      function: { name: 'search_models', arguments: '{"query":"test"}' },
-    }];
     render(<ChatArea messages={messages} isStreaming={false} onSend={vi.fn()} />);
-    expect(screen.getByTestId('tool-call-card')).toBeTruthy();
+    expect(screen.getByText('Hello')).toBeTruthy();
+    expect(screen.queryByText(/Leaked Tool Payload/)).toBeNull();
   });
 });

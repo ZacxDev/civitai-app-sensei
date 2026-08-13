@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Button, Textarea } from '@civitai/blocks-react/ui';
 import type { Message } from '../types.js';
 import { MessageBubble } from './MessageBubble.js';
-import { ToolCallCard } from './ToolCallCard.js';
 import { token, mutedText } from '../theme.js';
 
 export interface ChatAreaProps {
@@ -85,6 +84,10 @@ export function ChatArea({
           </div>
         )}
         {messages.map((msg) => {
+          // 🔴 LEGACY ONLY. Nothing writes a `'tool'` message any more, but
+          // sessions saved by the tool-loop build still hold them in KV storage.
+          // Rendering a raw JSON tool payload as a chat bubble would be worse
+          // than dropping it.
           if (msg.role === 'tool') return null;
           return (
             <div key={msg.id}>
@@ -93,20 +96,6 @@ export function ChatArea({
                 onRegenerate={msg.role === 'assistant' ? () => onRegenerate?.(msg.id) : undefined}
                 onCopy={() => navigator.clipboard.writeText(msg.content)}
               />
-              {msg.toolCalls?.map((tc) => {
-                const toolResult = messages.find(
-                  (m) => m.role === 'tool' && m.toolCallId === tc.id,
-                );
-                const isActive = isStreaming && !toolResult;
-                return (
-                  <ToolCallCard
-                    key={tc.id}
-                    toolCall={tc}
-                    result={toolResult}
-                    isLoading={isActive}
-                  />
-                );
-              })}
             </div>
           );
         })}

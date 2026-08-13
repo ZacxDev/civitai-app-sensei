@@ -1,7 +1,7 @@
 # Civitai Sensei — a Civitai App Block
 
 **A complete, open-source example of a [Civitai](https://civitai.com) App Block.**
-Read it to learn how a real block is wired to the host platform — chat sessions with configurable LLM models, an NSFW agent for mature content delegation, and live Civitai catalog research via tool calls. All against the *published* SDK packages, with a mock host so you can run it in two commands.
+Read it to learn how a real block is wired to the host platform — chat sessions with configurable LLM models, Buzz-metered generation through the host bridge, and answers grounded in **live Civitai catalog data** retrieved client-side. All against the *published* SDK packages, with a mock host so you can run it in two commands.
 
 🔗 **Live:** [sensei.civit.ai](https://sensei.civit.ai) ·
 [civitai.com/apps/run/sensei](https://civitai.com/apps/run/sensei)
@@ -36,10 +36,10 @@ npm run dev:harness      # → mock host at http://localhost:5189
 
 | Capability | Hooks / modules | Files |
 |---|---|---|
-| Chat sessions with LLM | `useAppStorage` (KV), orchestrator stub | `src/lib/chat.ts`, `src/lib/orchestrator-stub.ts` |
-| Tool-calling loop | Orchestrator function calling, civitai public API | `src/lib/tools.ts`, `src/App.tsx` |
-| Civitai catalog search | Public REST API (`/api/v1/models`) | `src/lib/research.ts` |
-| NSFW agent delegation | OpenRouter model routing via orchestrator | `src/lib/nsfw-agent.ts` |
+| Chat sessions with LLM | `useAppStorage` (KV), `useBuzzWorkflow` bridge | `src/lib/chat.ts`, `src/lib/orchestrator-bridge.ts` |
+| Retrieval-grounded answers | Search → compact → inject as a `system` message | `src/lib/research.ts`, `src/App.tsx` |
+| Civitai catalog search | Block catalog API (`/api/v1/blocks/models`), `useBlockToken` | `src/lib/research.ts` |
+| Uncensored model | Selected explicitly in Settings, not delegated behind your back | `src/lib/models.ts` |
 | Multi-session management | Per-user KV storage | `src/lib/sessions.ts` |
 | Buzz spending | `useBuzzWorkflow` (estimate → consent → submit) | `src/App.tsx` |
 | Design system | `@civitai/blocks-react/ui` components | `src/components/` |
@@ -49,13 +49,29 @@ npm run dev:harness      # → mock host at http://localhost:5189
 The app is a single-page React application with three panels:
 
 - **Session sidebar** — list of chat sessions with create/rename/delete
-- **Chat area** — message history with streaming responses and tool call cards
+- **Chat area** — message history with replayed streaming responses
 - **Research panel** — collapsible right panel showing civitai search results
 
-State is persisted per-user via `useAppStorage` (KV). The orchestrator stub
-simulates chat completions and tool calls — when the real bridge ships
-([civitai/civitai#3527](https://github.com/civitai/civitai/issues/3527)),
-the stub will be replaced with `useBuzzWorkflow` integration.
+State is persisted per-user via `useAppStorage` (KV). Chat completions go
+through the real host bridge (`useBuzzWorkflow` → the orchestrator's
+`chat-completion` step) at a flat 1 Buzz per answer.
+
+### How answers are grounded
+
+The host exposes **no tool/function-calling surface** — its params schema is
+`.strict()` over `{model, messages, maxTokens, temperature}` and its message
+schema has no `'tool'` role, so a model reachable from a block can neither
+request nor return a tool call. Sensei therefore retrieves *before* it asks:
+
+1. the user's message is passed straight to `/api/v1/blocks/models` (a search
+   engine handles free text — no model call is needed to write the query),
+2. the results are compacted to a bounded, `urn:air:`-stripped block, and
+3. injected as a `system` message immediately above the question.
+
+One completion, one Buzz, no upstream change. The block catalog endpoints are
+token-gated with **no required scope** and clamp maturity server-side off the
+token's signed claim, failing closed to SFW — so a `pg13` block cannot surface
+mature catalog content whatever it asks for.
 
 ## Handling direct traffic
 

@@ -91,6 +91,12 @@ describe('orchestrator-bridge', () => {
     });
 
     it('NEVER forwards tools, tool_choice, response_format or stream', () => {
+      // 🔴 THE CAST IS THE POINT, AND IT IS NOT A LOOPHOLE. `ChatCompletionRequest`
+      // no longer DECLARES these keys, so the app cannot express them — that is
+      // the primary guard and it is compile-time. This test keeps the RUNTIME
+      // guard honest for the inputs a type cannot police: a deserialized stored
+      // request, an `any` from a future refactor, a hand-built object. Deleting
+      // the cast would delete the only reachable input this assertion has.
       const body = buildChatCompletionBody({
         model: MODEL,
         messages: [{ role: 'user', content: 'hi' }],
@@ -103,7 +109,7 @@ describe('orchestrator-bridge', () => {
             function: { name: 'search_models', description: 'd', parameters: {} },
           },
         ],
-      });
+      } as unknown as Parameters<typeof buildChatCompletionBody>[0]);
       for (const banned of [
         'tools',
         'tool_choice',
@@ -187,9 +193,11 @@ describe('orchestrator-bridge', () => {
 
   describe('toStepMessages', () => {
     it("drops 'tool'-role messages, which the host schema has no room for", () => {
+      // Legacy stored sessions still hold these; the guard must survive the
+      // tool loop's removal because the DATA outlives the code that wrote it.
       const out = toStepMessages([
         { role: 'user', content: 'find me a model' },
-        { role: 'tool', content: '{"items":[]}', tool_call_id: 'tc-1' },
+        { role: 'tool', content: '{"items":[]}' },
         { role: 'assistant', content: 'here you go' },
       ]);
       expect(out.map((m) => m.role)).toEqual(['user', 'assistant']);
@@ -267,7 +275,9 @@ describe('orchestrator-bridge', () => {
       expect(result.id).toBe('wf-42');
       expect(result.choices[0].message.content).toBe('The answer is 42.');
       expect(result.choices[0].finish_reason).toBe('stop');
-      expect(result.choices[0].message.tool_calls).toBeUndefined();
+      // `tool_calls` is not merely absent at runtime — it is no longer a member
+      // of the response type, so a consumer cannot branch on it at all.
+      expect('tool_calls' in result.choices[0].message).toBe(false);
       expect(result.usage.total_tokens).toBeGreaterThan(0);
     });
 

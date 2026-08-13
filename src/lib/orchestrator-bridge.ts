@@ -3,7 +3,7 @@ import type { OrchestratorAdapter } from './orchestrator.js';
 import { simulateStreaming } from './streaming.js';
 import type { WorkflowBody, WorkflowBodyStep, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks';
 
-export type { ChatCompletionRequest, ChatCompletionResponse, ToolCall } from './completion-types.js';
+export type { ChatCompletionRequest, ChatCompletionResponse } from './completion-types.js';
 
 /** The subset of useBuzzWorkflow's return we need. */
 export interface WorkflowHelpers {
