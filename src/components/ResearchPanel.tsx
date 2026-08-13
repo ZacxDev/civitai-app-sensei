@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { Button, Group, TextInput } from '@civitai/blocks-react/ui';
 import type { ModelSearchResult } from '../lib/research.js';
+import { formatStat } from '../lib/research.js';
 import { token, radius, mutedText } from '../theme.js';
 
 export interface ResearchPanelProps {
@@ -110,8 +111,21 @@ export function ResearchPanel({
             <Group justify="space-between" align="flex-start">
               <div style={{ flex: 1 }}>
                 <span style={{ fontSize: 14, fontWeight: 600 }}>{model.name}</span>
+                {/*
+                  🔴 THIS LINE USED TO READ `model.stats.rating.toFixed(1)` AND
+                  `model.stats.downloads.toLocaleString()`. Neither field exists:
+                  the API returns `{ downloadCount, thumbsUpCount,
+                  thumbsDownCount, commentCount, tippedAmountCount }`, so both
+                  reads were `undefined` and each method call was a live
+                  TypeError that blanked the panel on the first real result. It
+                  passed CI because the fixture invented the same two fields the
+                  code invented. `downloadCount` is additionally NULLABLE
+                  (Creator Controls metric privacy), which is why it renders
+                  through `formatStat` rather than a bare method call.
+                */}
                 <div style={{ ...mutedText, marginTop: 2 }}>
-                  {model.type} · ⭐ {model.stats.rating.toFixed(1)} · ↓ {model.stats.downloads.toLocaleString()}
+                  {model.type} · 👍 {formatStat(model.stats?.thumbsUpCount)} · ↓{' '}
+                  {formatStat(model.stats?.downloadCount)}
                 </div>
               </div>
               <Button

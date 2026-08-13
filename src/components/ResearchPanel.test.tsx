@@ -2,6 +2,16 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ResearchPanel } from './ResearchPanel.js';
 import type { ModelSearchResult } from '../lib/research.js';
+import { BLOCK_MODEL_ITEM, BLOCK_MODEL_ITEM_HIDDEN_STATS } from '../test-helpers.js';
+
+/**
+ * 🔴 THE FIXTURE IS THE ENDPOINT'S SHAPE, NOT THE COMPONENT'S WISH. This file
+ * used to build `stats: { downloads: 100, rating: 4.5 }` — fields the API has
+ * never returned — while the component read exactly those two. Both sides were
+ * wrong in the same direction, so every render test passed and the panel threw
+ * on the first real response.
+ */
+const REAL_RESULTS: ModelSearchResult = { items: [BLOCK_MODEL_ITEM] };
 
 describe('ResearchPanel', () => {
   it('renders toggle button when closed', () => {
@@ -83,17 +93,12 @@ describe('ResearchPanel', () => {
     expect(screen.getByText('Searching…')).toBeTruthy();
   });
 
-  it('renders search results', () => {
-    const results: ModelSearchResult = {
-      items: [
-        { id: 1, name: 'Test Model', type: 'Checkpoint', stats: { downloads: 100, rating: 4.5 } },
-      ],
-    };
+  it('renders REAL search results without throwing on the real stats shape', () => {
     render(
       <ResearchPanel
         isOpen={true}
         onToggle={vi.fn()}
-        searchResults={results}
+        searchResults={REAL_RESULTS}
         isSearching={false}
         onSearch={vi.fn()}
         onInsert={vi.fn()}
@@ -101,26 +106,41 @@ describe('ResearchPanel', () => {
     );
     expect(screen.getByText('Test Model')).toBeTruthy();
     expect(screen.getByText(/Checkpoint/)).toBeTruthy();
+    // The stats the API actually sends: thumbsUpCount + downloadCount.
+    expect(screen.getByText(/👍 42/)).toBeTruthy();
+    expect(screen.getByText(/1,000/)).toBeTruthy();
   });
 
-  it('calls onInsert when clicking insert button', () => {
-    const onInsert = vi.fn();
-    const results: ModelSearchResult = {
-      items: [
-        { id: 1, name: 'Test Model', type: 'Checkpoint', stats: { downloads: 100, rating: 4.5 } },
-      ],
-    };
+  it('renders a NULL downloadCount as "hidden" instead of crashing', () => {
+    // Creator Controls metric privacy nulls this per-owner. The old code called
+    // `.toLocaleString()` on it unguarded.
     render(
       <ResearchPanel
         isOpen={true}
         onToggle={vi.fn()}
-        searchResults={results}
+        searchResults={{ items: [BLOCK_MODEL_ITEM_HIDDEN_STATS] }}
+        isSearching={false}
+        onSearch={vi.fn()}
+        onInsert={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Private Stats Model')).toBeTruthy();
+    expect(screen.getByText(/hidden/)).toBeTruthy();
+  });
+
+  it('calls onInsert when clicking insert button', () => {
+    const onInsert = vi.fn();
+    render(
+      <ResearchPanel
+        isOpen={true}
+        onToggle={vi.fn()}
+        searchResults={REAL_RESULTS}
         isSearching={false}
         onSearch={vi.fn()}
         onInsert={onInsert}
       />,
     );
-    fireEvent.click(screen.getByTestId('insert-model-1'));
+    fireEvent.click(screen.getByTestId('insert-model-1234'));
     expect(onInsert).toHaveBeenCalledWith('Test Model');
   });
 

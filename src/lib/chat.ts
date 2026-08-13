@@ -23,7 +23,6 @@ export function estimateTokens(text: string): number {
 export interface ApiMessage {
   role: string;
   content: string;
-  tool_call_id?: string;
 }
 
 /**
@@ -39,13 +38,34 @@ export function withSystemPrompt(
   return [{ role: 'system', content: systemPrompt }, ...withoutSystem];
 }
 
+/**
+ * Splice retrieved catalog context in as a `system` message IMMEDIATELY BEFORE
+ * the latest user turn.
+ *
+ * Position is the whole point. Placed at the head it competes with the app's
+ * own system prompt and is separated from the question by the entire history;
+ * placed after the user turn it reads as an answer. Directly before the
+ * question it reads as "here is what the search returned, now answer this".
+ *
+ * Returns the input unchanged when `context` is empty — an empty `content` is
+ * `.min(1)` on the host, i.e. a `BAD_REQUEST` for the whole request, not a
+ * message that gets dropped.
+ */
+export function withRetrievalContext(messages: ApiMessage[], context: string): ApiMessage[] {
+  if (!context.trim()) return messages;
+
+  const lastUserIdx = messages.map((m) => m.role).lastIndexOf('user');
+  const injected: ApiMessage = { role: 'system', content: context };
+  if (lastUserIdx === -1) return [...messages, injected];
+  return [...messages.slice(0, lastUserIdx), injected, ...messages.slice(lastUserIdx)];
+}
+
 export interface StoredMessage {
   id: string;
   role: string;
   content: string;
   timestamp: number;
-  toolCallId?: string;
-  toolCalls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+  withheld?: boolean;
 }
 
 /**
@@ -57,13 +77,18 @@ export function serializeMessages(messages: Message[]): StoredMessage[] {
     role: m.role,
     content: m.content,
     timestamp: m.timestamp,
-    ...(m.toolCallId ? { toolCallId: m.toolCallId } : {}),
-    ...(m.toolCalls ? { toolCalls: m.toolCalls } : {}),
+    ...(m.withheld ? { withheld: true } : {}),
   }));
 }
 
 /**
  * Deserialize messages from KV storage (preserves original IDs).
+ *
+ * 🔴 STORED SESSIONS PREDATE THE TOOL-LOOP REMOVAL. A session written by an
+ * earlier build can still hold `role: 'tool'` messages and `toolCalls` fields.
+ * The role stays in `Message`'s union so those deserialize rather than throw;
+ * `ChatArea` renders them as nothing and `toStepMessages` drops them off the
+ * wire. Any `toolCalls` field is simply not read.
  */
 export function deserializeMessages(stored: StoredMessage[]): Message[] {
   return stored.map((m) => ({
@@ -71,8 +96,7 @@ export function deserializeMessages(stored: StoredMessage[]): Message[] {
     role: m.role as Message['role'],
     content: m.content,
     timestamp: m.timestamp,
-    ...(m.toolCallId ? { toolCallId: m.toolCallId } : {}),
-    ...(m.toolCalls ? { toolCalls: m.toolCalls as Message['toolCalls'] } : {}),
+    ...(m.withheld ? { withheld: true } : {}),
   }));
 }
 

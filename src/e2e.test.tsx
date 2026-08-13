@@ -1,7 +1,8 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { App } from './App.js';
-import { fakeAppStorage } from './test-helpers.js';
+import { fakeAppStorage, fakeBlockCatalogApi } from './test-helpers.js';
+import { clearCache } from './lib/research.js';
 
 // 🔴 THE POLL FIXTURE MIRRORS THE REAL HOST REPLY. It used to return
 // `steps: [{ output: { text } }]` and the assertion looked for "stub response" —
@@ -22,7 +23,7 @@ vi.mock('@civitai/blocks-react', () => ({
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
   useBlockResize: () => {},
-  useBlockToken: () => ({ scopes: ['ai:write:budgeted', 'buzz:read:self'] }),
+  useBlockToken: () => ({ raw: 'block-jwt-test', scopes: ['ai:write:budgeted', 'buzz:read:self'] }),
   useBuzzBalance: () => ({ balance: { blue: 100, green: 0, yellow: 200 } }),
   useBuzzWorkflow: () => ({
     estimate: vi
@@ -38,6 +39,17 @@ vi.mock('@civitai/blocks-react', () => ({
 }));
 
 describe('E2E: Sensei App', () => {
+  // Every send now runs a catalog retrieval first. Stub it so the suite makes
+  // no network call and the retrieval failure path is not silently exercised.
+  let api: ReturnType<typeof fakeBlockCatalogApi>;
+  beforeEach(() => {
+    clearCache();
+    api = fakeBlockCatalogApi();
+  });
+  afterEach(() => {
+    api.restore();
+  });
+
   it('full flow: create session → send message → see response', async () => {
     pollResult.mockReturnValue({
       workflowId: 'buzz-1',
