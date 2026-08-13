@@ -1,34 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Civitai Sensei">
-  <!-- Civitai Sensei — "Ask. It reads the catalog."
-       Motif: the seal. A single thick diamond outline enclosing one solid core.
-       The frame is the corpus the assistant reads; the core is the one distilled answer.
-
-       Why this shape, against the rev-2/3/4 failure list in the brand book:
-         · Centered and 4-fold radially symmetric, so there is no letterform or digit
-           skeleton to collapse into (the trap that killed rev-1 Custom Generators).
-         · Two elements only. The most legible mark in the set at 128px, which is what
-           the /apps grid actually renders.
-         · No satellite ring at the axes or diagonals — a quincunx of diamonds reads as
-           "+" or "x", and both are symbols with the wrong meaning for an assistant.
-         · Rounded stroke joins, matching the family's rounded bar terminals and ticks.
-       A diamond frame around a filled core also reads as a seal/crest, which is the
-       right register for a patient teacher — authoritative without being loud.
-
-       Stroke 84 on a 774px mark = 1/9.2 of mark width, inside the family's "roughly 1/8".
-       Mark extent 774px on a 1024 canvas = 12.2% breathing room inside the plate.
-
-       🔴 Core half-diagonal is 140, NOT 190. The accent is meant to be used sparingly, and
-       that rule was checked by MEASURING the five live icons rather than by eye: their
-       accents occupy 0.13 / 1.18 / 1.69 / 1.78 / 2.79 % of the plate. A 190 core is 6.89%
-       — 4.1x the suite median and 2.5x its max, a real outlier. 140 gives 3.74%, still the
-       most prominent accent in the suite (this motif is a frame around a core, so its
-       accent is structurally central rather than a detail) but within reach of the band.
-       Do not enlarge it back for "punch": it is legible at 128px, which was verified.
-       Palette: plate #7CB342 · frame #C8E6A0 · core #E8503A (3 colours). -->
-  <rect width="1024" height="1024" rx="224" fill="#7CB342"/>
-  <!-- the corpus: one uniform thick frame, half-diagonal 345 -->
-  <polygon points="512,167 857,512 512,857 167,512"
-           fill="none" stroke="#C8E6A0" stroke-width="84" stroke-linejoin="round"/>
-  <!-- the answer: the only warm element, singular and centered, half-diagonal 140 -->
-  <polygon points="512,372 652,512 512,652 372,512" fill="#E8503A"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" fill="#67A63A"/>
+  <polygon points="512.00,232.00 792.00,512.00 512.00,792.00 232.00,512.00" fill="#497529"/>
+  <polygon points="512.00,336.00 688.00,512.00 512.00,688.00 336.00,512.00" fill="#67A63A"/>
+  <circle cx="512.00" cy="512.00" r="76.00" fill="#B7DD9C"/>
 </svg>
