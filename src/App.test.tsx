@@ -10,6 +10,15 @@ vi.mock('@civitai/blocks-react', () => ({
   useBlockResize: () => {},
   useBlockToken: () => ({ scopes: ['ai:write:budgeted', 'buzz:read:self'] }),
   useBuzzBalance: () => ({ balance: { blue: 100, green: 0, yellow: 200 } }),
+  useBuzzWorkflow: () => ({
+    estimate: vi.fn().mockResolvedValue({ cost: { total: 10 } }),
+    submit: vi.fn().mockResolvedValue({ workflowId: 'buzz-1', status: 'pending' }),
+    poll: vi.fn().mockResolvedValue({ status: 'succeeded', steps: [{ output: { text: 'test response' } }] }),
+    cancel: vi.fn().mockResolvedValue(undefined),
+    status: 'idle',
+    result: null,
+    error: null,
+  }),
 }));
 
 describe('App', () => {
@@ -29,12 +38,12 @@ describe('App', () => {
     expect(screen.getByText('AI Research Assistant')).toBeTruthy();
   });
 
-  it('renders the stub badge', async () => {
+  it('does not render stub badge in bridge mode', async () => {
     render(<App />);
     await waitFor(() => {
       expect(screen.queryByTestId('app-loading')).toBeNull();
     });
-    expect(screen.getByTestId('stub-badge')).toBeTruthy();
+    expect(screen.queryByTestId('stub-badge')).toBeNull();
   });
 
   it('renders the settings button', async () => {

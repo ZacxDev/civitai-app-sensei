@@ -8,14 +8,15 @@
   "scripts": {
     "dev": "vite",
     "dev:harness": "VITE_DEV_HARNESS=true vite --host localhost --port 5189",
+    "dev:tunnel": "vite --host 127.0.0.1 --port 5186",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {
-    "@civitai/app-sdk": "^0.28.0",
-    "@civitai/blocks-react": "^0.37.0",
+    "@civitai/app-sdk": "^0.31.0",
+    "@civitai/blocks-react": "^0.39.0",
     "@civitai/components-react": "^0.3.0",
     "@civitai/theme": "^0.2.0",
     "react": "^19.0.0",

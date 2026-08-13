@@ -12,6 +12,11 @@ export default defineConfig({
     host: 'localhost',
     port: 5189,
     strictPort: true,
+    allowedHosts: true,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Content-Security-Policy': "frame-ancestors 'self' https://civitai.com",
+    },
   },
   build: {
     target: 'es2022',

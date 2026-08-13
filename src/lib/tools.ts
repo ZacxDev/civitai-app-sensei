@@ -1,4 +1,4 @@
-import type { ToolDefinition } from './orchestrator-stub.js';
+import type { ToolDefinition } from './completion-types.js';
 
 export const CIVITAI_TOOLS: ToolDefinition[] = [
   {

@@ -6,6 +6,7 @@ import {
   useBlockResize,
   useBlockToken,
   useBuzzBalance,
+  useBuzzWorkflow,
 } from '@civitai/blocks-react';
 import type { UseAppStorage } from '@civitai/blocks-react';
 import { Badge, Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
@@ -14,7 +15,8 @@ import { palette, pageStyle, token, radius, mutedText } from './theme.js';
 import type { AppSettings, Message, Session } from './types.js';
 import { DEFAULT_SETTINGS } from './types.js';
 import { hasGenerateScope } from './scopes.js';
-import { submitChatCompletion, __STUB_ENABLED__ } from './lib/orchestrator-stub.js';
+import { createOrchestrator } from './lib/orchestrator.js';
+import { TextOutputWithheldError } from './lib/orchestrator-bridge.js';
 import { CIVITAI_TOOLS, parseToolArguments } from './lib/tools.js';
 import * as sessionsLib from './lib/sessions.js';
 import * as researchLib from './lib/research.js';
@@ -74,7 +76,36 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const [loading, setLoading] = useState(true);
 
   const streamingRef = useRef(false);
-  const abortRef = useRef<AbortController | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const { estimate, submit, poll, cancel } = useBuzzWorkflow();
+  const orchestrator = useMemo(
+    () => createOrchestrator({ estimate, submit, poll, cancel }),
+    [estimate, submit, poll, cancel],
+  );
+
+  // ── DEV-ONLY dogfood handle ────────────────────────────────────────────────
+  // 🔴 STRIPPED FROM A PRODUCTION BUILD by the `import.meta.env.DEV` guard —
+  // Vite statically replaces it with `false` and drops the branch.
+  //
+  // WHY IT EXISTS. Every path to the orchestrator ran through a button inside a
+  // CROSS-ORIGIN iframe, and the bridge's only tool for that dispatches
+  // SYNTHETIC clicks. That left the moderated (withheld) branch executable ONLY
+  // in a fixture — a fixture that, until this commit, encoded a reply shape the
+  // host never sends. A capability nobody can drive is a capability nobody has
+  // verified. This gives a dev tunnel a direct handle on the real adapter, so a
+  // clean AND a flagged completion can each be driven against the deployed step.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as Record<string, unknown>).__senseiDogfood = {
+      send: (content: string, model: string = settings.model) =>
+        orchestrator.submitChatCompletion({
+          model,
+          messages: [{ role: 'user', content }],
+          max_tokens: 256,
+          temperature: 0.7,
+        }),
+    };
+  }, [orchestrator, settings.model]);
 
   // ---- Load sessions on mount ----
   useEffect(() => {
@@ -180,6 +211,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
     setIsStreaming(true);
     streamingRef.current = true;
+    abortControllerRef.current = new AbortController();
 
     const assistantMsg: Message = {
       id: generateMessageId(),
@@ -199,23 +231,27 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       let maxToolRounds = 5;
 
       while (maxToolRounds > 0) {
-        response = await submitChatCompletion({
-          model: settings.model,
-          messages: apiMessages,
-          temperature: settings.temperature,
-          max_tokens: settings.maxTokens,
-          tools: CIVITAI_TOOLS,
-          stream: true,
-        }, (chunk) => {
-          if (!streamingRef.current) return;
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last.id === assistantMsg.id) {
-              return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
-            }
-            return prev;
-          });
-        });
+        response = await orchestrator.submitChatCompletion(
+          {
+            model: settings.model,
+            messages: apiMessages,
+            temperature: settings.temperature,
+            max_tokens: settings.maxTokens,
+            tools: CIVITAI_TOOLS,
+            stream: true,
+          },
+          (chunk) => {
+            if (!streamingRef.current) return;
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              if (last.id === assistantMsg.id) {
+                return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
+              }
+              return prev;
+            });
+          },
+          abortControllerRef.current?.signal,
+        );
 
         const choice = response.choices[0];
 
@@ -239,7 +275,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             let result: string;
 
             if (tc.function.name === 'delegate_to_nsfw_agent') {
-              const nsfwResult = await delegateToNsfwAgent({
+              const nsfwResult = await delegateToNsfwAgent(orchestrator, {
                 task: (args.task as string) ?? '',
                 context: (args.context as string) ?? content,
               });
@@ -304,14 +340,24 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       };
       await sessionsLib.appendMessage(depsRef.current.appStorage, activeSessionId, finalMsg);
     } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : 'Failed to get response';
+      // 🔴 A WITHHOLD IS NOT AN ERROR. The host scanned the generated reply and
+      // refused to release it; the Buzz was spent and the capability worked as
+      // designed. Rendering the host's own user-facing reason — rather than
+      // "Error: …" — is the difference between reporting a policy outcome and
+      // reporting a bug. The reason is deliberately generic and never names the
+      // labels that triggered.
+      const withheld = e instanceof TextOutputWithheldError;
+      const body = withheld
+        ? (e as TextOutputWithheldError).reason
+        : `Error: ${e instanceof Error ? e.message : 'Failed to get response'}`;
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last.id === assistantMsg.id) {
-          return [...prev.slice(0, -1), { ...last, content: `Error: ${errorMsg}` }];
+          return [...prev.slice(0, -1), { ...last, content: body, withheld }];
         }
         return prev;
       });
+      if (withheld) depsRef.current.track('completion_withheld');
     } finally {
       setIsStreaming(false);
       streamingRef.current = false;
@@ -321,8 +367,9 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const handleStopStream = useCallback(() => {
     streamingRef.current = false;
     setIsStreaming(false);
-    abortRef.current?.abort();
-  }, []);
+    abortControllerRef.current?.abort();
+    orchestrator.cancel?.();
+  }, [orchestrator]);
 
   const handleRegenerate = useCallback(async (messageId: string) => {
     // Find the last user message before this assistant message
@@ -427,11 +474,6 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             {buzzTotal != null && (
               <Badge variant="light" size="sm" data-testid="buzz-balance">
                 {buzzTotal.toLocaleString()} Buzz
-              </Badge>
-            )}
-            {__STUB_ENABLED__ && (
-              <Badge variant="outline" size="sm" color="yellow" data-testid="stub-badge">
-                Stub Mode
               </Badge>
             )}
             <Button
