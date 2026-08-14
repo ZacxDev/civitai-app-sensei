@@ -3,6 +3,7 @@
   "blockId": "sensei",
   "version": "0.1.0",
   "name": "Civitai Sensei",
+  "tagline": "Ask. It reads the catalog.",
   "type": "block",
   "category": "utility",
   "scopes": [
