@@ -1,9 +1,10 @@
 {
   "$schema": "https://civitai.com/schemas/app-block/v1.json",
   "blockId": "sensei",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "name": "Civitai Sensei",
   "tagline": "Ask. It reads the catalog.",
+  "description": "Civitai Sensei is a chat companion that lives inside Civitai and answers with the catalog in hand.\n\nBefore it replies, Sensei searches Civitai models using your own words and attaches what it finds — up to eight models with their type, stats, versions and tags — so an answer is grounded in what is actually on the site rather than what a language model half-remembers. The Research panel shows you exactly what was retrieved, and you can search from it yourself. Searching costs nothing; a reply costs 1 Buzz, and your balance is shown before you send.\n\nConversations stay put. Sensei keeps multiple sessions side by side, so a thread about lighting does not get tangled up with a thread about training settings. Sessions and their messages are saved to your own per-user app storage, where no other user can read them.\n\nThree models are available: DeepSeek V3, GPT-4o mini, and Dolphin Mistral 24B, an uncensored option. Civitai's content policy still applies to every reply — when one is withheld, Sensei tells you so plainly instead of failing silently.\n\nThis is an early release. Sensei looks up models; it does not yet read images, articles or your own generations.",
   "type": "block",
   "category": "utility",
   "scopes": [
