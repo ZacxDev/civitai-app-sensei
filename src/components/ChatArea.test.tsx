@@ -14,7 +14,7 @@ function makeMessage(role: Message['role'], content: string): Message {
 
 describe('ChatArea', () => {
   it('renders empty state', () => {
-    render(<ChatArea messages={[]} isStreaming={false} onSend={vi.fn()} />);
+    render(<ChatArea sendGate={null} onGatedSend={vi.fn()} messages={[]} isStreaming={false} onSend={vi.fn()} />);
     expect(screen.getByText(/Ask me about AI models/)).toBeTruthy();
   });
 
@@ -23,14 +23,14 @@ describe('ChatArea', () => {
       makeMessage('user', 'Hello'),
       makeMessage('assistant', 'Hi there!'),
     ];
-    render(<ChatArea messages={messages} isStreaming={false} onSend={vi.fn()} />);
+    render(<ChatArea sendGate={null} onGatedSend={vi.fn()} messages={messages} isStreaming={false} onSend={vi.fn()} />);
     expect(screen.getByText('Hello')).toBeTruthy();
     expect(screen.getByText('Hi there!')).toBeTruthy();
   });
 
   it('calls onSend when clicking send button', () => {
     const onSend = vi.fn();
-    render(<ChatArea messages={[]} isStreaming={false} onSend={onSend} />);
+    render(<ChatArea sendGate={null} onGatedSend={vi.fn()} messages={[]} isStreaming={false} onSend={onSend} />);
     const input = screen.getByTestId('chat-input');
     fireEvent.change(input, { target: { value: 'test message' } });
     fireEvent.click(screen.getByTestId('send-button'));
@@ -39,7 +39,7 @@ describe('ChatArea', () => {
 
   it('calls onSend on Enter key', () => {
     const onSend = vi.fn();
-    render(<ChatArea messages={[]} isStreaming={false} onSend={onSend} />);
+    render(<ChatArea sendGate={null} onGatedSend={vi.fn()} messages={[]} isStreaming={false} onSend={onSend} />);
     const input = screen.getByTestId('chat-input');
     fireEvent.change(input, { target: { value: 'test' } });
     fireEvent.keyDown(input, { key: 'Enter' });
@@ -48,7 +48,7 @@ describe('ChatArea', () => {
 
   it('does not send on Shift+Enter', () => {
     const onSend = vi.fn();
-    render(<ChatArea messages={[]} isStreaming={false} onSend={onSend} />);
+    render(<ChatArea sendGate={null} onGatedSend={vi.fn()} messages={[]} isStreaming={false} onSend={onSend} />);
     const input = screen.getByTestId('chat-input');
     fireEvent.change(input, { target: { value: 'test' } });
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
@@ -56,22 +56,22 @@ describe('ChatArea', () => {
   });
 
   it('shows streaming indicator', () => {
-    render(<ChatArea messages={[]} isStreaming={true} onSend={vi.fn()} />);
+    render(<ChatArea sendGate={null} onGatedSend={vi.fn()} messages={[]} isStreaming={true} onSend={vi.fn()} />);
     expect(screen.getByTestId('streaming-indicator')).toBeTruthy();
   });
 
   it('shows stop button when streaming', () => {
-    render(<ChatArea messages={[]} isStreaming={true} onSend={vi.fn()} onStopStream={vi.fn()} />);
+    render(<ChatArea sendGate={null} onGatedSend={vi.fn()} messages={[]} isStreaming={true} onSend={vi.fn()} onStopStream={vi.fn()} />);
     expect(screen.getByTestId('stop-button')).toBeTruthy();
   });
 
   it('shows send button when not streaming', () => {
-    render(<ChatArea messages={[]} isStreaming={false} onSend={vi.fn()} />);
+    render(<ChatArea sendGate={null} onGatedSend={vi.fn()} messages={[]} isStreaming={false} onSend={vi.fn()} />);
     expect(screen.getByTestId('send-button')).toBeTruthy();
   });
 
   it('disables send when input is empty', () => {
-    render(<ChatArea messages={[]} isStreaming={false} onSend={vi.fn()} />);
+    render(<ChatArea sendGate={null} onGatedSend={vi.fn()} messages={[]} isStreaming={false} onSend={vi.fn()} />);
     expect(screen.getByTestId('send-button')).toBeDisabled();
   });
 
@@ -82,7 +82,7 @@ describe('ChatArea', () => {
       makeMessage('user', 'Hello'),
       makeMessage('tool', '{"items":[{"id":1,"name":"Leaked Tool Payload"}]}'),
     ];
-    render(<ChatArea messages={messages} isStreaming={false} onSend={vi.fn()} />);
+    render(<ChatArea sendGate={null} onGatedSend={vi.fn()} messages={messages} isStreaming={false} onSend={vi.fn()} />);
     expect(screen.getByText('Hello')).toBeTruthy();
     expect(screen.queryByText(/Leaked Tool Payload/)).toBeNull();
   });
