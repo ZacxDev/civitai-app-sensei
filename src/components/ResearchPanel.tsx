@@ -8,15 +8,64 @@ export interface ResearchPanelProps {
   isOpen: boolean;
   onToggle: () => void;
   searchResults: ModelSearchResult | null;
+  /** The query actually SENT for the last retrieval — not what the user typed. */
+  lastQuery?: string | null;
+  /** True when `lastQuery` is the narrowed retry rather than the first attempt. */
+  narrowed?: boolean;
   isSearching: boolean;
   onSearch: (query: string) => void;
   onInsert: (text: string) => void;
+}
+
+/**
+ * The header control that opens/closes the panel.
+ *
+ * 🔴 IT LIVES IN THE HEADER'S FLEX ROW, AND THAT IS THE FIX, NOT A REFACTOR.
+ * This used to be rendered by `ResearchPanel` itself, in the closed branch, as
+ * `style={{ position: 'absolute', right: 8, top: 8 }}`. Absolutely positioned
+ * against the page, it landed ON TOP of the ⚙️ settings button, which is
+ * right-anchored in the same corner — measured at an iframe width of 1498:
+ *
+ *   open-research    x 1382–1490, y  8–38
+ *   settings-button  x 1436–1482, y 13–43     → 46 × 25 px of overlap
+ *   elementFromPoint(centre of settings-button) → "open-research"
+ *
+ * A real click at the centre of ⚙️ hit the Research toggle, so the Settings
+ * modal — model picker, temperature, max tokens, system prompt — COULD NOT BE
+ * OPENED AT ALL. Both controls are right-anchored, so this was structural, not a
+ * narrow-viewport artefact.
+ *
+ * Being a sibling in the same `Group` is what makes overlap impossible: flex
+ * lays the two out side by side and neither is taken out of flow. Do not give
+ * this `position: absolute` again.
+ */
+export function ResearchToggle({
+  isOpen,
+  onToggle,
+}: {
+  isOpen: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <Button
+      variant="subtle"
+      size="sm"
+      onClick={onToggle}
+      data-testid="open-research"
+      aria-pressed={isOpen}
+      title={isOpen ? 'Hide the Research panel' : 'Show the Research panel'}
+    >
+      🔍 Research
+    </Button>
+  );
 }
 
 export function ResearchPanel({
   isOpen,
   onToggle,
   searchResults,
+  lastQuery,
+  narrowed,
   isSearching,
   onSearch,
   onInsert,
@@ -27,19 +76,8 @@ export function ResearchPanel({
     if (query.trim()) onSearch(query.trim());
   }, [query, onSearch]);
 
-  if (!isOpen) {
-    return (
-      <Button
-        variant="subtle"
-        size="sm"
-        onClick={onToggle}
-        data-testid="open-research"
-        style={{ position: 'absolute', right: 8, top: 8 }}
-      >
-        🔍 Research
-      </Button>
-    );
-  }
+  // Closed: nothing. The toggle is `ResearchToggle`, in the header.
+  if (!isOpen) return null;
 
   return (
     <div
@@ -83,6 +121,20 @@ export function ResearchPanel({
             Search
           </Button>
         </Group>
+        {/*
+          🔴 THE QUERY THAT WAS ACTUALLY SENT, not the sentence that was typed.
+          A chat turn is rewritten into keywords before it reaches the catalog
+          (`deriveSearchQuery`), and when that rewrite is wrong the reply is
+          grounded in the wrong models with nothing on screen to say so — which
+          is exactly how the DreamShaper case went unnoticed. Showing the query
+          makes a bad retrieval visible instead of silently poisoning an answer.
+        */}
+        {lastQuery ? (
+          <div style={{ ...mutedText, marginTop: 8, fontSize: 11 }} data-testid="research-query">
+            Searched for: <strong>{lastQuery}</strong>
+            {narrowed ? ' (narrowed — the first search looked unrelated)' : ''}
+          </div>
+        ) : null}
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '0 12px 12px' }}>

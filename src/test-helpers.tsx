@@ -1,5 +1,13 @@
 import type { UseAppStorage } from '@civitai/blocks-react';
 
+/**
+ * A READ-YOUR-WRITES KV fake.
+ *
+ * 🔴 THIS IS NOT WHAT THE DEPLOYED HOST DOES, and believing it was is how the
+ * lost-user-message defect survived a green suite. Use it for anything that does
+ * not depend on read-after-write ordering; use `staleReadAppStorage` below for
+ * anything that does.
+ */
 export function fakeAppStorage(seed: Record<string, unknown> = {}) {
   const store = new Map<string, unknown>(Object.entries(seed));
   const sets: Array<{ key: string; value: unknown }> = [];
@@ -26,6 +34,75 @@ export function fakeAppStorage(seed: Record<string, unknown> = {}) {
     },
   };
   return { appStorage, sets, store };
+}
+
+/**
+ * A KV fake that MODELS THE DEPLOYED HOST: a block cannot see its own write.
+ *
+ * 🔴 COPIED FROM THE HOST'S BEHAVIOUR, NOT INVENTED TO MAKE A TEST FAIL.
+ * civitai's QueryClient sets `staleTime: Infinity` globally (`~/utils/trpc`) and
+ * `IframeHost`'s `APP_STORAGE_GET` resolves through
+ * `trpcUtils.apps.storage.get.fetch` — React Query's `fetchQuery`, which serves
+ * from cache while the entry is not stale. On the branch prod deploys from, that
+ * call passes NO staleTime override and `APP_STORAGE_SET` performs NO
+ * invalidation, so the first read of a key is cached forever and every later
+ * read returns it, whatever has been written since. (Fixed on `main` by civitai
+ * #4456 — `blockStorageCache.ts` — which is absent from the release branch and
+ * therefore not running in production.)
+ *
+ * SEMANTICS, deliberately the pessimistic end of that behaviour:
+ *  - `set` commits to the backing store and does NOT touch the read cache.
+ *  - `get` returns the cached value if this key has been read before; otherwise
+ *    it reads the store and caches that value.
+ *  - `expireReads()` models the one thing that DOES drop the cache in practice —
+ *    a token re-mint changing the query key — so a test can reproduce the
+ *    "sometimes it works" timing the production symptom actually showed.
+ *
+ * `committed(key)` reads the backing store DIRECTLY, bypassing the cache: it is
+ * what a page reload would load, i.e. the only thing that says whether data
+ * survived.
+ */
+export function staleReadAppStorage(seed: Record<string, unknown> = {}) {
+  const store = new Map<string, unknown>(Object.entries(seed));
+  const readCache = new Map<string, unknown>();
+  const sets: Array<{ key: string; value: unknown }> = [];
+
+  const appStorage: UseAppStorage = {
+    async get<T = unknown>(key: string) {
+      if (!readCache.has(key)) {
+        readCache.set(key, store.has(key) ? store.get(key) : null);
+      }
+      return (readCache.get(key) ?? null) as T | null;
+    },
+    async set<T = unknown>(key: string, value: T) {
+      store.set(key, value);
+      sets.push({ key, value });
+      return { ok: true as const };
+    },
+    async delete(key: string) {
+      const deleted = store.delete(key);
+      readCache.delete(key);
+      return { ok: true as const, deleted };
+    },
+    async list(opts?: { prefix?: string; limit?: number; cursor?: string }) {
+      const prefix = opts?.prefix;
+      const keys = [...store.keys()].filter((k) => !prefix || k.startsWith(prefix));
+      return { keys: keys.map((key) => ({ key, updatedAt: new Date() })) };
+    },
+    async getQuota() {
+      return { usedBytes: 0, rowCount: store.size, limitBytes: 50_000_000, limitRows: 1_000_000 };
+    },
+  };
+
+  return {
+    appStorage,
+    sets,
+    store,
+    /** What a reload would see. Bypasses the read cache on purpose. */
+    committed: (key: string) => store.get(key) ?? null,
+    /** Model a token re-mint: the query key changes, so the cache misses. */
+    expireReads: () => readCache.clear(),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

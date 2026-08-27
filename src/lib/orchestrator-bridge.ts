@@ -35,8 +35,8 @@ export const CHAT_COMPLETION_STEP_ID = 'chat-completion';
  * 🔴 A NON-MEMBER IS REJECTED AT PARSE by the entry's `z.enum` — it does not
  * fall back to a default and it does not reach the orchestrator. There is also
  * NO orchestrator-side model validation behind it: the host's own header records
- * that a fabricated model name is quoted 1 Buzz, CHARGED 1 Buzz, and then fails
- * at execution with no output and no refund. The enum is what stops an app typo
+ * that a fabricated model name is quoted the declared floor, CHARGED it, and
+ * then fails at execution with no output and no refund. The enum is what stops an app typo
  * from burning a viewer's Buzz.
  */
 export const CHAT_COMPLETION_MODELS = [

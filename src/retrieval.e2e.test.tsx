@@ -103,12 +103,29 @@ describe('Route A: retrieve → inject → one completion', () => {
     api.restore();
   });
 
-  it('fetches the block catalog with the block token before submitting', async () => {
+  it('fetches the block catalog with the block token, using the DERIVED query', async () => {
+    // 🔴 THIS USED TO ASSERT `query === 'best anime lora'` — the user's sentence,
+    // sent verbatim to a KEYWORD search. Measured against the live endpoint,
+    // both HTTP 200: "best anime lora" → "Best Studio Ghibli LoRA Style";
+    // "anime lora" → "Anime LoRA - Makoto Shinkai Anime Style". The sentence
+    // matches on its own filler words, and the wrong models are then injected as
+    // authoritative catalog context.
     await sendMessage('best anime lora');
     const catalogCalls = api.calls.filter((c) => c.url.includes('/api/v1/blocks/models'));
-    expect(catalogCalls).toHaveLength(1);
-    expect(new URL(catalogCalls[0].url).searchParams.get('query')).toBe('best anime lora');
+    expect(new URL(catalogCalls[0].url).searchParams.get('query')).toBe('anime lora');
     expect(catalogCalls[0].authorization).toBe('Bearer block-jwt-test');
+  });
+
+  it('retries ONCE, narrowed, when the hits carry none of the query terms', async () => {
+    // The stock fixture returns "Test Model" / "Private Stats Model", whose
+    // names share no term with "anime lora" — the shape that produced the
+    // DreamShaper failure. At most two requests, and never any Buzz: retrieval
+    // is plain HTTP.
+    await sendMessage('best anime lora');
+    const catalogCalls = api.calls.filter((c) => c.url.includes('/api/v1/blocks/models'));
+    expect(catalogCalls).toHaveLength(2);
+    expect(new URL(catalogCalls[1].url).searchParams.get('query')).toBe('anime');
+    expect(catalogCalls.every((c) => c.authorization === 'Bearer block-jwt-test')).toBe(true);
   });
 
   it('injects the retrieved catalog data into the submitted messages', async () => {
@@ -143,7 +160,7 @@ describe('Route A: retrieve → inject → one completion', () => {
     expect(params).not.toHaveProperty('response_format');
   });
 
-  it('sends exactly ONE completion per turn — 1 Buzz, no tool rounds', async () => {
+  it('sends exactly ONE completion per turn — one charge, no tool rounds', async () => {
     await sendMessage('best anime lora');
     expect(submitFn).toHaveBeenCalledTimes(1);
   });

@@ -5,13 +5,12 @@ import {
   useBlockContext,
   useBlockResize,
   useBlockToken,
-  useBuzzBalance,
   useBuzzWorkflow,
   useRequestConsent,
   useRequestSignIn,
 } from '@civitai/blocks-react';
 import type { UseAppStorage } from '@civitai/blocks-react';
-import { Badge, Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
+import { Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
 
 import { palette, pageStyle, token, radius, mutedText } from './theme.js';
 import type { AppSettings, Message, Session } from './types.js';
@@ -26,7 +25,7 @@ import { generateTitle } from './lib/sessions.js';
 
 import { ChatArea } from './components/ChatArea.js';
 import { SessionList } from './components/SessionList.js';
-import { ResearchPanel } from './components/ResearchPanel.js';
+import { ResearchPanel, ResearchToggle } from './components/ResearchPanel.js';
 import { SettingsBar } from './components/SettingsBar.js';
 import { SettingsModal } from './components/SettingsModal.js';
 
@@ -43,7 +42,13 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const { ready, viewer, theme } = useBlockContext();
   const token_ = useBlockToken();
   const appStorageHook = useAppStorage();
-  const buzz = useBuzzBalance();
+  // 🔴 NO `useBuzzBalance()` HERE ANY MORE. The in-app Buzz badge was removed in
+  // 0.1.5 — the on-site header already shows the balance, so a second copy was
+  // redundant chrome inside a small iframe. `buzz:read:self` DELIBERATELY STAYS
+  // in `block.manifest.json`: consent is keyed on the granted SCOPE SET
+  // (`app_user_scope_grants.granted_scopes`, unique per user+app), so dropping
+  // the scope would re-prompt everyone who has already granted it, for a
+  // cosmetic change.
   const { track } = useBlockAnalytics();
   const { requestConsent } = useRequestConsent();
   const { requestSignIn } = useRequestSignIn();
@@ -74,8 +79,18 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [researchOpen, setResearchOpen] = useState(false);
   const [searchResults, setSearchResults] = useState<researchLib.ModelSearchResult | null>(null);
+  const [searchQuery, setSearchQuery] = useState<string | null>(null);
+  const [searchNarrowed, setSearchNarrowed] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [loading, setLoading] = useState(true);
+  // 🔴 A REJECTED STORAGE CALL MUST NOT BE INDISTINGUISHABLE FROM SUCCESS. Every
+  // storage call in this app used to be either unguarded (`createSession`, whose
+  // rejection propagated as an unhandled promise and showed the viewer NOTHING —
+  // "+ New" was observably dead in production) or swallowed by a bare `catch {}`.
+  // Both present as "the click did nothing", which is the same signature as the
+  // 0.1.4 consent bug and takes a session of measurement to tell apart. Now every
+  // one of them goes through `persist` and lands here.
+  const [storageError, setStorageError] = useState<string | null>(null);
   // Whether the viewer has actually run into the capability gate. The gate
   // ITSELF is derived (below), never stored — storing it is what let an earlier
   // draft show a stale "sign in" banner to a viewer who had since signed in but
@@ -114,6 +129,31 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     };
   }, [orchestrator, settings.model]);
 
+  /**
+   * Run one storage interaction and REPORT ITS FAILURE TO THE VIEWER.
+   *
+   * Returns whether it succeeded, so a caller can decline to update the UI for a
+   * change that was not saved — showing a session that does not exist is a
+   * second lie on top of the first.
+   *
+   * `what` completes the sentence "Couldn't …", so it is a verb phrase.
+   */
+  const persist = useCallback(
+    async (what: string, run: () => Promise<unknown>): Promise<boolean> => {
+      try {
+        await run();
+        setStorageError(null);
+        return true;
+      } catch (e) {
+        const detail = e instanceof Error && e.message ? e.message : 'storage is unavailable';
+        setStorageError(`Couldn't ${what} — ${detail}.`);
+        depsRef.current.track('storage_error', { what });
+        return false;
+      }
+    },
+    [],
+  );
+
   // ---- Load sessions on mount ----
   useEffect(() => {
     if (!ready) return;
@@ -130,8 +170,16 @@ export function App({ deps: depsOverride }: AppProps = {}) {
           const msgs = await sessionsLib.getMessages(depsRef.current.appStorage, loaded[0].id);
           if (!cancelled) setMessages(msgs);
         }
-      } catch {
-        // best-effort
+      } catch (e) {
+        // 🔴 NOT SWALLOWED ANY MORE. A failed load leaves the app showing an
+        // EMPTY session list, which is indistinguishable from a new user — and
+        // the next write would then persist that empty list over real history.
+        if (!cancelled) {
+          const detail = e instanceof Error && e.message ? e.message : 'storage is unavailable';
+          setStorageError(
+            `Couldn't load your saved chats — ${detail}. Anything you send now may not be saved.`,
+          );
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -143,37 +191,63 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   useEffect(() => {
     if (!activeSessionId) { setMessages([]); return; }
     let cancelled = false;
-    sessionsLib.getMessages(depsRef.current.appStorage, activeSessionId).then((msgs) => {
-      if (!cancelled) setMessages(msgs);
-    });
+    sessionsLib
+      .getMessages(depsRef.current.appStorage, activeSessionId)
+      .then((msgs) => {
+        if (!cancelled) setMessages(msgs);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        const detail = e instanceof Error && e.message ? e.message : 'storage is unavailable';
+        setStorageError(`Couldn't open that chat — ${detail}.`);
+      });
     return () => { cancelled = true; };
   }, [activeSessionId]);
 
   // ---- Actions ----
+  //
+  // 🔴 EVERY ONE OF THESE WRITES THE WHOLE LIST FROM STATE AND NEVER READS IT
+  // BACK FIRST. See the header of `lib/sessions.ts` for the measurement: the
+  // deployed host cannot serve a block its own write, so a read-modify-write
+  // silently computes from a pre-write snapshot and drops whatever landed in
+  // between. Persist FIRST, update state only on success.
   const createSession = useCallback(async () => {
-    const session = await sessionsLib.createSession(depsRef.current.appStorage, settings.model);
-    setSessions((prev) => [session, ...prev]);
+    const session = sessionsLib.createSessionRecord(settings.model);
+    const next = [session, ...sessions];
+    const ok = await persist('start a new chat', () =>
+      sessionsLib.saveSessions(depsRef.current.appStorage, next),
+    );
+    if (!ok) return;
+    setSessions(next);
     setActiveSessionId(session.id);
     setMessages([]);
+    setSearchResults(null);
+    setSearchQuery(null);
     depsRef.current.track('session_create');
-  }, [settings.model]);
+  }, [settings.model, sessions, persist]);
 
   const deleteSession = useCallback(async (id: string) => {
-    await sessionsLib.deleteSession(depsRef.current.appStorage, id);
-    setSessions((prev) => prev.filter((s) => s.id !== id));
-    if (activeSessionId === id) {
-      const remaining = sessions.filter((s) => s.id !== id);
-      setActiveSessionId(remaining[0]?.id ?? null);
-    }
+    const next = sessionsLib.without(sessions, id);
+    const ok = await persist('delete that chat', async () => {
+      await sessionsLib.saveSessions(depsRef.current.appStorage, next);
+      await sessionsLib.deleteMessages(depsRef.current.appStorage, id);
+    });
+    if (!ok) return;
+    setSessions(next);
+    if (activeSessionId === id) setActiveSessionId(next[0]?.id ?? null);
     depsRef.current.track('session_delete');
-  }, [activeSessionId, sessions]);
+  }, [activeSessionId, sessions, persist]);
 
   const renameSession = useCallback(async (id: string) => {
     const title = prompt('Rename session:');
     if (!title) return;
-    await sessionsLib.renameSession(depsRef.current.appStorage, id, title);
-    setSessions((prev) => prev.map((s) => s.id === id ? { ...s, title } : s));
-  }, []);
+    const next = sessionsLib.withTitle(sessions, id, title);
+    const ok = await persist('rename that chat', () =>
+      sessionsLib.saveSessions(depsRef.current.appStorage, next),
+    );
+    if (!ok) return;
+    setSessions(next);
+  }, [sessions, persist]);
 
   // ── The capability gate, DERIVED. ──────────────────────────────────────────
   // `null` = the send can proceed. Deriving it means the banner corrects itself
@@ -206,9 +280,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   }, [viewer, requestConsent, requestSignIn]);
 
   const selectSession = useCallback(async (id: string) => {
+    // The `[activeSessionId]` effect above loads the messages; doing it here too
+    // was a second concurrent read of the same key for no benefit. Setting the id
+    // is the whole action.
     setActiveSessionId(id);
-    const msgs = await sessionsLib.getMessages(depsRef.current.appStorage, id);
-    setMessages(msgs);
   }, []);
 
   const handleSend = useCallback(async (content: string) => {
@@ -268,15 +343,33 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
     const updatedMessages = [...messages, userMsg];
     setMessages(updatedMessages);
-    await sessionsLib.appendMessage(depsRef.current.appStorage, activeSessionId, userMsg);
 
-    // Auto-title from first user message
+    // ── ONE WRITE OF THE WHOLE ARRAY, AND THE SESSION LIST FROM STATE. ────────
+    //
+    // 🔴 THIS IS THE DEFECT THAT ATE EVERY USER MESSAGE. It used to be
+    // `appendMessage(user)` (read → append → write) followed by
+    // `renameSession` (read → map → write), then `appendMessage(assistant)`
+    // (read → append → write) after the completion. On the deployed host the
+    // second and third reads are served from a cache that the first write never
+    // invalidated, so the assistant write was computed WITHOUT the user message
+    // and replaced it. Read out of the live KV afterwards: two stored elements,
+    // both `assistant`. The auto-title died the same way — written, then
+    // overwritten by a later write off a stale snapshot.
+    //
+    // Both keys are now written from values this component already holds, in one
+    // interaction, with no read in between. Title and timestamp go in the SAME
+    // session write rather than two.
     const session = sessions.find((s) => s.id === activeSessionId);
-    if (session?.title === 'New Chat') {
-      const title = generateTitle(updatedMessages);
-      await sessionsLib.renameSession(depsRef.current.appStorage, activeSessionId, title);
-      setSessions((prev) => prev.map((s) => s.id === activeSessionId ? { ...s, title } : s));
-    }
+    const now = Date.now();
+    const nextSessions =
+      session?.title === 'New Chat'
+        ? sessionsLib.withTitle(sessions, activeSessionId, generateTitle(updatedMessages), now)
+        : sessionsLib.touched(sessions, activeSessionId, now);
+    setSessions(nextSessions);
+    await persist('save your message', async () => {
+      await sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, updatedMessages);
+      await sessionsLib.saveSessions(depsRef.current.appStorage, nextSessions);
+    });
 
     setIsStreaming(true);
     streamingRef.current = true;
@@ -306,19 +399,32 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // HTTP request, never a charge. Failures are swallowed on purpose: an
       // ungrounded answer is much better than no answer, and the rewritten
       // system prompt tells the model to say when nothing was attached.
+      //
+      // 🔴 THE QUERY IS DERIVED, NOT THE RAW SENTENCE. This used to pass
+      // `content` — the user's whole question — straight to a KEYWORD search, so
+      // "What is DreamShaper?" matched on "What is" and returned ten unrelated
+      // models, which were then injected as authoritative catalog context. The
+      // model dutifully reported that the results did not include DreamShaper.
+      // `retrieveForTurn` strips the interrogative and retries narrowed when the
+      // hits look unrelated; see `lib/research.ts` for the A/B against the live
+      // endpoint.
       let catalogContext = '';
       if (researchLib.shouldRetrieve(content)) {
         setIsSearching(true);
         try {
-          const results = await researchLib.searchModels(
+          const turn = await researchLib.retrieveForTurn(
             content,
             { token: token_.raw },
             { limit: researchLib.MAX_CONTEXT_MODELS },
           );
-          catalogContext = researchLib.formatCatalogContext(results, content);
-          // The ResearchPanel then shows exactly what grounded the answer —
-          // the user can SEE the sources rather than take them on trust.
-          setSearchResults(results);
+          catalogContext = researchLib.formatCatalogContext(turn.results, turn.query);
+          // The ResearchPanel then shows exactly what grounded the answer AND
+          // the query that produced it — the user can SEE both rather than take
+          // them on trust. Showing the query is what makes a bad retrieval
+          // visible instead of silently poisoning the answer.
+          setSearchResults(turn.results);
+          setSearchQuery(turn.query);
+          setSearchNarrowed(turn.narrowed);
         } catch {
           catalogContext = '';
         } finally {
@@ -365,14 +471,22 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         });
       }
 
-      // Persist final assistant message
+      // Persist the WHOLE conversation, built from the array this send already
+      // owns — never from a read-back. `updatedMessages` already contains the
+      // user turn, so both halves of the exchange land in one write and neither
+      // can overwrite the other.
       const finalMsg: Message = {
         id: assistantMsg.id,
         role: 'assistant',
         content: replyText ?? '',
         timestamp: assistantMsg.timestamp,
       };
-      await sessionsLib.appendMessage(depsRef.current.appStorage, activeSessionId, finalMsg);
+      await persist('save the reply', () =>
+        sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, [
+          ...updatedMessages,
+          finalMsg,
+        ]),
+      );
     } catch (e) {
       // 🔴 A WITHHOLD IS NOT AN ERROR. The host scanned the generated reply and
       // refused to release it; the Buzz was spent and the capability worked as
@@ -391,6 +505,17 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         }
         return prev;
       });
+      // 🔴 PERSIST THE WITHHOLD TOO. A withheld reply means the capability ran
+      // and the Buzz was SPENT; leaving it unsaved made the whole exchange
+      // disappear on reload, so the viewer saw a charge with nothing to show for
+      // it and no record of why. The user turn is saved either way — that is the
+      // point of writing the full array rather than appending.
+      await persist('save the reply', () =>
+        sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, [
+          ...updatedMessages,
+          { ...assistantMsg, content: body, ...(withheld ? { withheld: true } : {}) },
+        ]),
+      );
       if (withheld) depsRef.current.track('completion_withheld');
     } finally {
       setIsStreaming(false);
@@ -405,6 +530,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     token_.raw,
     sendGate,
     raiseGate,
+    persist,
   ]);
 
   const handleStopStream = useCallback(() => {
@@ -449,6 +575,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     try {
       const results = await researchLib.searchModels(query, { token: token_.raw });
       setSearchResults(results);
+      // A panel search is already keywords — it is shown VERBATIM, and never
+      // marked "narrowed", because nothing rewrote it.
+      setSearchQuery(query);
+      setSearchNarrowed(false);
     } catch {
       setSearchResults(null);
     } finally {
@@ -469,9 +599,6 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       return next;
     });
   }, []);
-
-  const buzzTotal =
-    buzz.balance != null ? buzz.balance.blue + buzz.balance.green + buzz.balance.yellow : null;
 
   // ---- Render ----
   if (!ready) {
@@ -504,6 +631,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
           justify="space-between"
           align="center"
           gap={12}
+          data-testid="app-header"
           style={{
             padding: '10px 16px',
             borderBottom: `1px solid ${token.border}`,
@@ -531,12 +659,17 @@ export function App({ deps: depsOverride }: AppProps = {}) {
               <span style={{ ...mutedText, fontSize: 11 }}>AI Research Assistant</span>
             </Stack>
           </Group>
+          {/*
+            🔴 BOTH HEADER CONTROLS ARE SIBLINGS IN THIS FLEX ROW, AND THAT IS
+            LOAD-BEARING. The Research toggle used to be rendered by
+            `ResearchPanel` as `position: absolute; right: 8; top: 8`, which put
+            it on top of ⚙️ — `elementFromPoint` at the centre of
+            `settings-button` returned `open-research`, so Settings could not be
+            opened at all. Laid out by flex, neither is out of flow and they
+            cannot overlap at any width. Do not absolutely position either.
+          */}
           <Group gap={8}>
-            {buzzTotal != null && (
-              <Badge variant="light" size="sm" data-testid="buzz-balance">
-                {buzzTotal.toLocaleString()} Buzz
-              </Badge>
-            )}
+            <ResearchToggle isOpen={researchOpen} onToggle={() => setResearchOpen(!researchOpen)} />
             <Button
               variant="subtle"
               size="sm"
@@ -547,6 +680,34 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             </Button>
           </Group>
         </Group>
+
+        {/* Storage failure — never silent. See `persist`. */}
+        {storageError && (
+          <div
+            data-testid="storage-error"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              padding: '10px 16px',
+              borderBottom: `1px solid ${token.border}`,
+              background: token.primaryLight,
+              fontSize: 13,
+              flexShrink: 0,
+            }}
+          >
+            <span>{storageError}</span>
+            <Button
+              size="sm"
+              variant="light"
+              data-testid="storage-error-dismiss"
+              onClick={() => setStorageError(null)}
+            >
+              Dismiss
+            </Button>
+          </div>
+        )}
 
         {/* Main content */}
         <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
@@ -639,11 +800,13 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             )}
           </div>
 
-          {/* Research panel */}
+          {/* Research panel — the toggle for it lives in the header. */}
           <ResearchPanel
             isOpen={researchOpen}
             onToggle={() => setResearchOpen(!researchOpen)}
             searchResults={searchResults}
+            lastQuery={searchQuery}
+            narrowed={searchNarrowed}
             isSearching={isSearching}
             onSearch={handleResearchSearch}
             onInsert={handleInsertResearch}

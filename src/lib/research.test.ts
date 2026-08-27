@@ -9,6 +9,11 @@ import {
   shouldRetrieve,
   clearCache,
   modelUrl,
+  deriveSearchQuery,
+  resultsLookRelated,
+  narrowQuery,
+  retrieveForTurn,
+  MAX_QUERY_TERMS,
   MAX_CONTEXT_CHARS,
   MAX_DESCRIPTION_CHARS,
   MAX_CONTEXT_MODELS,
@@ -301,5 +306,164 @@ describe('research — formatCatalogContext', () => {
     const ctx = formatCatalogContext({ items: [BLOCK_MODEL_ITEM_HIDDEN_STATS] });
     expect(ctx).toContain('[id 4321]');
     expect(ctx).toContain('LORA');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Query derivation.
+//
+// 🔴 THE EXPECTATIONS ARE LITERALS TAKEN FROM MEASUREMENT, NOT FROM THE
+// FUNCTION. Each case below was A/B'd against the LIVE `/api/v1/blocks/models`
+// with a minted block token on 2026-08-27, reading the status code (both arms
+// HTTP 200, ten items — a bad query and a good one are indistinguishable by
+// count alone, which is exactly why the Research panel now shows the query):
+//
+//   "What is DreamShaper?"          → top hit "He is Unaware of What is Occuring…"
+//   "DreamShaper"                   → top hit "DreamShaper"
+//   "tell me about realistic vision" → top hit "Please Tell Me! Galko-chan! / illustrious"
+//   "realistic vision"              → top hit "Realistic Vision V6.0 B1"
+//   "best anime lora"               → top hit "Best Studio Ghibli LoRA Style"
+//   "anime lora"                    → top hit "Anime LoRA - Makoto Shinkai Anime Style"
+//
+// The right-hand column is what this function must produce from the left.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('deriveSearchQuery', () => {
+  it.each([
+    ['What is DreamShaper?', 'DreamShaper'],
+    ['tell me about realistic vision', 'realistic vision'],
+    ['best anime lora', 'anime lora'],
+    ['Which checkpoint is good for anime?', 'checkpoint anime'],
+    ['how do I train a lora', 'train lora'],
+  ])('%j → %j', (input, expected) => {
+    expect(deriveSearchQuery(input)).toBe(expected);
+  });
+
+  it('a quoted phrase wins outright, stopwords and all', () => {
+    // Someone who quotes has told us the exact string; no heuristic beats that.
+    expect(deriveSearchQuery('what about "How to Train Your Dragon" style?')).toBe(
+      'How to Train Your Dragon',
+    );
+  });
+
+  it('falls back to the original text rather than an empty query', () => {
+    // 🔴 AN EMPTY `query` MAKES THE ENDPOINT RETURN AN UNFILTERED LISTING, which
+    // looks like a result set and is worse than an over-broad search.
+    expect(deriveSearchQuery('what is it?')).toBe('what is it');
+    expect(deriveSearchQuery('   ')).toBe('');
+  });
+
+  it('caps the term count', () => {
+    const long = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet';
+    expect(deriveSearchQuery(long).split(' ')).toHaveLength(MAX_QUERY_TERMS);
+  });
+
+  it('leaves catalog vocabulary alone', () => {
+    // `model`, `lora`, `checkpoint` are what a catalog search is FOR — a
+    // stoplist that ate them would be worse than the sentence it replaced.
+    expect(deriveSearchQuery('show me a pony checkpoint model')).toBe('pony checkpoint model');
+  });
+});
+
+describe('resultsLookRelated', () => {
+  const named = (name: string): ModelSearchResult => ({
+    items: [{ ...BLOCK_MODEL_ITEM, name }],
+  });
+
+  it('is false when no result name carries any query term', () => {
+    expect(resultsLookRelated(named('He is Unaware of What is Occuring'), 'DreamShaper')).toBe(
+      false,
+    );
+  });
+
+  it('is true on a substring hit', () => {
+    expect(resultsLookRelated(named('DreamShaper XL'), 'dreamshaper')).toBe(true);
+  });
+
+  it('is false on an empty result set', () => {
+    expect(resultsLookRelated({ items: [] }, 'DreamShaper')).toBe(false);
+  });
+
+  it('makes no claim when there is nothing to compare', () => {
+    // Short tokens are dropped, so a query of only short tokens has no terms —
+    // "unrelated" is not a statement we are entitled to make there.
+    expect(resultsLookRelated(named('anything'), 'a of')).toBe(true);
+    expect(resultsLookRelated(named('anything'), '')).toBe(true);
+  });
+});
+
+describe('narrowQuery', () => {
+  it('returns the most distinctive term', () => {
+    expect(narrowQuery('anime dreamshaper')).toBe('dreamshaper');
+  });
+
+  it('returns null when there is nothing to narrow', () => {
+    expect(narrowQuery('dreamshaper')).toBeNull();
+    expect(narrowQuery('')).toBeNull();
+  });
+});
+
+describe('retrieveForTurn', () => {
+  const auth = { token: 'block-jwt-test' };
+
+  it('sends the DERIVED query, not the sentence', async () => {
+    const api = fakeBlockCatalogApi();
+    try {
+      clearCache();
+      const turn = await retrieveForTurn('What is DreamShaper?', auth);
+      expect(turn.query).toBe('DreamShaper');
+      // The wire is the contract: assert what was actually requested.
+      expect(api.calls).toHaveLength(1);
+      expect(decodeURIComponent(api.calls[0].url)).toContain('query=DreamShaper');
+      expect(decodeURIComponent(api.calls[0].url)).not.toContain('What is');
+    } finally {
+      api.restore();
+    }
+  });
+
+  it('retries narrowed when the first hits look unrelated, and keeps the better set', async () => {
+    let call = 0;
+    const api = fakeBlockCatalogApi({
+      models: () => {
+        call += 1;
+        const body =
+          call === 1
+            ? { items: [{ ...BLOCK_MODEL_ITEM, name: 'Totally Unrelated' }] }
+            : { items: [{ ...BLOCK_MODEL_ITEM, name: 'DreamShaper XL' }] };
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      },
+    });
+    try {
+      clearCache();
+      const turn = await retrieveForTurn('anime dreamshaper models', auth);
+      expect(turn.narrowed).toBe(true);
+      expect(turn.query).toBe('dreamshaper');
+      expect(turn.results?.items[0].name).toBe('DreamShaper XL');
+      expect(api.calls).toHaveLength(2);
+    } finally {
+      api.restore();
+    }
+  });
+
+  it('keeps the FIRST result when the narrow retry is no better', async () => {
+    // Otherwise the panel would show a query string that explains nothing about
+    // the (broader) results beside it.
+    const api = fakeBlockCatalogApi({
+      models: () =>
+        new Response(JSON.stringify({ items: [{ ...BLOCK_MODEL_ITEM, name: 'Nothing Like It' }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    });
+    try {
+      clearCache();
+      const turn = await retrieveForTurn('anime dreamshaper models', auth);
+      expect(turn.narrowed).toBe(false);
+      expect(turn.query).toBe('anime dreamshaper models');
+    } finally {
+      api.restore();
+    }
   });
 });
