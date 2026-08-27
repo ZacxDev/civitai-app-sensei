@@ -2,7 +2,18 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # 🔴 `trunk`, NOT `main` — this repo's default branch is `trunk`, and a
+    # `branches:` filter naming a branch that does not exist matches nothing.
+    # It is silent: there is no warning, no skipped run, no red X. The trigger
+    # simply never fires, and the workflow LOOKS healthy because every PR run
+    # comes from `pull_request:` below.
+    #
+    # Measured 2026-08-27, before this fix: `gh run list --branch trunk`
+    # returned ZERO runs over the repo's entire history, while the unfiltered
+    # listing showed only `pull_request` events. Not one `push` run had ever
+    # happened. So nothing verified the merged result of a squash — only the
+    # branch as it looked before merging, which is a different tree.
+    branches: [trunk]
   pull_request:
 
 jobs:
