@@ -27,8 +27,26 @@ export interface ModelConfig {
  * `extractText` does not read `tool_calls`, so no model reachable from a block
  * can make a tool call regardless of what it supports natively.
  *
- * Costs are indicative only — the block is charged a FLAT 1 Buzz per call
- * (`prepaidFixed`), independent of model and token count.
+ * 🔴 THE "FLAT 1 BUZZ" CLAIM THAT USED TO BE HERE WAS FALSE, AND THE COSTS
+ * BELOW ARE NOT WHAT YOU PAY. The step is registered `prepaidFixed`, but the
+ * platform reprices these models from the PROVIDER'S LIVE per-token rate against
+ * the real conversation, floored at 1 Buzz — so the charge moves with the model,
+ * the conversation length and `maxTokens`.
+ *
+ * Measured 2026-08-27 by `whatif` quote on one identical 4,680-char conversation
+ * at `maxTokens: 2048` — free, no Buzz spent:
+ *
+ *   deepseek/deepseek-chat                        4 Buzz
+ *   cognitivecomputations/dolphin-mistral-24b…    3 Buzz
+ *   openai/gpt-4o-mini                            2 Buzz
+ *
+ * and it moves with `maxTokens` on the same model: 1 at 256, 4 at 2048, 6 at
+ * 4096 (`MAX_OUTPUT_TOKENS`), 86 at 64000. So it depends on BOTH the model and
+ * the token budget, and the platform's own declared `CHAT_COMPLETION_PRICE_BUZZ
+ * = 1` is that floor, not the price (clawgate #386).
+ *
+ * `costPer1kInput`/`costPer1kOutput` below are indicative USD figures for
+ * display and are not re-measured; do not compute a Buzz charge from them.
  */
 export const AVAILABLE_MODELS: ModelConfig[] = [
   {

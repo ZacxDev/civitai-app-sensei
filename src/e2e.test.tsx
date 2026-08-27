@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { App } from './App.js';
 import { fakeAppStorage, fakeBlockCatalogApi } from './test-helpers.js';
 import { clearCache } from './lib/research.js';
@@ -78,8 +78,16 @@ describe('E2E: Sensei App', () => {
 
     fireEvent.click(screen.getByTestId('send-button'));
 
+    // 🔴 SCOPED TO THE MESSAGE LIST, and the reason is a real behaviour change:
+    // since 0.1.5 the auto-title actually LANDS, so "Hello Sensei" now appears
+    // in the sidebar as well as in the bubble and a bare `getByText` matches
+    // two nodes. Before, the title write was silently overwritten by a later
+    // read-modify-write and the sidebar stayed "New Chat" — this assertion was
+    // passing BECAUSE of the defect.
     await waitFor(() => {
-      expect(screen.getByText('Hello Sensei')).toBeTruthy();
+      expect(
+        within(screen.getByTestId('messages-container')).getByText('Hello Sensei'),
+      ).toBeTruthy();
     });
 
     await waitFor(() => {

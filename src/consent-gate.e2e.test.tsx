@@ -223,8 +223,13 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
 
     fireEvent.click(screen.getByTestId('send-button'));
 
+    // Scoped to the message list: since 0.1.5 the auto-title lands, so the same
+    // text is also the session's name in the sidebar. See the note in
+    // `e2e.test.tsx` — the unscoped form was passing because of a defect.
     await waitFor(() => {
-      expect(screen.getByText('Hello Sensei')).toBeTruthy();
+      expect(
+        within(screen.getByTestId('messages-container')).getByText('Hello Sensei'),
+      ).toBeTruthy();
     });
     await waitFor(
       () => {

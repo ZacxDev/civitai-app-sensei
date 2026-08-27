@@ -362,6 +362,174 @@ export function shouldRetrieve(text: string): boolean {
   return true;
 }
 
+// ── Query derivation ─────────────────────────────────────────────────────────
+//
+// 🔴 THE USER'S SENTENCE IS NOT A SEARCH QUERY, AND SENDING IT WAS A REAL BUG.
+// `/api/v1/blocks/models` is a KEYWORD search, so an interrogative phrasing
+// matches on the interrogative. Measured against the live endpoint with a
+// minted block token, both HTTP 200:
+//
+//   "What is DreamShaper?" → 10 items, top hit "He is Unaware of What is…"
+//   "DreamShaper"          → 10 items, top hit DreamShaper (1.67M downloads)
+//
+// The first set was then injected as authoritative catalog context, which is why
+// the reply read "The search results did not include DreamShaper." The model was
+// telling the truth about the garbage it was given.
+//
+// This is deliberately a CLOSED, enumerated stopword list rather than a
+// classifier, for the same reason `NON_CATALOG_TURNS` is: it must fail toward
+// searching for MORE, not less. Anything not listed survives into the query.
+
+/**
+ * Function words, interrogatives and asking-verbs. Content words a catalog
+ * search can actually use — `model`, `lora`, `checkpoint`, `anime`, a name —
+ * are deliberately ABSENT, so they are never stripped.
+ */
+const QUERY_STOPWORDS = new Set([
+  // interrogatives
+  'what', 'whats', "what's", 'which', 'who', 'whos', "who's", 'where', 'when',
+  'why', 'how', 'whose', 'whom',
+  // copulas / auxiliaries
+  'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am',
+  'do', 'does', 'did', 'doing', 'done',
+  'can', 'could', 'will', 'would', 'shall', 'should', 'may', 'might', 'must',
+  'have', 'has', 'had',
+  // asking verbs — the user is addressing the assistant, not the catalog
+  'tell', 'show', 'find', 'explain', 'describe', 'know', 'give', 'get',
+  'recommend', 'suggest', 'search', 'look', 'looking', 'help',
+  // pronouns / determiners / prepositions
+  'i', 'me', 'my', 'mine', 'you', 'your', 'yours', 'we', 'us', 'our', 'it',
+  'its', 'they', 'them', 'their', 'there', 'this', 'that', 'these', 'those',
+  'a', 'an', 'the', 'of', 'for', 'to', 'in', 'on', 'at', 'by', 'with', 'from',
+  'about', 'into', 'over', 'under', 'up', 'out', 'any', 'some', 'more', 'most',
+  'and', 'or', 'but', 'if', 'so', 'than', 'then', 'as',
+  // politeness / filler
+  'please', 'thanks', 'thank', 'hey', 'hi', 'hello', 'ok', 'okay', 'just',
+  // evaluative filler — "best anime lora" wants ANIME LORA, and leaving "best"
+  // in makes the search match model NAMES containing the word "Best". Measured
+  // against the live endpoint: "best anime lora" → "Best Studio Ghibli LoRA
+  // Style"; "anime lora" → "Anime LoRA - Makoto Shinkai Anime Style".
+  // 'top' is deliberately NOT here — it is a real tag on this catalog.
+  'best', 'better', 'good', 'great', 'nice', 'cool', 'favourite', 'favorite',
+  'popular',
+]);
+
+/**
+ * How many terms survive into the query. A keyword search degrades as terms are
+ * added — every extra token is another way to match something irrelevant — and
+ * a user sentence long enough to exceed this is one whose subject is in the
+ * first few content words anyway.
+ */
+export const MAX_QUERY_TERMS = 8;
+
+/** Split into comparable lowercase terms. Shared by derivation and scoring. */
+function toTerms(text: string): string[] {
+  return text
+    .replace(/[?!.,;:()[\]{}"“”'’`]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/**
+ * Turn a conversational turn into a keyword query.
+ *
+ * A QUOTED PHRASE WINS OUTRIGHT — someone who writes `"Pony Diffusion"` has told
+ * us the exact string they mean, and no amount of stopword logic beats that.
+ *
+ * FAILS BACK TO THE ORIGINAL TEXT rather than to an empty query: an empty
+ * `query` param makes the endpoint return an unfiltered listing, which is worse
+ * than an over-broad search because it looks like a result set.
+ */
+export function deriveSearchQuery(text: string): string {
+  const cleaned = text.trim().replace(/\s+/g, ' ');
+  if (!cleaned) return '';
+
+  const quoted = cleaned.match(/["“'’]([^"“”'’]{2,80})["”'’]/);
+  if (quoted?.[1]?.trim()) return quoted[1].trim();
+
+  const kept = toTerms(cleaned).filter((t) => !QUERY_STOPWORDS.has(t.toLowerCase()));
+  if (kept.length === 0) return cleaned.replace(/[?!.,;:]+$/g, '').trim();
+  return kept.slice(0, MAX_QUERY_TERMS).join(' ');
+}
+
+/**
+ * Does this result set plausibly answer this query?
+ *
+ * Deliberately a WEAK, deterministic test — one result whose NAME contains one
+ * query term — not a relevance model. It exists to catch the one failure that
+ * actually happened (a query whose terms appear nowhere in any hit) and must not
+ * reject a legitimately fuzzy match.
+ *
+ * Returns `true` for an empty query or an empty term set, because "unrelated" is
+ * not a claim we can make there.
+ */
+export function resultsLookRelated(
+  results: ModelSearchResult | null | undefined,
+  query: string,
+): boolean {
+  const terms = toTerms(query)
+    .map((t) => t.toLowerCase())
+    .filter((t) => t.length >= 3);
+  if (terms.length === 0) return true;
+  const items = results?.items ?? [];
+  if (items.length === 0) return false;
+  return items.some((m) => {
+    const name = m.name.toLowerCase();
+    return terms.some((t) => name.includes(t));
+  });
+}
+
+/**
+ * The narrower retry: the single most distinctive term.
+ *
+ * Longest-token is a crude proxy for distinctiveness and that is on purpose —
+ * it needs no corpus, no scoring and no network, and the case it exists for is
+ * a multi-word query where one word is a model name. Returns `null` when there
+ * is nothing to narrow, so the caller keeps the first result rather than
+ * re-running the same search.
+ */
+export function narrowQuery(query: string): string | null {
+  const terms = toTerms(query).filter((t) => t.length >= 3);
+  if (terms.length < 2) return null;
+  const longest = terms.reduce((a, b) => (b.length > a.length ? b : a));
+  return longest === query.trim() ? null : longest;
+}
+
+/** What actually grounded a turn: the query used, and what it returned. */
+export interface TurnRetrieval {
+  /** The query SENT to the endpoint — not the user's sentence. */
+  query: string;
+  results: ModelSearchResult | null;
+  /** True when the first query looked unrelated and the narrow retry was used. */
+  narrowed: boolean;
+}
+
+/**
+ * Retrieve catalog context for one conversational turn: derive the query, search,
+ * and retry once narrowed if the hits look unrelated to what was asked.
+ *
+ * At most TWO requests, and never any Buzz — retrieval is plain HTTP.
+ */
+export async function retrieveForTurn(
+  text: string,
+  auth: CatalogAuth,
+  opts: SearchModelsOptions = {},
+): Promise<TurnRetrieval> {
+  const query = deriveSearchQuery(text);
+  const results = await searchModels(query, auth, opts);
+  if (resultsLookRelated(results, query)) return { query, results, narrowed: false };
+
+  const narrow = narrowQuery(query);
+  if (!narrow) return { query, results, narrowed: false };
+
+  const retried = await searchModels(narrow, auth, opts);
+  // Keep the retry ONLY if it is actually better. A narrow query that also
+  // misses leaves the viewer with a query string in the panel that explains
+  // nothing about the (broader) results they can see.
+  if (resultsLookRelated(retried, narrow)) return { query: narrow, results: retried, narrowed: true };
+  return { query, results, narrowed: false };
+}
+
 // ── Context assembly ─────────────────────────────────────────────────────────
 
 /**

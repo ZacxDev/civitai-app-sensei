@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { ResearchPanel } from './ResearchPanel.js';
+import { ResearchPanel, ResearchToggle } from './ResearchPanel.js';
 import type { ModelSearchResult } from '../lib/research.js';
 import { BLOCK_MODEL_ITEM, BLOCK_MODEL_ITEM_HIDDEN_STATS } from '../test-helpers.js';
 
@@ -14,8 +14,12 @@ import { BLOCK_MODEL_ITEM, BLOCK_MODEL_ITEM_HIDDEN_STATS } from '../test-helpers
 const REAL_RESULTS: ModelSearchResult = { items: [BLOCK_MODEL_ITEM] };
 
 describe('ResearchPanel', () => {
-  it('renders toggle button when closed', () => {
-    render(
+  it('renders NOTHING when closed — the toggle is a separate, header-owned control', () => {
+    // 🔴 THIS USED TO ASSERT THE OPPOSITE, and that is why the bug shipped. The
+    // closed branch returned an absolutely-positioned button that landed on top
+    // of the ⚙️ settings control, making Settings unreachable. The panel no
+    // longer owns a control it cannot position safely.
+    const { container } = render(
       <ResearchPanel
         isOpen={false}
         onToggle={vi.fn()}
@@ -25,7 +29,22 @@ describe('ResearchPanel', () => {
         onInsert={vi.fn()}
       />,
     );
-    expect(screen.getByTestId('open-research')).toBeTruthy();
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByTestId('open-research')).toBeNull();
+  });
+
+  it('ResearchToggle renders the control, in normal flow', () => {
+    const onToggle = vi.fn();
+    render(<ResearchToggle isOpen={false} onToggle={onToggle} />);
+    const btn = screen.getByTestId('open-research');
+    expect(btn.style.position).toBe('');
+    fireEvent.click(btn);
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('ResearchToggle reports its state to assistive tech', () => {
+    render(<ResearchToggle isOpen={true} onToggle={vi.fn()} />);
+    expect(screen.getByTestId('open-research').getAttribute('aria-pressed')).toBe('true');
   });
 
   it('renders panel when open', () => {
@@ -157,5 +176,56 @@ describe('ResearchPanel', () => {
       />,
     );
     expect(screen.getByText('No results found.')).toBeTruthy();
+  });
+});
+
+describe('ResearchPanel — the query actually used', () => {
+  it('shows the query that was SENT, not the sentence that was typed', () => {
+    // 🔴 #387/5. A chat turn is rewritten into keywords before it reaches the
+    // catalog; when that rewrite is wrong the reply is grounded in the wrong
+    // models with nothing on screen to say so. This line is the only place a
+    // viewer can see it.
+    render(
+      <ResearchPanel
+        isOpen={true}
+        onToggle={vi.fn()}
+        searchResults={REAL_RESULTS}
+        lastQuery="DreamShaper"
+        isSearching={false}
+        onSearch={vi.fn()}
+        onInsert={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('research-query').textContent).toContain('DreamShaper');
+  });
+
+  it('says so when the narrowed retry was the one used', () => {
+    render(
+      <ResearchPanel
+        isOpen={true}
+        onToggle={vi.fn()}
+        searchResults={REAL_RESULTS}
+        lastQuery="dreamshaper"
+        narrowed
+        isSearching={false}
+        onSearch={vi.fn()}
+        onInsert={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('research-query').textContent).toContain('narrowed');
+  });
+
+  it('shows no query line before anything has been searched', () => {
+    render(
+      <ResearchPanel
+        isOpen={true}
+        onToggle={vi.fn()}
+        searchResults={null}
+        isSearching={false}
+        onSearch={vi.fn()}
+        onInsert={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('research-query')).toBeNull();
   });
 });
