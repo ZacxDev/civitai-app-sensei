@@ -11,6 +11,20 @@ export interface ChatAreaProps {
   onStopStream?: () => void;
   onRegenerate?: (messageId: string) => void;
   onInsertResearch?: (text: string) => void;
+  /**
+   * Non-null when the app currently CANNOT send — the viewer is anonymous, or
+   * the block token is missing the consent-gated spend scope. Supplied by the
+   * parent because only it can see the token.
+   *
+   * 🔴 REQUIRED, and deliberately not optional-with-a-default. The safe default
+   * would have to be `null` ("sending is fine"), so a caller who simply forgot
+   * the prop would silently get the 0.1.0-0.1.3 behaviour back — a blocked send
+   * that clears the composer and does nothing. Required makes that a compile
+   * error instead of a production regression nobody can see.
+   */
+  sendGate: 'signin' | 'consent' | null;
+  /** Ask the host for whatever `sendGate` says is missing. Required for the same reason. */
+  onGatedSend: () => void;
 }
 
 export function ChatArea({
@@ -19,6 +33,8 @@ export function ChatArea({
   onSend,
   onStopStream,
   onRegenerate,
+  sendGate,
+  onGatedSend,
 }: ChatAreaProps) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -35,6 +51,25 @@ export function ChatArea({
     const trimmed = input.trim();
     if (!trimmed || isStreaming || sendingRef.current) return;
 
+    // 🔴 THE GATE COMES FIRST — BEFORE THE DEDUP AND BEFORE THE CLEAR.
+    //
+    // Before the clear, because clearing ahead of a parent that could silently
+    // refuse is what made a blocked send look like "Send is dead": the text
+    // vanished and nothing replaced it. Keeping the text in the box is also
+    // what lets the parent hold no state — nothing to stash, misroute or lose.
+    //
+    // Before the DEDUP, because the dedup returns silently too. Whenever
+    // `messages` already ends with a user message — after a gated Regenerate,
+    // or in any session reloaded from storage after a failed completion, since
+    // the assistant reply is only persisted on success — retyping that same
+    // text hit the dedup FIRST and the viewer got no consent prompt, no
+    // banner, and no feedback of any kind. That is this bug reappearing behind
+    // a different guard, so the ordering here is load-bearing, not cosmetic.
+    if (sendGate) {
+      onGatedSend();
+      return;
+    }
+
     const lastMsg = messages[messages.length - 1];
     if (lastMsg?.role === 'user' && lastMsg.content === trimmed) return;
 
@@ -44,7 +79,7 @@ export function ChatArea({
     // Reset after a tick so the next event-loop turn sees the guard cleared
     // (isStreaming will take over as the primary guard once the request starts)
     setTimeout(() => { sendingRef.current = false; }, 0);
-  }, [input, isStreaming, messages, onSend]);
+  }, [input, isStreaming, messages, onSend, sendGate, onGatedSend]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

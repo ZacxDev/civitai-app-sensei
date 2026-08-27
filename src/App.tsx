@@ -7,6 +7,8 @@ import {
   useBlockToken,
   useBuzzBalance,
   useBuzzWorkflow,
+  useRequestConsent,
+  useRequestSignIn,
 } from '@civitai/blocks-react';
 import type { UseAppStorage } from '@civitai/blocks-react';
 import { Badge, Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
@@ -14,7 +16,7 @@ import { Badge, Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
 import { palette, pageStyle, token, radius, mutedText } from './theme.js';
 import type { AppSettings, Message, Session } from './types.js';
 import { DEFAULT_SETTINGS } from './types.js';
-import { hasGenerateScope } from './scopes.js';
+import { AI_WRITE_BUDGETED, BUZZ_READ_SELF, hasGenerateScope } from './scopes.js';
 import { createOrchestrator } from './lib/orchestrator.js';
 import { TextOutputWithheldError } from './lib/orchestrator-bridge.js';
 import * as sessionsLib from './lib/sessions.js';
@@ -43,6 +45,8 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const appStorageHook = useAppStorage();
   const buzz = useBuzzBalance();
   const { track } = useBlockAnalytics();
+  const { requestConsent } = useRequestConsent();
+  const { requestSignIn } = useRequestSignIn();
   const rootRef = useRef<HTMLDivElement>(null);
   useBlockResize(rootRef);
 
@@ -72,6 +76,11 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const [searchResults, setSearchResults] = useState<researchLib.ModelSearchResult | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Whether the viewer has actually run into the capability gate. The gate
+  // ITSELF is derived (below), never stored — storing it is what let an earlier
+  // draft show a stale "sign in" banner to a viewer who had since signed in but
+  // still lacked the spend scope, with nothing to escalate it.
+  const [gateRaised, setGateRaised] = useState(false);
 
   const streamingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -166,6 +175,36 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setSessions((prev) => prev.map((s) => s.id === id ? { ...s, title } : s));
   }, []);
 
+  // ── The capability gate, DERIVED. ──────────────────────────────────────────
+  // `null` = the send can proceed. Deriving it means the banner corrects itself
+  // the instant the host re-mints: a granted scope clears it with no effect and
+  // no bookkeeping, and a viewer who signs in but still lacks the spend scope
+  // escalates 'signin' → 'consent' on its own rather than sitting on a dead
+  // end. Order matters — an anonymous viewer cannot grant a scope.
+  const sendGate: null | 'signin' | 'consent' = !viewer
+    ? 'signin'
+    : !canGenerate
+      ? 'consent'
+      : null;
+
+  // Ask the host for whatever is missing. Safe to call repeatedly — it is the
+  // banner's button as well as the send path, and the host treats each message
+  // independently.
+  const raiseGate = useCallback(() => {
+    setGateRaised(true);
+    if (!viewer) {
+      requestSignIn();
+      depsRef.current.track('signin_requested');
+      return;
+    }
+    // Ask for both consent-gated scopes the manifest declares: the reply spends
+    // Buzz and the composer shows the balance beside it. The hint is advisory —
+    // the host grants the missing set it computed at mint — but asking for what
+    // the app actually uses keeps the two in step.
+    requestConsent({ scopes: [AI_WRITE_BUDGETED, BUZZ_READ_SELF] });
+    depsRef.current.track('consent_requested');
+  }, [viewer, requestConsent, requestSignIn]);
+
   const selectSession = useCallback(async (id: string) => {
     setActiveSessionId(id);
     const msgs = await sessionsLib.getMessages(depsRef.current.appStorage, id);
@@ -175,19 +214,51 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const handleSend = useCallback(async (content: string) => {
     if (!activeSessionId || isStreaming) return;
 
+    // The gate is checked before the dedup here for the same reason as in
+    // `ChatArea` — a silent dedup return ahead of it re-hides the whole defect.
+    // This is NOT redundant with ChatArea's copy: `handleRegenerate` and
+    // `handleInsertResearch` call this directly and never touch the composer,
+    // so for those two paths this is the ONLY gate, and it stands between a
+    // missing spend scope and `submitChatCompletion`.
+    if (sendGate) {
+      raiseGate();
+      return;
+    }
+
     const lastMsg = messages[messages.length - 1];
     if (lastMsg?.role === 'user' && lastMsg.content === content) return;
 
-    if (!viewer) {
-      // Not signed in — the host will handle the consent flow
-      return;
-    }
-
-    if (!canGenerate) {
-      // Need consent
-      return;
-    }
-
+    // ── THE CAPABILITY GATE. ──────────────────────────────────────────────────
+    //
+    // 🔴 THIS USED TO BE TWO BARE `return`s, AND THAT WAS THE 0.1.0–0.1.3
+    // "SEND IS DEAD" DEFECT. `ChatArea` cleared the composer BEFORE this
+    // handler could refuse, so a bare `return` presented as: the text vanishes,
+    // no bubble renders, no error appears, no Buzz moves — and the viewer was
+    // given no way to fix it, because the app never asked for what it was
+    // missing.
+    //
+    // The gate that actually fires in production is `!canGenerate`.
+    // `ai:write:budgeted` is a CONSENT-GATED scope: the platform withholds it
+    // from the block token until the viewer has granted it, and simply opening
+    // the app does not grant it. Storage scopes are NOT consent-gated, which is
+    // why sessions kept saving and the app looked healthy while chat was dead.
+    //
+    // Both requests are FIRE-AND-FORGET — the host never replies. It answers a
+    // grant by re-minting the token, so the only observable is
+    // `useBlockToken().scopes` gaining the entry.
+    //
+    // 🔴 NOTHING IS HELD HERE, DELIBERATELY. An earlier version of this fix
+    // stashed the message and auto-sent it when the scope arrived. That
+    // re-created the very defect this exists to remove, four ways: the stash
+    // carried no session id, so a viewer who switched sessions while the
+    // consent prompt was open got their question — and their Buzz — delivered
+    // into the wrong conversation; deleting the session dropped the message
+    // with no signal at all; a second attempt silently overwrote the first; and
+    // on the sign-in branch the host reloads the page, which destroys the stash
+    // regardless. `ChatArea` now keeps the viewer's text in the composer
+    // instead. Nothing to lose, misroute, duplicate, or promise.
+    //
+    // The gate itself is checked at the top of this function, above the dedup.
     const userMsg: Message = {
       id: generateMessageId(),
       role: 'user',
@@ -325,7 +396,16 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       setIsStreaming(false);
       streamingRef.current = false;
     }
-  }, [activeSessionId, isStreaming, messages, settings, sessions, canGenerate, viewer, token_.raw]);
+  }, [
+    activeSessionId,
+    isStreaming,
+    messages,
+    settings,
+    sessions,
+    token_.raw,
+    sendGate,
+    raiseGate,
+  ]);
 
   const handleStopStream = useCallback(() => {
     streamingRef.current = false;
@@ -335,6 +415,24 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   }, [orchestrator]);
 
   const handleRegenerate = useCallback(async (messageId: string) => {
+    // 🔴 GATE BEFORE THE DESTRUCTIVE SLICE. The slice below removes the
+    // assistant reply from view, and `handleSend` may then refuse — which used
+    // to leave the viewer with their reply deleted and nothing sent. Asking
+    // first means a refused Regenerate changes nothing at all.
+    if (sendGate) {
+      raiseGate();
+      return;
+    }
+    // 🔴 AND EVERY OTHER REASON `handleSend` CAN REFUSE, for the same reason.
+    // Gating only on `sendGate` closed half the hole: the slice below also ran
+    // ahead of `handleSend`'s own `!activeSessionId || isStreaming` refusal.
+    // Clicking Regenerate on a reply that is still streaming therefore removed
+    // that reply from view, re-sent nothing, and let the in-flight completion
+    // finish and persist — so the viewer paid Buzz for an answer that vanished
+    // from the screen and came back only on reload. Every refusal must be
+    // asked BEFORE anything is destroyed.
+    if (!activeSessionId || isStreaming) return;
+
     // Find the last user message before this assistant message
     const msgIdx = messages.findIndex((m) => m.id === messageId);
     if (msgIdx < 0) return;
@@ -344,7 +442,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       setMessages((prev) => prev.slice(0, msgIdx));
       await handleSend(lastUserMsg.content);
     }
-  }, [messages, handleSend]);
+  }, [messages, handleSend, sendGate, raiseGate, activeSessionId, isStreaming]);
 
   const handleResearchSearch = useCallback(async (query: string) => {
     setIsSearching(true);
@@ -465,14 +563,61 @@ export function App({ deps: depsOverride }: AppProps = {}) {
           {/* Chat area */}
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             {activeSessionId ? (
-              <ChatArea
-                messages={messages}
-                isStreaming={isStreaming}
-                onSend={handleSend}
-                onStopStream={handleStopStream}
-                onRegenerate={handleRegenerate}
-                onInsertResearch={handleInsertResearch}
-              />
+              <>
+                {gateRaised && sendGate && (
+                  // Rendered from the DERIVED gate, so it disappears by itself
+                  // the moment the host re-mints with the scope — there is no
+                  // "clear the banner" path that can be missed. On the copy
+                  // itself, see the note beside the string below.
+                  <div
+                    data-testid={sendGate === 'consent' ? 'consent-notice' : 'signin-notice'}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      padding: '10px 16px',
+                      borderBottom: `1px solid ${token.border}`,
+                      background: token.primaryLight,
+                      fontSize: 13,
+                      flexShrink: 0,
+                    }}
+                  >
+                    <span>
+                      {/*
+                        🔴 SAY ONLY WHAT IS TRUE ON EVERY PATH. This used to
+                        promise "your message is still in the box" — true when
+                        the send came from the composer, FALSE when it came
+                        from Research → Insert or from Regenerate, neither of
+                        which puts anything in the box. A banner that lies is
+                        the same class of defect this whole change removes, so
+                        the copy now claims nothing about where the text went.
+                      */}
+                      {sendGate === 'consent'
+                        ? 'Sensei needs your permission to spend Buzz on a reply. Grant it, then try again.'
+                        : 'Sign in to chat with Sensei, then try again.'}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="light"
+                      data-testid="gate-retry-button"
+                      onClick={raiseGate}
+                    >
+                      {sendGate === 'consent' ? 'Grant permission' : 'Sign in'}
+                    </Button>
+                  </div>
+                )}
+                <ChatArea
+                  messages={messages}
+                  isStreaming={isStreaming}
+                  onSend={handleSend}
+                  sendGate={sendGate}
+                  onGatedSend={raiseGate}
+                  onStopStream={handleStopStream}
+                  onRegenerate={handleRegenerate}
+                  onInsertResearch={handleInsertResearch}
+                />
+              </>
             ) : (
               <div
                 style={{
