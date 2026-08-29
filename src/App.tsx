@@ -23,6 +23,7 @@ import * as researchLib from './lib/research.js';
 import * as toolsLib from './lib/tools.js';
 import { generateMessageId, withSystemPrompt } from './lib/chat.js';
 import { generateTitle } from './lib/sessions.js';
+import { claimMessageWrite, ownsMessageWrite } from './lib/write-ownership.js';
 
 import { ChatArea } from './components/ChatArea.js';
 import { SessionList } from './components/SessionList.js';
@@ -402,6 +403,23 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         ? sessionsLib.withTitle(sessions, activeSessionId, generateTitle(updatedMessages), now)
         : sessionsLib.touched(sessions, activeSessionId, now);
     setSessions(nextSessions);
+
+    // 🔴 CLAIM THIS SESSION'S MESSAGE KEY BEFORE THE FIRST WRITE OF THE TURN.
+    //
+    // `turnSeqRef` below answers "is my turn still current" WITHIN this
+    // component instance. It cannot answer it across an UNMOUNT: a remounted
+    // instance gets a fresh `turnSeqRef` at 0, so a turn stranded by the unmount
+    // still reads `turnSeqRef.current === mine` as true and believes it owns a
+    // transcript the new instance now owns. No abort predicate sees it either —
+    // a stranded turn was never aborted.
+    //
+    // Claiming here supersedes any stranded turn on this session, so the newest
+    // writer wins without having to find the old one. The deferred writes at the
+    // end of this function check the ticket back; this write does not need to,
+    // because it is the claim. See `lib/write-ownership.ts` for why a
+    // read-back-and-merge is not available instead. (clawgate #425.)
+    const myWrite = claimMessageWrite(activeSessionId);
+
     await persist('save your message', async () => {
       await sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, updatedMessages);
       await sessionsLib.saveSessions(depsRef.current.appStorage, nextSessions);
@@ -718,12 +736,33 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         content: replyText ?? '',
         timestamp: assistantMsg.timestamp,
       };
-      await persist('save the reply', () =>
-        sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, [
-          ...updatedMessages,
-          finalMsg,
-        ]),
-      );
+      // 🔴 ONLY IF THIS TURN STILL OWNS THE TRANSCRIPT. `updatedMessages` was
+      // built when this turn started; writing it now would drop anything a newer
+      // writer has added since. Within one instance that cannot happen, but a
+      // turn stranded by an unmount settles against a REMOUNTED instance that
+      // has since taken the key — and that write deletes the viewer's newer
+      // message permanently. Losing this reply is the lesser harm and the trade
+      // is argued in `lib/write-ownership.ts`.
+      if (ownsMessageWrite(activeSessionId, myWrite)) {
+        await persist('save the reply', () =>
+          sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, [
+            ...updatedMessages,
+            finalMsg,
+          ]),
+        );
+      } else {
+        // 🔴 THE ACCEPTED LOSS, MADE OBSERVABLE. Discarding this reply is the
+        // deliberate trade — the alternative is deleting the viewer's newer
+        // message — but the viewer WAS charged for it, and every other
+        // cost-bearing outcome in this file emits an event
+        // (`completion_withheld`, `storage_error`). Without this one the
+        // frequency of the trade is unmeasurable in production, so no evidence
+        // could ever accumulate to justify revisiting it once the host can
+        // serve a block its own write (civitai #4456) and a merge becomes
+        // possible. A silent accepted cost is how an accepted cost stops being
+        // reviewed.
+        depsRef.current.track('reply_discarded_superseded');
+      }
     } catch (e) {
       // 🔴 A USER STOP IS NOT AN ERROR, AND MUST NOT OVERWRITE ITS OWN WRITE.
       // `handleStopStream` aborts and persists what was streamed; aborting then
@@ -760,12 +799,22 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // disappear on reload, so the viewer saw a charge with nothing to show for
       // it and no record of why. The user turn is saved either way — that is the
       // point of writing the full array rather than appending.
-      await persist('save the reply', () =>
-        sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, [
-          ...updatedMessages,
-          { ...assistantMsg, content: body, ...(withheld ? { withheld: true } : {}) },
-        ]),
-      );
+      // 🔴 SAME OWNERSHIP GATE AS THE SUCCESS PATH ABOVE, for the same reason: a
+      // turn stranded by an unmount reaches this exit too — an error or a
+      // withhold arriving after a remount would otherwise write a transcript
+      // built before the new instance's messages existed.
+      if (ownsMessageWrite(activeSessionId, myWrite)) {
+        await persist('save the reply', () =>
+          sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, [
+            ...updatedMessages,
+            { ...assistantMsg, content: body, ...(withheld ? { withheld: true } : {}) },
+          ]),
+        );
+      } else {
+        // Same accepted loss as the success path above, same reason for
+        // counting it. A withhold reaching here was still CHARGED.
+        depsRef.current.track('reply_discarded_superseded');
+      }
       if (withheld) depsRef.current.track('completion_withheld');
     } finally {
       // 🔴 ONLY THE CURRENT TURN MAY CLEAR THE SHARED STREAMING STATE. See
@@ -817,6 +866,31 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // over, which was applied to withholds and missed here.
     const current = messagesRef.current;
     if (activeSessionId && current.length > 0) {
+      // 🔴 STOP DELIBERATELY DOES NOT CLAIM. A claim here looks like prudent
+      // defence-in-depth; it cannot change an outcome, and it was removed when a
+      // mutation deleting it survived all 278 tests.
+      //
+      // The reason is what this write CONTAINS, not who claimed last. It writes
+      // `messagesRef.current`, which for a given session is either the array
+      // just loaded from storage — a subset of anything a stranded turn would
+      // write — or one some live claim already covers. There is no state in
+      // which bumping the ticket first changes what ends up stored.
+      //
+      // ⚠️ AN EARLIER VERSION OF THIS COMMENT ARGUED IT FROM A FALSE PREMISE,
+      // and the premise is worth naming because it is tempting: "Stop only
+      // exists while `isStreaming`, so this instance's own send already claimed
+      // a newer ticket." `isStreaming` is instance-wide, not per session, and
+      // nothing disables the session switcher mid-stream — so the session
+      // active at Stop is NOT necessarily the session the in-flight turn
+      // claimed. The conclusion survives; that route to it does not.
+      //
+      // 🔴 That same gap is a REAL pre-existing defect, tracked on clawgate
+      // #427 and deliberately not fixed here: this write targets
+      // `activeSessionId` rather than the streaming turn's session, so
+      // switching sessions mid-stream and pressing Stop writes one
+      // conversation's transcript under another's key. It predates this change
+      // and is out of scope for #425 — but do not read the paragraph above as
+      // saying the write always targets the right key. It does not.
       void persist('save the stopped reply', () =>
         sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, current),
       );
