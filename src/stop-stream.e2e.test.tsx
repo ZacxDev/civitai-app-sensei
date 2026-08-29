@@ -41,8 +41,25 @@ const storage = fakeAppStorage();
 const estimateFn = vi.fn().mockResolvedValue({ workflowId: 'e', status: 'succeeded', cost: { total: 1 } });
 
 const submitFn = vi.fn(async () => ({ workflowId: 'wf-1', status: 'pending' }));
-/** Never settles. See the header — this is what makes the pre-change failure structural. */
-const pollFn = vi.fn(() => new Promise<never>(() => {}));
+/**
+ * Two poll shapes, selected per test.
+ *
+ * `'never'` never settles — that is what made the ORIGINAL regression failure
+ * structural (no tick, no rejection, no catch, so pre-change there was no write
+ * of any kind after Stop).
+ *
+ * 🔴 BUT IT ALSO REMOVED THE PATH THAT MATTERS IN PRODUCTION. With no catch,
+ * the never-settling shape cannot see the catch OVERWRITING Stop's write —
+ * which is exactly what happened on the ordinary abort path. `'pending'` keeps
+ * resolving so the bridge loops, observes the abort, and throws into the catch:
+ * the real shape. Both are covered now.
+ */
+let pollMode: 'never' | 'pending' = 'never';
+const pollFn = vi.fn(() =>
+  pollMode === 'never'
+    ? new Promise<never>(() => {})
+    : Promise.resolve({ workflowId: 'wf-1', status: 'pending' }),
+);
 const cancelFn = vi.fn(async () => undefined);
 
 vi.mock('@civitai/blocks-react', () => ({
@@ -74,6 +91,7 @@ function messageWrites() {
 
 describe('stopping a stream persists what was already spent', () => {
   beforeEach(() => {
+    pollMode = 'never';
     storage.sets.length = 0;
     submitFn.mockClear();
     pollFn.mockClear();
@@ -119,5 +137,77 @@ describe('stopping a stream persists what was already spent', () => {
 
     // And the stream really was stopped, not merely persisted.
     expect(cancelFn).toHaveBeenCalled();
+  });
+});
+
+describe('the ORDINARY abort path — the catch must not undo Stop', () => {
+  beforeEach(() => {
+    // The real shape: the poll keeps resolving, so the bridge's own abort check
+    // fires and REJECTS into `handleSend`'s catch.
+    pollMode = 'pending';
+    storage.sets.length = 0;
+    submitFn.mockClear();
+    pollFn.mockClear();
+    cancelFn.mockClear();
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ tools: [] }), { status: 200 }),
+    ) as unknown as typeof globalThis.fetch;
+  });
+
+  it("🔴 Stop's write SURVIVES — the catch does not overwrite it with 'Error: Aborted'", async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+    fireEvent.click(screen.getByTestId('new-session-button'));
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('chat-input'), {
+      target: { value: 'tell me about DreamShaper' },
+    });
+    fireEvent.click(screen.getByTestId('send-button'));
+    await waitFor(() => expect(submitFn).toHaveBeenCalled());
+
+    storage.sets.length = 0;
+    const stop = await screen.findByTestId('stop-button');
+    fireEvent.click(stop);
+
+    await waitFor(() => expect(messageWrites().length).toBeGreaterThan(0), { timeout: 3000 });
+
+    // 🔴 SETTLE BEFORE ASSERTING — A `waitFor` CANNOT PIN A NEGATIVE, AND A
+    // SHORT "no change" WINDOW CANNOT EITHER.
+    //
+    // The regression is a SECOND write landing AFTER the first. Two shapes were
+    // measured to pass on broken code before this one worked:
+    //   1. `waitFor` around the assertion — satisfied by the EARLY state, it
+    //      returns before the overwrite arrives.
+    //   2. a settle loop exiting after ~100 ms of no change — the overwrite
+    //      does not arrive for a full POLL INTERVAL, so it exits first.
+    //
+    // The bridge polls on a 1000 ms interval and observes the abort on its NEXT
+    // iteration, so the catch's write lands ~1 s after Stop. The bound below is
+    // derived from that, not picked: wait up to ~2.5 intervals, exiting EARLY
+    // the moment a second write appears. So a regression fails fast and a pass
+    // costs the full wait — the right way round.
+    const BOUND_MS = 2_500;
+    const step = 50;
+    for (let waited = 0; waited < BOUND_MS && messageWrites().length < 2; waited += step) {
+      await new Promise((r) => setTimeout(r, step));
+    }
+
+    // 🔴 THE ISOLATING ASSERTION. Pre-fix, exactly two writes landed: Stop's
+    // (`assistant:''`), then the catch's, which replaced the assistant content
+    // with `Error: Aborted` — measured directly on the mutant. One write means
+    // the catch returned early and Stop's record is what survives a reload.
+    expect(messageWrites()).toHaveLength(1);
+    const settled = messageWrites().at(-1)!.value as Array<{ role: string; content: string }>;
+    for (const m of settled.filter((x) => x.role === 'assistant')) {
+      expect(m.content).not.toContain('Error:');
+      expect(m.content).not.toContain('Aborted');
+    }
+
+    // The user turn is still there — Stop must not cost the question either.
+    const written = messageWrites().at(-1)!.value as Array<{ role: string; content: string }>;
+    expect(written.some((m) => m.role === 'user' && m.content === 'tell me about DreamShaper')).toBe(
+      true,
+    );
   });
 });

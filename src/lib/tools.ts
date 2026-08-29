@@ -48,7 +48,7 @@ export interface ToolCall {
 }
 
 /**
- * The host's per-payload cap on `role:'tool'` messages.
+ * The host's per-payload cap on `role:'tool'` MESSAGES.
  *
  * 🔴 THIS IS A MIRROR, NOT THE ENFORCEMENT. The host enforces it with a
  * `.superRefine` counting `role:'tool'` messages on BOTH the estimate and the
@@ -56,26 +56,136 @@ export interface ToolCall {
  * says. It exists so the app can stop cleanly and tell the viewer why, rather
  * than discovering the cap as a failed request.
  *
+ * 🔴 IT COUNTS MESSAGES, NOT ROUNDS, AND THOSE ARE DIFFERENT NUMBERS. An
+ * earlier revision of this app used it as a round counter while this docstring
+ * already said "messages" — so one round answering FIVE parallel tool calls put
+ * five `role:'tool'` messages into a single payload and blew a mirrored cap of
+ * three on the very first round, turning the next submit into a `BAD_REQUEST`
+ * after the viewer had already paid for that round. A mirror that mirrors a
+ * different quantity is worse than no mirror: it reads as protection.
+ *
  * 🔴 AND IT BOUNDS HISTORY DEPTH IN ONE PAYLOAD, NOT SPEND. Each round is its
  * own submit, separately quoted and separately charged; what bounds total spend
  * is the host's per-call budget gate plus its per-user, per-app and dev-session
  * caps. Reading this as a spend bound is the mistake the host's own docs had to
  * be corrected for.
  */
-export const MAX_TOOL_ROUNDS = 3;
+export const MAX_TOOL_RESULT_MESSAGES = 3;
 
 /** Host cap on a single message's content. A tool result is a message. */
 const MAX_MESSAGE_CHARS = 8_000;
 
-async function toolsFetch(init: RequestInit & { path: string }, auth: CatalogAuth): Promise<Response> {
+/**
+ * Neutralise `urn:air:` so a tool result cannot bounce the next submit.
+ *
+ * 🔴 WHAT THIS IS AND IS NOT COVERING — established by reading `origin/trunk`
+ * rather than assumed, because the obvious reading over-attributes it.
+ *
+ * On trunk this had exactly ONE call site: the tail of `formatCatalogContext`,
+ * i.e. the retrieved catalog text the app injected itself. It never touched the
+ * viewer's own words, the model's output, or anything else.
+ *
+ * That path's successor is the tool result, and the host now projects those
+ * through `neutralizeAirLiterals` server-side before they leave
+ * `/api/v1/blocks/tools`. So coverage of the path trunk protected is NOT lost.
+ * This exists as defence in depth for a property the app cannot verify: if that
+ * projection ever narrows, the symptom here is a hard `FORBIDDEN` on the NEXT
+ * round — after the viewer has already paid for this one — with an error naming
+ * nothing they typed.
+ *
+ * 🔴 STILL NOT COVERED, AND NOT A REGRESSION FROM THIS CHANGE: text the VIEWER
+ * types. A question containing the literal (`"what does urn:air: mean?"`) is
+ * rejected by the host, and was equally rejected on trunk — the strip was never
+ * on that path. Stripping a viewer's own words is a product decision, not a
+ * transport fix, so it is left alone and recorded here rather than silently
+ * widened.
+ */
+export function stripAirReferences(text: string): string {
+  return text.replace(/urn:air:/gi, 'urn-air-');
+}
+
+/**
+ * Serialize a tool response into a message body that is bounded AND still valid
+ * JSON.
+ *
+ * 🔴 A `slice()` ON THE SERIALIZED STRING IS THE WRONG BOUND, and the deleted
+ * `formatCatalogContext` made this exact argument before it was removed: a
+ * record cut mid-field hands the model a truncated URL or a name with no id,
+ * presented in the same authoritative frame as the real ones. Here it is worse
+ * than misleading — a string cut mid-token is not parseable JSON at all.
+ *
+ * So the bound is applied to the ITEM LIST and re-serialized: every record that
+ * survives is complete. A response with no bounded array falls back to an
+ * explicit, still-valid error rather than an unparseable fragment.
+ */
+export function boundToolResponse(body: unknown): string {
+  const whole = JSON.stringify(body);
+  if (whole !== undefined && whole.length <= MAX_MESSAGE_CHARS) return whole;
+
+  if (body !== null && typeof body === 'object' && Array.isArray((body as { items?: unknown }).items)) {
+    const record = body as { items: unknown[] };
+    // Drop from the tail until the WHOLE serialized payload fits. Bounding the
+    // items alone would ignore the envelope's own size.
+    //
+    // 🔴 STOPS AT ONE, NEVER ZERO. Emptying the array produces `{"items":[]}`,
+    // which is small, valid, and a LIE: it is indistinguishable from a search
+    // that legitimately found nothing, so the model would tell the viewer there
+    // are no such models when the truth is that the result would not fit. An
+    // explicit error is the honest answer and the model can act on it.
+    for (let keep = record.items.length - 1; keep >= 1; keep -= 1) {
+      const candidate = JSON.stringify({ ...record, items: record.items.slice(0, keep) });
+      if (candidate !== undefined && candidate.length <= MAX_MESSAGE_CHARS) return candidate;
+    }
+  }
+  return toolError('the result was too large to include');
+}
+
+/**
+ * Auth plus the caller's abort signal.
+ *
+ * 🔴 THE SIGNAL IS NOT OPTIONAL POLISH. Without it a Stop pressed while a tool
+ * POST was in flight left the request running, the loop resumed when it landed,
+ * and the app issued another BILLED estimate+submit for a turn the viewer had
+ * already abandoned.
+ */
+export interface ToolAuth extends CatalogAuth {
+  signal?: AbortSignal;
+}
+
+/** How long a single tool request may hang before it is abandoned. */
+const TOOL_REQUEST_TIMEOUT_MS = 15_000;
+
+async function toolsFetch(
+  init: RequestInit & { path: string },
+  auth: ToolAuth,
+  retries = 1,
+): Promise<Response> {
   const { path, ...rest } = init;
+  // 🔴 A HUNG REQUEST IS A HUNG TURN. `callTool` never throws for a tool-level
+  // failure, so without a deadline a stalled POST leaves the conversation
+  // in-flight indefinitely with no way out — Stop cannot reach `fetch` itself.
+  // The caller's signal and this timeout are combined so either can end it.
+  const timeout = AbortSignal.timeout(TOOL_REQUEST_TIMEOUT_MS);
+  const signal = auth.signal ? AbortSignal.any([auth.signal, timeout]) : timeout;
+
   const res = await fetch(`${BLOCKS_BASE_URL}${path}`, {
     ...rest,
+    signal,
     headers: {
       Authorization: `Bearer ${auth.token}`,
       ...(rest.body ? { 'Content-Type': 'application/json' } : {}),
     },
   });
+  // 429 ONLY, and one retry — the same reasoning `fetchCatalog` documents, with
+  // the same conclusion: the rate limit is keyed on this block instance and
+  // clears in a known short window, so it is worth waiting out. A retryable 503
+  // is deliberately NOT retried; a lookup that fails fast lets the model answer
+  // ungrounded rather than stalling the turn behind a backend flap.
+  if (res.status === 429 && retries > 0) {
+    const retryAfter = parseInt(res.headers.get('retry-after') ?? '2', 10);
+    await new Promise((r) => setTimeout(r, (Number.isFinite(retryAfter) ? retryAfter : 2) * 1000));
+    return toolsFetch(init, auth, retries - 1);
+  }
   if (!res.ok) {
     throw new Error(`Civitai tools error: ${res.status} ${res.statusText}`);
   }
@@ -90,7 +200,7 @@ async function toolsFetch(init: RequestInit & { path: string }, auth: CatalogAut
  * about any. Throwing here would take down the whole conversation because a
  * catalog helper was unavailable.
  */
-export async function fetchToolDeclarations(auth: CatalogAuth): Promise<ToolDeclaration[]> {
+export async function fetchToolDeclarations(auth: ToolAuth): Promise<ToolDeclaration[]> {
   const res = await toolsFetch({ path: '/tools', method: 'GET' }, auth);
   const data: unknown = await res.json();
   const raw = (data as { tools?: unknown })?.tools;
@@ -120,7 +230,7 @@ function toolError(message: string): string {
  *
  * A transport failure is reported the same way for the same reason.
  */
-export async function callTool(call: ToolCall, auth: CatalogAuth): Promise<string> {
+export async function callTool(call: ToolCall, auth: ToolAuth): Promise<string> {
   let args: unknown;
   try {
     // The provider hands `arguments` back as a STRING; a model can emit one that
@@ -146,7 +256,9 @@ export async function callTool(call: ToolCall, auth: CatalogAuth): Promise<strin
     // Bounded defensively even though the host bounds its own projection: this
     // string becomes a message whose content the host caps at 8,000 chars, and
     // exceeding it is a reject of the WHOLE next request, not a truncation.
-    return JSON.stringify(body).slice(0, MAX_MESSAGE_CHARS);
+    // Bounded at a RECORD boundary, so what survives is always valid JSON.
+    // Stripped for the same class of reason — see `stripAirReferences`.
+    return stripAirReferences(boundToolResponse(body));
   } catch (e) {
     return toolError(e instanceof Error ? e.message : 'tool call failed');
   }

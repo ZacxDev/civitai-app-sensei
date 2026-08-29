@@ -315,7 +315,14 @@ function clampInt(n: number, min: number, max: number): number {
 // ── Display helpers (used by the Research panel, not by grounding) ───────────
 
 /**
- * Compact a count for display: 1234 -> "1.2K", 1234567 -> "1.2M".
+ * Render a count for display. `downloadCount` / `tippedAmountCount` are
+ * nullable — render the absence rather than a zero.
+ *
+ * 🔴 THE FORMAT IS `toLocaleString('en-US')` ("1,234"), NOT a compact "1.2K".
+ * This docstring asserted the compact form for one revision because the
+ * function was restored FROM MEMORY during the heuristic deletion; the body was
+ * caught by diffing against `origin/trunk` and reverted, and the invented
+ * format survived one line above it.
  *
  * 🔴 SURVIVED THE HEURISTIC DELETION ON PURPOSE. It reads like part of the
  * context-assembly block that went with it, and it is not — `ResearchPanel`

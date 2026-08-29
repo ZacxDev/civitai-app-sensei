@@ -3,7 +3,9 @@ import {
   fetchToolDeclarations,
   callTool,
   readQueryArgument,
-  MAX_TOOL_ROUNDS,
+  stripAirReferences,
+  boundToolResponse,
+  MAX_TOOL_RESULT_MESSAGES,
   type ToolCall,
 } from './tools.js';
 import * as researchLib from './research.js';
@@ -190,6 +192,86 @@ describe('tools — the round cap', () => {
     // in a `.superRefine` on both the estimate and the submit path. This pin
     // exists so a change to the local constant is a visible decision rather
     // than a silent divergence from the host that shows up as a BAD_REQUEST.
-    expect(MAX_TOOL_ROUNDS).toBe(3);
+    expect(MAX_TOOL_RESULT_MESSAGES).toBe(3);
+  });
+});
+
+describe('tools — the `urn:air:` strip', () => {
+  // 🔴 SCOPE, ESTABLISHED FROM `origin/trunk` RATHER THAN ASSUMED. On trunk the
+  // strip had exactly ONE call site: the tail of `formatCatalogContext`, i.e.
+  // catalog text the app injected itself. Its successor is the tool result,
+  // which the host now projects through `neutralizeAirLiterals` server-side —
+  // so this is defence in depth for a property the app cannot verify, not a
+  // restored regression. Text the VIEWER types was never covered and still is
+  // not; that is recorded in the source, not silently widened here.
+  it('neutralises the literal in every casing', () => {
+    expect(stripAirReferences('see urn:air:sdxl:checkpoint')).toBe('see urn-air-sdxl:checkpoint');
+    expect(stripAirReferences('URN:AIR:x')).toBe('urn-air-x');
+    expect(stripAirReferences('Urn:Air:x')).toBe('urn-air-x');
+  });
+
+  it('leaves ordinary prose alone', () => {
+    expect(stripAirReferences('an urn in the air')).toBe('an urn in the air');
+  });
+
+  it('🔴 a tool RESULT carrying the literal is neutralised before it can reach the wire', async () => {
+    // A single `urn:air:` anywhere in the built input is a hard FORBIDDEN at the
+    // host, thrown BEFORE the Buzz quote — so one unstripped record bounces the
+    // next round after the viewer has already paid for this one.
+    install(() =>
+      new Response(JSON.stringify({ items: [{ name: 'urn:air:sd1:checkpoint:civitai:4384' }] }), {
+        status: 200,
+      }),
+    );
+    const out = await callTool(call(JSON.stringify({ query: 'x' })), AUTH);
+    expect(out).not.toContain('urn:air:');
+    // POSITIVE CONTROL — the raw upstream body DOES carry the literal, so the
+    // assertion above is testing the strip and not a fixture that never had one.
+    expect(JSON.stringify({ items: [{ name: 'urn:air:sd1:checkpoint:civitai:4384' }] })).toContain(
+      'urn:air:',
+    );
+    expect(out).toContain('urn-air-');
+  });
+});
+
+describe('tools — bounding a result keeps it valid JSON', () => {
+  // 🔴 A `slice()` ON THE SERIALIZED STRING CUTS MID-TOKEN, handing the model a
+  // fragment that is not parseable at all. The deleted `formatCatalogContext`
+  // made this exact argument — drop whole records, never cut one — and the
+  // argument was deleted with it.
+  const big = (n: number) =>
+    ({ items: Array.from({ length: n }, (_, i) => ({ id: i, blurb: 'x'.repeat(900) })), truncated: 0 });
+
+  it('passes a small response through untouched', () => {
+    const body = { items: [{ id: 1 }], truncated: 0 };
+    expect(boundToolResponse(body)).toBe(JSON.stringify(body));
+  });
+
+  it('🔴 drops whole records rather than cutting one, and the result still parses', () => {
+    const out = boundToolResponse(big(20));
+    expect(out.length).toBeLessThanOrEqual(8_000);
+    // The whole point: parseable. A mid-string slice throws here.
+    const parsed = JSON.parse(out) as { items: unknown[] };
+    // Fewer than the input, or the bound did nothing.
+    expect(parsed.items.length).toBeGreaterThan(0);
+    expect(parsed.items.length).toBeLessThan(20);
+    // ISOLATING: every surviving record is COMPLETE, which a tail-slice cannot
+    // guarantee even when it happens to parse.
+    for (const item of parsed.items as Array<{ id?: number; blurb?: string }>) {
+      expect(typeof item.id).toBe('number');
+      expect(item.blurb?.length).toBe(900);
+    }
+  });
+
+  it('falls back to a valid JSON error when nothing can fit', () => {
+    const out = boundToolResponse({ items: [{ blurb: 'x'.repeat(20_000) }] });
+    expect(() => JSON.parse(out)).not.toThrow();
+    expect(JSON.parse(out)).toHaveProperty('error');
+  });
+
+  it('falls back for a response with no bounded array', () => {
+    const out = boundToolResponse({ blob: 'x'.repeat(20_000) });
+    expect(() => JSON.parse(out)).not.toThrow();
+    expect(JSON.parse(out)).toHaveProperty('error');
   });
 });

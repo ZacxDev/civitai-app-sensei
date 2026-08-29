@@ -61,7 +61,6 @@ export const MAX_MESSAGE_CHARS = 8_000;
 export const TEMPERATURE_MIN = 0;
 export const TEMPERATURE_MAX = 2;
 
-/** The roles the host's `chatMessageSchema` accepts. `'tool'` is NOT one of them. */
 /**
  * 🔴 `'tool'` IS NOW A FIRST-CLASS ROLE, not a dropped one. The host's
  * `chatMessageSchema` became a discriminated union over the role, so a tool
@@ -138,9 +137,10 @@ function clampTemperature(t: number | undefined): number | undefined {
  *
  * Three bounds, each of which is a hard reject server-side rather than a
  * truncation:
- *  - role must be system/user/assistant. A `'tool'`-role message (the app's
- *    tool-result carrier) has no representation in this step and is DROPPED
- *    here rather than sent to be rejected.
+ *  - role must be system/user/assistant/tool. A `'tool'` message IS sent — the
+ *    host's schema is a discriminated union over the role and accepts it with a
+ *    `tool_call_id`. (It used to be dropped here, which is why a tool result
+ *    never reached the model and the loop could not close.)
  *  - content is 1..8000 chars. Empty/whitespace-only messages are dropped;
  *    over-long ones are truncated.
  *  - at most 32 messages. The FIRST system message is preserved and the most
@@ -169,6 +169,14 @@ export function toStepMessages(messages: ChatCompletionRequest['messages']): Ste
     // whole payload — which would lose the entire conversation, not just the
     // orphan. A stored session from before tool calling can contain exactly
     // this shape.
+    //
+    // 🔴 BE EXACT ABOUT WHAT THIS CHECKS: PRESENCE, NOT CORRELATION. It requires
+    // a non-empty `tool_call_id` string; it does NOT verify that any preceding
+    // assistant turn declared that id. A `[system, user, tool(id=stale)]` array
+    // passes here and is rejected by the host. That is not reachable through
+    // `App` today — the send path drops the id when mapping stored messages —
+    // but the guard is narrower than the sentence above, and the sentence is
+    // what a reader would act on.
     .filter((m) => m.role !== 'tool' || (typeof m.tool_call_id === 'string' && m.tool_call_id.length > 0))
     .map((m) => ({
       role: m.role as StepMessage['role'],
@@ -295,6 +303,11 @@ export function extractToolCalls(snap: TextOutputSnapshot): ToolCall[] {
     (c): c is ToolCall =>
       typeof c?.id === 'string' &&
       c.id.length > 0 &&
+      // `ToolCall` DECLARES `type: 'function'`; without checking it the
+      // predicate narrows to a type the value does not satisfy, and a call of
+      // some future kind would be replayed verbatim as if it were a function
+      // call. A type declaration is not a runtime check.
+      c?.type === 'function' &&
       typeof c?.function?.name === 'string' &&
       typeof c?.function?.arguments === 'string',
   );
@@ -318,9 +331,13 @@ function delay(ms: number): Promise<void> {
  * replaying the completed, released text through `simulateStreaming`; the
  * `stream` field on the request is ignored.
  *
- * 🔴 NO TOOL CALLS. The step never exposes `tools` and its `extractText`
- * deliberately does not read `tool_calls`, so a tool call can neither be
- * requested nor returned. Responses always carry `finish_reason: 'stop'`.
+ * 🔴 TOOL CALLS ARE CARRIED, and the finish reason distinguishes them. The
+ * step accepts `tools`/`tool_choice` and the host publishes a `tool_calls`
+ * reply on a verdict-gated `toolCalls` snapshot field — released only when the
+ * output scan releases. A response carrying calls reports
+ * `finish_reason: 'tool_calls'`; one carrying prose reports `'stop'`. This
+ * block previously asserted the opposite while the code below already set
+ * `'tool_calls'`.
  */
 export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdapter {
   let lastWorkflowId: string | undefined;

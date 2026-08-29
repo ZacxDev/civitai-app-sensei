@@ -14,7 +14,7 @@ import { Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
 
 import { palette, pageStyle, token, radius, mutedText } from './theme.js';
 import type { AppSettings, Message, Session } from './types.js';
-import { DEFAULT_SETTINGS } from './types.js';
+import { DEFAULT_SETTINGS, migrateSettings } from './types.js';
 import { AI_WRITE_BUDGETED, BUZZ_READ_SELF, hasGenerateScope } from './scopes.js';
 import { createOrchestrator } from './lib/orchestrator.js';
 import { TextOutputWithheldError } from './lib/orchestrator-bridge.js';
@@ -81,7 +81,6 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const [researchOpen, setResearchOpen] = useState(false);
   const [searchResults, setSearchResults] = useState<researchLib.ModelSearchResult | null>(null);
   const [searchQuery, setSearchQuery] = useState<string | null>(null);
-  const [searchNarrowed, setSearchNarrowed] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [loading, setLoading] = useState(true);
   // 🔴 A REJECTED STORAGE CALL MUST NOT BE INDISTINGUISHABLE FROM SUCCESS. Every
@@ -180,7 +179,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         const storedSettings = await depsRef.current.appStorage.get<AppSettings>('sensei:settings');
         if (cancelled) return;
         setSessions(loaded);
-        if (storedSettings) setSettings(storedSettings);
+        // Migrated at LOAD, not at save: a viewer who has never reopened
+        // Settings still gets a corrected default prompt on their next send.
+        // `migrateSettings` is total — an edited prompt passes through.
+        if (storedSettings) setSettings(migrateSettings(storedSettings));
         if (loaded.length > 0) {
           setActiveSessionId(loaded[0].id);
           const msgs = await sessionsLib.getMessages(depsRef.current.appStorage, loaded[0].id);
@@ -466,42 +468,83 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
       let response = await submit();
       let rounds = 0;
+      // 🔴 COUNTS `role:'tool'` MESSAGES, NOT ROUNDS — the quantity the host's
+      // `.superRefine` actually counts. One round answering N parallel calls
+      // contributes N. Counting rounds here let a single 5-call round exceed a
+      // mirrored cap of 3 on the first iteration.
+      let toolMessages = 0;
       let hitRoundCap = false;
 
       for (;;) {
+        // Stop must end the loop, not just the in-flight request. Without this
+        // a Stop pressed while a tool POST is in flight still fell through to
+        // another `submit()` — a second BILLED estimate+submit after the viewer
+        // asked to stop.
+        if (abortControllerRef.current?.signal.aborted) break;
+
         const calls = response.toolCalls ?? [];
         if (calls.length === 0) break;
 
-        if (rounds >= toolsLib.MAX_TOOL_ROUNDS) {
+        if (toolMessages + calls.length > toolsLib.MAX_TOOL_RESULT_MESSAGES) {
           // A terminal state with a user-visible explanation, not a silent stop
           // and not an unhandled rejection. The viewer has been charged for
           // every round that ran and is owed an account of why it stopped.
+          // Checked BEFORE executing the calls: running them would spend on
+          // results that could never be submitted.
           hitRoundCap = true;
           break;
         }
         rounds += 1;
+        toolMessages += calls.length;
 
         // Show the model's OWN query in the Research panel. This is the whole
         // argument for the change: the query is authored by the model from the
         // user's sentence, not stripped out of it by a stopword list.
         const firstQuery = toolsLib.readQueryArgument(calls[0]);
-        if (firstQuery) setSearchQuery(firstQuery);
+        if (firstQuery) {
+          setSearchQuery(firstQuery);
+          // 🔴 CLEAR THE RESULTS WITH IT. `searchResults` is only ever written
+          // by the manual search box, and is cleared only on session switch —
+          // so setting the query alone rendered the MODEL's query as a label
+          // above a PREVIOUS manual search's results. Showing a query with
+          // nothing under it is honest; showing it over unrelated models is
+          // not. The tool result is not wired in as panel items deliberately:
+          // its projected shape (name/tags/creator/downloads/baseModel) is not
+          // `ModelSearchItem`, and mapping it here would be a second definition
+          // of the host's projection that can drift from the real one.
+          setSearchResults(null);
+        }
 
         setIsSearching(true);
         let results: string[];
         try {
           results = await Promise.all(
-            calls.map((c) => toolsLib.callTool(c, { token: token_.raw })),
+            calls.map((c) =>
+              toolsLib.callTool(c, {
+                token: token_.raw,
+                signal: abortControllerRef.current?.signal,
+              }),
+            ),
           );
         } finally {
           setIsSearching(false);
         }
 
+        // A Stop landing while the tool POSTs were in flight must not be spent
+        // on another submit.
+        if (abortControllerRef.current?.signal.aborted) break;
+
         apiMessages = [
           ...apiMessages,
-          // The ask. Carries no content — its content IS the calls — and
-          // `toStepMessages` deliberately keeps it for that reason.
-          { role: 'assistant', content: '', tool_calls: calls },
+          // The ask. Carries the model's own interim prose when it wrote any —
+          // discarding it would replay a history the viewer saw stream and then
+          // saw vanish. `toStepMessages` keeps this message for its `tool_calls`
+          // even when the content is empty.
+          {
+            role: 'assistant',
+            content: response.choices[0]?.message?.content ?? '',
+            tool_calls: calls,
+          },
           // The answers, each correlated to the id it answers.
           ...calls.map((c, k) => ({
             role: 'tool',
@@ -513,8 +556,16 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         response = await submit();
       }
 
+      // On the cap, keep whatever prose the model DID write alongside its last
+      // batch of calls and append the explanation — discarding it threw away
+      // content the viewer had already been charged for, and often the most
+      // useful part of the turn.
+      const capNotice = `I looked things up ${rounds} time${rounds === 1 ? '' : 's'} and still could not finish that. Try asking something narrower.`;
+      const partial = response.choices[0]?.message?.content?.trim();
       const replyText = hitRoundCap
-        ? `I looked things up ${rounds} time${rounds === 1 ? '' : 's'} and still could not finish that. Try asking something narrower.`
+        ? partial
+          ? `${partial}\n\n${capNotice}`
+          : capNotice
         : response.choices[0].message.content;
 
       if (replyText) {
@@ -544,6 +595,19 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         ]),
       );
     } catch (e) {
+      // 🔴 A USER STOP IS NOT AN ERROR, AND MUST NOT OVERWRITE ITS OWN WRITE.
+      // `handleStopStream` aborts and persists what was streamed; aborting then
+      // rejects the in-flight submit and lands HERE, where the write below used
+      // to replace that content with `Error: Aborted` — so Stop's whole purpose
+      // was undone a moment after it ran, on the ordinary abort path.
+      //
+      // 🔴 THE ORIGINAL REGRESSION TEST COULD NOT SEE THIS. It used a poll that
+      // never settles, which structurally removes this catch — pinning the one
+      // shape where the fix is decisive rather than the ordinary one. Both paths
+      // are covered now; see `stop-stream.e2e.test.tsx`.
+      if (abortControllerRef.current?.signal.aborted) {
+        return;
+      }
       // 🔴 A WITHHOLD IS NOT AN ERROR. The host scanned the generated reply and
       // refused to release it; the Buzz was spent and the capability worked as
       // designed. Rendering the host's own user-facing reason — rather than
@@ -651,10 +715,8 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     try {
       const results = await researchLib.searchModels(query, { token: token_.raw });
       setSearchResults(results);
-      // A panel search is already keywords — it is shown VERBATIM, and never
-      // marked "narrowed", because nothing rewrote it.
+      // A panel search is shown VERBATIM — nothing rewrites it.
       setSearchQuery(query);
-      setSearchNarrowed(false);
     } catch {
       setSearchResults(null);
     } finally {
@@ -882,7 +944,6 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             onToggle={() => setResearchOpen(!researchOpen)}
             searchResults={searchResults}
             lastQuery={searchQuery}
-            narrowed={searchNarrowed}
             isSearching={isSearching}
             onSearch={handleResearchSearch}
             onInsert={handleInsertResearch}

@@ -1,7 +1,7 @@
 # Civitai Sensei — a Civitai App Block
 
 **A complete, open-source example of a [Civitai](https://civitai.com) App Block.**
-Read it to learn how a real block is wired to the host platform — chat sessions with configurable LLM models, Buzz-metered generation through the host bridge, and answers grounded in **live Civitai catalog data** retrieved client-side. All against the *published* SDK packages, with a mock host so you can run it in two commands.
+Read it to learn how a real block is wired to the host platform — chat sessions with configurable LLM models, Buzz-metered generation through the host bridge, and answers grounded in **live Civitai catalog data** the model looks up itself via real tool calling. All against the *published* SDK packages, with a mock host so you can run it in two commands.
 
 🔗 **Live:** [sensei.civit.ai](https://sensei.civit.ai) ·
 [civitai.com/apps/run/sensei](https://civitai.com/apps/run/sensei)
@@ -54,21 +54,34 @@ The app is a single-page React application with three panels:
 
 State is persisted per-user via `useAppStorage` (KV). Chat completions go
 through the real host bridge (`useBuzzWorkflow` → the orchestrator's
-`chat-completion` step) at a flat 1 Buzz per answer.
+`chat-completion` step). A reply costs Buzz at the model's live rate, and a
+question that needs a catalog lookup spends it once per round — see below.
 
 ### How answers are grounded
 
-The host exposes **no tool/function-calling surface** — its params schema is
-`.strict()` over `{model, messages, maxTokens, temperature}` and its message
-schema has no `'tool'` role, so a model reachable from a block can neither
-request nor return a tool call. Sensei therefore retrieves *before* it asks:
+The host exposes a **tool/function-calling surface**: its params schema accepts
+`tools` + `tool_choice`, its message schema is a discriminated union that
+includes a `'tool'` role with `tool_call_id`, and a `tool_calls` reply reaches
+the block on a verdict-gated snapshot field. So the MODEL writes the query:
 
-1. the user's message is passed straight to `/api/v1/blocks/models` (a search
-   engine handles free text — no model call is needed to write the query),
-2. the results are compacted to a bounded, `urn:air:`-stripped block, and
-3. injected as a `system` message immediately above the question.
+1. the tool declarations are FETCHED from `GET /api/v1/blocks/tools` — never
+   authored here, or the model would be shown a contract the route does not
+   enforce,
+2. the model emits a `tool_calls` reply; the app POSTs each call to the same
+   route, which is backed by the maturity-clamped catalog path,
+3. each result goes back as a `role:'tool'` message and the app resubmits.
 
-One completion, one Buzz, no upstream change. The block catalog endpoints are
+**Each round is its own submit, separately quoted and separately charged**, so a
+question needing a lookup costs more than one completion. The loop is bounded by
+the host's cap on `role:'tool'` messages per payload (mirrored locally as
+`MAX_TOOL_RESULT_MESSAGES`), and stops with a user-visible message rather than
+silently.
+
+This replaced a client-side stopword heuristic that rewrote the user's sentence
+into keywords, searched once, and injected the results — one shot, no feedback,
+and a heuristic rather than the model deciding the query.
+
+The block catalog endpoints are
 token-gated with **no required scope** and clamp maturity server-side off the
 token's signed claim, failing closed to SFW — so a `pg13` block cannot surface
 mature catalog content whatever it asks for.

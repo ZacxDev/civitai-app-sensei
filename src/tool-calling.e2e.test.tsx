@@ -3,7 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { App } from './App.js';
 import { fakeAppStorage } from './test-helpers.js';
 import { clearCache } from './lib/research.js';
-import { MAX_TOOL_ROUNDS } from './lib/tools.js';
+import { MAX_TOOL_RESULT_MESSAGES } from './lib/tools.js';
 
 interface SubmittedParams {
   model: string;
@@ -95,6 +95,20 @@ function toolCallSnapshot(args: string) {
     status: 'succeeded',
     cost: { total: 1 },
     toolCalls: [{ id: 'call_abc', type: 'function', function: { name: 'search_models', arguments: args } }],
+  };
+}
+
+/** N parallel calls in ONE round — the shape that broke the cap. */
+function multiCallSnapshot(n: number) {
+  return {
+    workflowId: 'wf-mc',
+    status: 'succeeded',
+    cost: { total: 1 },
+    toolCalls: Array.from({ length: n }, (_, i) => ({
+      id: `call_${i}`,
+      type: 'function',
+      function: { name: 'search_models', arguments: JSON.stringify({ query: `q${i}` }) },
+    })),
   };
 }
 
@@ -198,6 +212,17 @@ describe('tool calling: the model forms its own query, one submit per round', ()
     // 🔴 THE ASK SURVIVES DESPITE HAVING NO CONTENT. `toStepMessages` drops
     // empty-content messages; without the tool_calls exemption this message
     // would vanish and the host would reject the answer below as uncorrelated.
+    //
+    // 🔴 ASSERT KEY ABSENCE, NOT AN `undefined` VALUE — the two are different on
+    // this wire and only one of them is correct. The SDK transport is
+    // postMessage, i.e. structured clone, which PRESERVES an explicit
+    // `undefined` rather than dropping the key as `JSON.stringify` would; the
+    // host's `content` is `.min(1)` WHEN PRESENT, so a preserved
+    // `content: undefined` is a present key with an invalid value.
+    // `toBeUndefined()` alone is satisfied by BOTH shapes, which is why the
+    // mutant swapping the key-omission for `{ ...m, content: undefined }`
+    // survived a fully green suite. This is the assertion that separates them.
+    expect(ask && 'content' in ask).toBe(false);
     expect(ask?.content).toBeUndefined();
 
     const answer = second.messages.find((m) => m.role === 'tool');
@@ -220,16 +245,52 @@ describe('tool calling: the model forms its own query, one submit per round', ()
 
   it('stops at the round cap with a USER-VISIBLE message, not silently', async () => {
     // Always asks for a tool — the model never settles.
-    pollQueue = Array.from({ length: MAX_TOOL_ROUNDS + 2 }, () =>
+    pollQueue = Array.from({ length: MAX_TOOL_RESULT_MESSAGES + 2 }, () =>
       toolCallSnapshot(JSON.stringify({ query: 'loop' })),
     );
-    await sendMessage('go in circles', MAX_TOOL_ROUNDS + 1);
+    await sendMessage('go in circles', MAX_TOOL_RESULT_MESSAGES + 1);
 
-    // One initial submit plus MAX_TOOL_ROUNDS tool rounds, then it stops.
-    expect(submitted).toHaveLength(MAX_TOOL_ROUNDS + 1);
+    // One initial submit plus MAX_TOOL_RESULT_MESSAGES tool rounds, then it stops.
+    expect(submitted).toHaveLength(MAX_TOOL_RESULT_MESSAGES + 1);
     await waitFor(() => {
       expect(screen.getByText(/could not finish that/i)).toBeTruthy();
     });
+  });
+
+  it('🔴 ONE round of PARALLEL calls is bounded by MESSAGES, not rounds', async () => {
+    // 🔴 THE MIRROR MUST MIRROR THE HOST'S QUANTITY. The host counts
+    // `role:'tool'` MESSAGES in a `.superRefine`; this app used the same
+    // constant as a count of ROUNDS. So a single round answering five parallel
+    // calls put FIVE tool messages into one payload — over a mirrored cap of
+    // three on the very first iteration — and the next submit was a
+    // BAD_REQUEST for the whole turn, after the viewer had already paid for
+    // that round.
+    //
+    // Five calls in round one exceeds the cap of three, so the loop must refuse
+    // BEFORE executing them: one submit total, no tool POSTs, and the viewer
+    // told why.
+    pollQueue = [multiCallSnapshot(5), textSnapshot('unreachable')];
+    await sendMessage('five at once', 1);
+
+    await waitFor(() => {
+      expect(screen.getByText(/could not finish that/i)).toBeTruthy();
+    });
+    // ISOLATING: had the bound counted rounds, this would be 2 (the round would
+    // have run and resubmitted) and there would be five POSTs.
+    expect(submitted).toHaveLength(1);
+    expect(toolRequests.filter((r) => r.method === 'POST')).toHaveLength(0);
+  });
+
+  it('parallel calls WITHIN the cap still run and are all answered', async () => {
+    // POSITIVE CONTROL for the test above: the refusal must be the CAP, not an
+    // inability to handle parallel calls at all. Three is exactly the cap.
+    pollQueue = [multiCallSnapshot(3), textSnapshot('All three looked up.')];
+    const all = await sendMessage('three at once', 2);
+
+    expect(toolRequests.filter((r) => r.method === 'POST')).toHaveLength(3);
+    const answers = all[1].messages.filter((m) => m.role === 'tool');
+    expect(answers).toHaveLength(3);
+    expect(answers.map((m) => m.tool_call_id).sort()).toEqual(['call_0', 'call_1', 'call_2']);
   });
 
   it('a MALFORMED arguments string is reported to the model, not thrown at the viewer', async () => {
