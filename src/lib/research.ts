@@ -38,7 +38,8 @@
 // per-owner) — a `.toLocaleString()` on that is a live TypeError.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BLOCKS_BASE_URL = 'https://civitai.com/api/v1/blocks';
+/** Shared by the catalog client above and the tool transport in `./tools.ts`. */
+export const BLOCKS_BASE_URL = 'https://civitai.com/api/v1/blocks';
 
 /** Canonical web URL for a model, so an answer can cite a real link. */
 export function modelUrl(modelId: number): string {
@@ -311,364 +312,35 @@ function clampInt(n: number, min: number, max: number): number {
   return Math.min(Math.max(v, min), max);
 }
 
-// ── Retrieval policy ─────────────────────────────────────────────────────────
+// ── Display helpers (used by the Research panel, not by grounding) ───────────
 
 /**
- * Turns that are obviously not catalog lookups. Deliberately a CLOSED,
- * enumerated set rather than a fuzzy classifier: this predicate FAILS OPEN, so
- * anything not listed here is retrieved for. A false skip is the only expensive
- * mistake (the answer loses its grounding); a false retrieve costs one wasted
- * HTTP request and never any Buzz.
+ * Compact a count for display: 1234 -> "1.2K", 1234567 -> "1.2M".
+ *
+ * 🔴 SURVIVED THE HEURISTIC DELETION ON PURPOSE. It reads like part of the
+ * context-assembly block that went with it, and it is not — `ResearchPanel`
+ * renders it for the viewer's own manual searches, which are a different
+ * feature from grounding a turn.
  */
-const NON_CATALOG_TURNS = new Set([
-  'hi',
-  'hello',
-  'hey',
-  'yo',
-  'thanks',
-  'thank you',
-  'ty',
-  'ok',
-  'okay',
-  'k',
-  'cool',
-  'nice',
-  'got it',
-  'sure',
-  'yes',
-  'no',
-  'yep',
-  'nope',
-  'bye',
-  'goodbye',
-  'stop',
-  'continue',
-  'go on',
-  'more',
-  'why',
-  'how',
-  'what',
-]);
-
-/** True when a turn should trigger a catalog search. */
-export function shouldRetrieve(text: string): boolean {
-  const normalized = text
-    .trim()
-    .toLowerCase()
-    .replace(/[!?.,]+$/g, '')
-    .replace(/\s+/g, ' ');
-  if (normalized.length === 0) return false;
-  if (NON_CATALOG_TURNS.has(normalized)) return false;
-  return true;
-}
-
-// ── Query derivation ─────────────────────────────────────────────────────────
-//
-// 🔴 THE USER'S SENTENCE IS NOT A SEARCH QUERY, AND SENDING IT WAS A REAL BUG.
-// `/api/v1/blocks/models` is a KEYWORD search, so an interrogative phrasing
-// matches on the interrogative. Measured against the live endpoint with a
-// minted block token, both HTTP 200:
-//
-//   "What is DreamShaper?" → 10 items, top hit "He is Unaware of What is…"
-//   "DreamShaper"          → 10 items, top hit DreamShaper (1.67M downloads)
-//
-// The first set was then injected as authoritative catalog context, which is why
-// the reply read "The search results did not include DreamShaper." The model was
-// telling the truth about the garbage it was given.
-//
-// This is deliberately a CLOSED, enumerated stopword list rather than a
-// classifier, for the same reason `NON_CATALOG_TURNS` is: it must fail toward
-// searching for MORE, not less. Anything not listed survives into the query.
-
-/**
- * Function words, interrogatives and asking-verbs. Content words a catalog
- * search can actually use — `model`, `lora`, `checkpoint`, `anime`, a name —
- * are deliberately ABSENT, so they are never stripped.
- */
-const QUERY_STOPWORDS = new Set([
-  // interrogatives
-  'what', 'whats', "what's", 'which', 'who', 'whos', "who's", 'where', 'when',
-  'why', 'how', 'whose', 'whom',
-  // copulas / auxiliaries
-  'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am',
-  'do', 'does', 'did', 'doing', 'done',
-  'can', 'could', 'will', 'would', 'shall', 'should', 'may', 'might', 'must',
-  'have', 'has', 'had',
-  // asking verbs — the user is addressing the assistant, not the catalog
-  'tell', 'show', 'find', 'explain', 'describe', 'know', 'give', 'get',
-  'recommend', 'suggest', 'search', 'look', 'looking', 'help',
-  // pronouns / determiners / prepositions
-  'i', 'me', 'my', 'mine', 'you', 'your', 'yours', 'we', 'us', 'our', 'it',
-  'its', 'they', 'them', 'their', 'there', 'this', 'that', 'these', 'those',
-  'a', 'an', 'the', 'of', 'for', 'to', 'in', 'on', 'at', 'by', 'with', 'from',
-  'about', 'into', 'over', 'under', 'up', 'out', 'any', 'some', 'more', 'most',
-  'and', 'or', 'but', 'if', 'so', 'than', 'then', 'as',
-  // politeness / filler
-  'please', 'thanks', 'thank', 'hey', 'hi', 'hello', 'ok', 'okay', 'just',
-  // evaluative filler — "best anime lora" wants ANIME LORA, and leaving "best"
-  // in makes the search match model NAMES containing the word "Best". Measured
-  // against the live endpoint: "best anime lora" → "Best Studio Ghibli LoRA
-  // Style"; "anime lora" → "Anime LoRA - Makoto Shinkai Anime Style".
-  // 'top' is deliberately NOT here — it is a real tag on this catalog.
-  'best', 'better', 'good', 'great', 'nice', 'cool', 'favourite', 'favorite',
-  'popular',
-]);
-
-/**
- * How many terms survive into the query. A keyword search degrades as terms are
- * added — every extra token is another way to match something irrelevant — and
- * a user sentence long enough to exceed this is one whose subject is in the
- * first few content words anyway.
- */
-export const MAX_QUERY_TERMS = 8;
-
-/** Split into comparable lowercase terms. Shared by derivation and scoring. */
-function toTerms(text: string): string[] {
-  return text
-    .replace(/[?!.,;:()[\]{}"“”'’`]/g, ' ')
-    .split(/\s+/)
-    .filter(Boolean);
-}
-
-/**
- * Turn a conversational turn into a keyword query.
- *
- * A QUOTED PHRASE WINS OUTRIGHT — someone who writes `"Pony Diffusion"` has told
- * us the exact string they mean, and no amount of stopword logic beats that.
- *
- * FAILS BACK TO THE ORIGINAL TEXT rather than to an empty query: an empty
- * `query` param makes the endpoint return an unfiltered listing, which is worse
- * than an over-broad search because it looks like a result set.
- */
-export function deriveSearchQuery(text: string): string {
-  const cleaned = text.trim().replace(/\s+/g, ' ');
-  if (!cleaned) return '';
-
-  const quoted = cleaned.match(/["“'’]([^"“”'’]{2,80})["”'’]/);
-  if (quoted?.[1]?.trim()) return quoted[1].trim();
-
-  const kept = toTerms(cleaned).filter((t) => !QUERY_STOPWORDS.has(t.toLowerCase()));
-  if (kept.length === 0) return cleaned.replace(/[?!.,;:]+$/g, '').trim();
-  return kept.slice(0, MAX_QUERY_TERMS).join(' ');
-}
-
-/**
- * Does this result set plausibly answer this query?
- *
- * Deliberately a WEAK, deterministic test — one result whose NAME contains one
- * query term — not a relevance model. It exists to catch the one failure that
- * actually happened (a query whose terms appear nowhere in any hit) and must not
- * reject a legitimately fuzzy match.
- *
- * Returns `true` for an empty query or an empty term set, because "unrelated" is
- * not a claim we can make there.
- */
-export function resultsLookRelated(
-  results: ModelSearchResult | null | undefined,
-  query: string,
-): boolean {
-  const terms = toTerms(query)
-    .map((t) => t.toLowerCase())
-    .filter((t) => t.length >= 3);
-  if (terms.length === 0) return true;
-  const items = results?.items ?? [];
-  if (items.length === 0) return false;
-  return items.some((m) => {
-    const name = m.name.toLowerCase();
-    return terms.some((t) => name.includes(t));
-  });
-}
-
-/**
- * The narrower retry: the single most distinctive term.
- *
- * Longest-token is a crude proxy for distinctiveness and that is on purpose —
- * it needs no corpus, no scoring and no network, and the case it exists for is
- * a multi-word query where one word is a model name. Returns `null` when there
- * is nothing to narrow, so the caller keeps the first result rather than
- * re-running the same search.
- */
-export function narrowQuery(query: string): string | null {
-  const terms = toTerms(query).filter((t) => t.length >= 3);
-  if (terms.length < 2) return null;
-  const longest = terms.reduce((a, b) => (b.length > a.length ? b : a));
-  return longest === query.trim() ? null : longest;
-}
-
-/** What actually grounded a turn: the query used, and what it returned. */
-export interface TurnRetrieval {
-  /** The query SENT to the endpoint — not the user's sentence. */
-  query: string;
-  results: ModelSearchResult | null;
-  /** True when the first query looked unrelated and the narrow retry was used. */
-  narrowed: boolean;
-}
-
-/**
- * Retrieve catalog context for one conversational turn: derive the query, search,
- * and retry once narrowed if the hits look unrelated to what was asked.
- *
- * At most TWO requests, and never any Buzz — retrieval is plain HTTP.
- */
-export async function retrieveForTurn(
-  text: string,
-  auth: CatalogAuth,
-  opts: SearchModelsOptions = {},
-): Promise<TurnRetrieval> {
-  const query = deriveSearchQuery(text);
-  const results = await searchModels(query, auth, opts);
-  if (resultsLookRelated(results, query)) return { query, results, narrowed: false };
-
-  const narrow = narrowQuery(query);
-  if (!narrow) return { query, results, narrowed: false };
-
-  const retried = await searchModels(narrow, auth, opts);
-  // Keep the retry ONLY if it is actually better. A narrow query that also
-  // misses leaves the viewer with a query string in the panel that explains
-  // nothing about the (broader) results they can see.
-  if (resultsLookRelated(retried, narrow)) return { query: narrow, results: retried, narrowed: true };
-  return { query, results, narrowed: false };
-}
-
-// ── Context assembly ─────────────────────────────────────────────────────────
-
-/**
- * The injection budget.
- *
- * 🔴 THE BUDGET IS NOT `maxTokens`. `maxTokens` bounds GENERATED tokens only
- * ("Maximum number of tokens to generate" — `ChatCompletionInput.maxTokens`),
- * so injected context does not compete with answer length at all. What DOES
- * bound this is the host's per-message cap, `MAX_MESSAGE_CHARS = 8_000`
- * (`chatMessageSchema.content` is `.min(1).max(8000)`), which is a hard REJECT
- * of the whole request rather than a truncation.
- *
- * 6,000 sits deliberately below that with ~2,000 chars of headroom, so the
- * grounding preamble plus an unusually verbose result set can never turn a
- * question into a `BAD_REQUEST`. Per-record caps keep one long description from
- * eating the whole budget. The remaining lever is attention cost, not capacity.
- */
-export const MAX_CONTEXT_CHARS = 6_000;
-export const MAX_DESCRIPTION_CHARS = 300;
-export const MAX_CONTEXT_MODELS = 8;
-
-/**
- * 🔴 THE `urn:air:` STRIP IS MANDATORY, NOT COSMETIC.
- *
- * The host runs `containsAirReference` over the ENTIRE built input — every
- * string, array element, object value and object key — and a hit is a hard
- * `FORBIDDEN` before the Buzz quote. It is a case-insensitive SUBSTRING scan,
- * so it does not care that the literal arrived inside a model description we
- * merely quoted. One retrieved description carrying that literal would bounce
- * the user's whole question with an error that names nothing they typed.
- *
- * The step's own header names this as the app's job: "`messages[].content` is
- * assembled by the block, which can strip or escape the literal before
- * submitting."
- */
-export function stripAirReferences(text: string): string {
-  return text.replace(/urn:air:/gi, 'urn-air-');
-}
-
-/** Civitai model descriptions are HTML. Flatten for a text prompt. */
-function toPlainText(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, ' ')
-    .replace(/<\/(p|div|li|h[1-6])>/gi, ' ')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return `${text.slice(0, max - 1).trimEnd()}…`;
-}
-
-/** `downloadCount` / `tippedAmountCount` are nullable — render the absence. */
 export function formatStat(n: number | null | undefined): string {
   if (n == null) return 'hidden';
   return n.toLocaleString('en-US');
 }
 
-function formatModelRecord(model: ModelSearchItem): string {
-  const versions = (model.modelVersions ?? [])
-    .slice(0, 3)
-    .map((v) => (v.baseModel ? `${v.name} (${v.baseModel})` : v.name))
-    .join(', ');
-  const description = model.description
-    ? truncate(toPlainText(model.description), MAX_DESCRIPTION_CHARS)
-    : '';
-
-  const lines = [
-    `- ${model.name} [id ${model.id}] — ${model.type}`,
-    `  url: ${modelUrl(model.id)}`,
-    `  downloads: ${formatStat(model.stats?.downloadCount)} · 👍 ${formatStat(
-      model.stats?.thumbsUpCount,
-    )} · 👎 ${formatStat(model.stats?.thumbsDownCount)}`,
-  ];
-  if (versions) lines.push(`  versions: ${versions}`);
-  if (model.tags?.length) lines.push(`  tags: ${model.tags.slice(0, 8).join(', ')}`);
-  if (description) lines.push(`  about: ${description}`);
-  return lines.join('\n');
-}
-
-/**
- * The first line of an injected catalog message.
- *
- * 🔴 A MARKER IS NOT A GUARD. The system prompt has to NAME this label so the
- * model knows what it is looking at, which means the phrase appears in two
- * messages — so "some message contains the marker" is satisfied by the prompt
- * alone and would pass with retrieval completely broken. Tests must identify
- * the catalog message STRUCTURALLY (a `system` message that is not the leading
- * app prompt) and use this constant only as a secondary check.
- */
-export const CATALOG_CONTEXT_MARKER = 'CIVITAI CATALOG RESULTS';
-
-const CONTEXT_HEADER =
-  CATALOG_CONTEXT_MARKER +
-  ' (retrieved live for this turn, already filtered to the ' +
-  'browsing level this app is allowed to show). Use ONLY these records for claims ' +
-  'about specific models, their ids, stats or links. If they do not answer the ' +
-  "question, say the search did not turn it up — do not invent a model, an id or a URL.";
-
-/**
- * Compact a search result into one bounded `system` message body.
- *
- * Returns `''` when there is nothing to inject, so the caller can skip the
- * message entirely — an empty `content` is `.min(1)` on the host and would be
- * a `BAD_REQUEST`.
- */
-export function formatCatalogContext(
-  results: ModelSearchResult | null | undefined,
-  query?: string,
-): string {
-  const head = query ? `${CONTEXT_HEADER}\nQuery: ${query}` : CONTEXT_HEADER;
-  let out = head;
-
-  // 🔴 THE BUDGET IS ENFORCED PER WHOLE RECORD, AND A TRAILING SLICE WOULD NOT
-  // BE THE SAME THING. Dropping a record that does not fit keeps every record
-  // that IS present complete — id, url and stats intact. Assembling everything
-  // and slicing the tail to the same length would instead hand the model a
-  // record cut mid-field: a truncated URL, or a name with no id, presented in
-  // the same authoritative frame as the real ones. That is worse than omitting
-  // it. (A mutation sweep found this: with a trailing `.slice()` also in place,
-  // deleting this `break` changed nothing any test could see, because the slice
-  // silently did the bounding. The slice is gone; this is the only bound.)
-  for (const model of (results?.items ?? []).slice(0, MAX_CONTEXT_MODELS)) {
-    const record = `\n\n${formatModelRecord(model)}`;
-    if (out.length + record.length > MAX_CONTEXT_CHARS) break;
-    out += record;
-  }
-
-  // No records — nothing was returned, or nothing fitted. Either way there is
-  // no grounding to offer, and an empty `content` is a `.min(1)` BAD_REQUEST.
-  if (out === head) return '';
-
-  return stripAirReferences(out);
-}
+// ── The old client-side retrieval heuristic lived here and is GONE ──────────
+//
+// 🔴 DELETED, NOT DISABLED: `shouldRetrieve`, `deriveSearchQuery`,
+// `resultsLookRelated`, `narrowQuery`, `retrieveForTurn`, and the context
+// assembly (`formatCatalogContext` and its helpers) that injected the results
+// as a system message. A stopword stripper decided the query, searched once,
+// and had no way to react to what came back.
+//
+// The model now forms and refines its own query through real tool calling —
+// see `./tools.ts`. Leaving both paths live was explicitly not acceptable:
+// two grounding mechanisms means the one that is wrong is the one nobody is
+// looking at.
+//
+// What survives above is the CATALOG CLIENT (`searchModels`, `searchImages`,
+// `findModelInResults`, `modelUrl`), which the Research panel still uses for
+// the viewer's own manual searches. That is a different feature from grounding
+// a turn, and it was never part of the heuristic.

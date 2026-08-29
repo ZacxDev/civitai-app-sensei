@@ -20,7 +20,8 @@ import { createOrchestrator } from './lib/orchestrator.js';
 import { TextOutputWithheldError } from './lib/orchestrator-bridge.js';
 import * as sessionsLib from './lib/sessions.js';
 import * as researchLib from './lib/research.js';
-import { generateMessageId, withSystemPrompt, withRetrievalContext } from './lib/chat.js';
+import * as toolsLib from './lib/tools.js';
+import { generateMessageId, withSystemPrompt } from './lib/chat.js';
 import { generateTitle } from './lib/sessions.js';
 
 import { ChatArea } from './components/ChatArea.js';
@@ -98,6 +99,13 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const [gateRaised, setGateRaised] = useState(false);
 
   const streamingRef = useRef(false);
+  /**
+   * The live message array, for the one caller that must read it OUTSIDE React's
+   * render flow: {@link handleStopStream}. A functional `setMessages` updater
+   * could read the same value, but side-effecting inside an updater double-fires
+   * under StrictMode and this effect WRITES TO STORAGE.
+   */
+  const messagesRef = useRef<Message[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
   const { estimate, submit, poll, cancel } = useBuzzWorkflow();
   const orchestrator = useMemo(
@@ -153,6 +161,14 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     },
     [],
   );
+
+  // Mirror the message array into a ref so `handleStopStream` can persist the
+  // partial reply without depending on React's render cycle. Cheap, and the
+  // alternative (reading state inside a setState updater) writes to storage
+  // twice under StrictMode.
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // ---- Load sessions on mount ----
   useEffect(() => {
@@ -384,83 +400,123 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setMessages([...updatedMessages, assistantMsg]);
 
     try {
-      // ── (a) RETRIEVE, then (b) INJECT, then (c) ONE completion. ────────────
+      // ── TOOL CALLING: the model forms its own query; one submit per round ──
       //
-      // 🔴 THIS REPLACES A LOOP THAT COULD NEVER RUN. The old code sent
-      // `tools: CIVITAI_TOOLS` and looped up to 5 rounds on `tool_calls` — but
-      // the host's params schema is `.strict()`, so `tools` was a
-      // `BAD_REQUEST`, and even had it not been, a `'textOutput'` step cannot
-      // return a tool call at all. The loop was unreachable code that made the
-      // system prompt's claim of catalog access look supported.
+      // 🔴 THIS IS THE LOOP THE OLD COMMENT SAID COULD NEVER RUN, AND NOW IT
+      // CAN. A previous revision sent `tools` and looped, which was dead code
+      // because the host's params schema was `.strict()` without them and a
+      // text-posture step had no channel to return a call on. Both have since
+      // changed host-side: `tools`/`tool_choice` are accepted, and structured
+      // calls arrive on a `toolCalls` snapshot field released only when the
+      // output scan releases.
       //
-      // Retrieval is deterministic and needs no model call: a search engine
-      // handles free text, so the user's own words ARE the query. It runs
-      // before the single completion and costs no Buzz — a wasted search is one
-      // HTTP request, never a charge. Failures are swallowed on purpose: an
-      // ungrounded answer is much better than no answer, and the rewritten
-      // system prompt tells the model to say when nothing was attached.
+      // 🔴 EACH ROUND IS ITS OWN SUBMIT — the money design, not a detail. A
+      // server-side loop would spend N times the token's PER-CALL budget inside
+      // one call, and a mid-loop failure would have already paid for the
+      // completed rounds with nothing to show for them. Per-round submits mean
+      // every round is separately quoted against the live orchestrator price,
+      // separately gated on `buzzBudget`, and separately reserved against the
+      // per-user, per-app and dev-session caps.
       //
-      // 🔴 THE QUERY IS DERIVED, NOT THE RAW SENTENCE. This used to pass
-      // `content` — the user's whole question — straight to a KEYWORD search, so
-      // "What is DreamShaper?" matched on "What is" and returned ten unrelated
-      // models, which were then injected as authoritative catalog context. The
-      // model dutifully reported that the results did not include DreamShaper.
-      // `retrieveForTurn` strips the interrogative and retries narrowed when the
-      // hits look unrelated; see `lib/research.ts` for the A/B against the live
-      // endpoint.
-      let catalogContext = '';
-      if (researchLib.shouldRetrieve(content)) {
+      // 🔴 THE ROUND CAP IS THE HOST'S. `MAX_TOOL_ROUNDS` is mirrored here only
+      // so the app can stop cleanly and SAY SO; the host counts `role:'tool'`
+      // messages in a `.superRefine` on both the estimate and the submit path,
+      // so exceeding it is a BAD_REQUEST no matter what this code believes.
+      //
+      // Declarations are FETCHED, never authored here — a model must not be
+      // shown a contract the route does not enforce. Failing to fetch them
+      // degrades to a tool-less conversation rather than taking the turn down.
+      let declarations: toolsLib.ToolDeclaration[] = [];
+      try {
+        declarations = await toolsLib.fetchToolDeclarations({ token: token_.raw });
+      } catch {
+        declarations = [];
+      }
+
+      let apiMessages = withSystemPrompt(
+        updatedMessages.map((m) => ({ role: m.role, content: m.content })),
+        settings.systemPrompt,
+      );
+
+      const onChunk = (chunk: string) => {
+        if (!streamingRef.current) return;
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last.id === assistantMsg.id) {
+            return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
+          }
+          return prev;
+        });
+      };
+
+      const submit = () =>
+        orchestrator.submitChatCompletion(
+          {
+            model: settings.model,
+            messages: apiMessages,
+            temperature: settings.temperature,
+            max_tokens: settings.maxTokens,
+            ...(declarations.length > 0
+              ? { tools: declarations, toolChoice: 'auto' as const }
+              : {}),
+          },
+          onChunk,
+          abortControllerRef.current?.signal,
+        );
+
+      let response = await submit();
+      let rounds = 0;
+      let hitRoundCap = false;
+
+      for (;;) {
+        const calls = response.toolCalls ?? [];
+        if (calls.length === 0) break;
+
+        if (rounds >= toolsLib.MAX_TOOL_ROUNDS) {
+          // A terminal state with a user-visible explanation, not a silent stop
+          // and not an unhandled rejection. The viewer has been charged for
+          // every round that ran and is owed an account of why it stopped.
+          hitRoundCap = true;
+          break;
+        }
+        rounds += 1;
+
+        // Show the model's OWN query in the Research panel. This is the whole
+        // argument for the change: the query is authored by the model from the
+        // user's sentence, not stripped out of it by a stopword list.
+        const firstQuery = toolsLib.readQueryArgument(calls[0]);
+        if (firstQuery) setSearchQuery(firstQuery);
+
         setIsSearching(true);
+        let results: string[];
         try {
-          const turn = await researchLib.retrieveForTurn(
-            content,
-            { token: token_.raw },
-            { limit: researchLib.MAX_CONTEXT_MODELS },
+          results = await Promise.all(
+            calls.map((c) => toolsLib.callTool(c, { token: token_.raw })),
           );
-          catalogContext = researchLib.formatCatalogContext(turn.results, turn.query);
-          // The ResearchPanel then shows exactly what grounded the answer AND
-          // the query that produced it — the user can SEE both rather than take
-          // them on trust. Showing the query is what makes a bad retrieval
-          // visible instead of silently poisoning the answer.
-          setSearchResults(turn.results);
-          setSearchQuery(turn.query);
-          setSearchNarrowed(turn.narrowed);
-        } catch {
-          catalogContext = '';
         } finally {
           setIsSearching(false);
         }
+
+        apiMessages = [
+          ...apiMessages,
+          // The ask. Carries no content — its content IS the calls — and
+          // `toStepMessages` deliberately keeps it for that reason.
+          { role: 'assistant', content: '', tool_calls: calls },
+          // The answers, each correlated to the id it answers.
+          ...calls.map((c, k) => ({
+            role: 'tool',
+            content: results[k],
+            tool_call_id: c.id,
+          })),
+        ];
+
+        response = await submit();
       }
 
-      const apiMessages = withRetrievalContext(
-        withSystemPrompt(
-          updatedMessages.map((m) => ({ role: m.role, content: m.content })),
-          settings.systemPrompt,
-        ),
-        catalogContext,
-      );
+      const replyText = hitRoundCap
+        ? `I looked things up ${rounds} time${rounds === 1 ? '' : 's'} and still could not finish that. Try asking something narrower.`
+        : response.choices[0].message.content;
 
-      const response = await orchestrator.submitChatCompletion(
-        {
-          model: settings.model,
-          messages: apiMessages,
-          temperature: settings.temperature,
-          max_tokens: settings.maxTokens,
-        },
-        (chunk) => {
-          if (!streamingRef.current) return;
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last.id === assistantMsg.id) {
-              return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
-            }
-            return prev;
-          });
-        },
-        abortControllerRef.current?.signal,
-      );
-
-      const replyText = response.choices[0].message.content;
       if (replyText) {
         setMessages((prev) => {
           const last = prev[prev.length - 1];
@@ -538,7 +594,27 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setIsStreaming(false);
     abortControllerRef.current?.abort();
     orchestrator.cancel?.();
-  }, [orchestrator]);
+
+    // 🔴 PERSIST WHAT WAS STREAMED, HERE, RATHER THAN LEAVING IT TO THE
+    // COMPLETION PROMISE. Aborting rejects the in-flight submit, and the catch
+    // below DOES eventually write — but it is asynchronous, and a viewer who
+    // stops a reply and immediately reloads beats it. Measured on the live
+    // store: after a two-exchange verification the array was
+    // `[user, assistant, user]` — three elements. The second reply was not
+    // written incompletely, it was never written AT ALL.
+    //
+    // 🔴 THE BUZZ WAS ALREADY SPENT. The submit was charged the moment it was
+    // made; stopping the stream stops the RENDERING, not the billing. Losing
+    // the partial reply means the viewer paid and has nothing, and no record of
+    // why — the same reasoning the withhold path already applies one branch
+    // over, which was applied to withholds and missed here.
+    const current = messagesRef.current;
+    if (activeSessionId && current.length > 0) {
+      void persist('save the stopped reply', () =>
+        sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, current),
+      );
+    }
+  }, [orchestrator, persist, activeSessionId]);
 
   const handleRegenerate = useCallback(async (messageId: string) => {
     // 🔴 GATE BEFORE THE DESTRUCTIVE SLICE. The slice below removes the
