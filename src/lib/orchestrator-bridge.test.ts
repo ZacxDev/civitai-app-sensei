@@ -90,36 +90,62 @@ describe('orchestrator-bridge', () => {
       expect('temperature' in body.params).toBe(false);
     });
 
-    it('NEVER forwards tools, tool_choice, response_format or stream', () => {
+    it('still drops the params the host rejects — and no longer drops tools', () => {
       // 🔴 THE CAST IS THE POINT, AND IT IS NOT A LOOPHOLE. `ChatCompletionRequest`
-      // no longer DECLARES these keys, so the app cannot express them — that is
-      // the primary guard and it is compile-time. This test keeps the RUNTIME
+      // does not DECLARE the banned keys, so the app cannot express them — that
+      // is the primary guard and it is compile-time. This test keeps the RUNTIME
       // guard honest for the inputs a type cannot police: a deserialized stored
       // request, an `any` from a future refactor, a hand-built object. Deleting
       // the cast would delete the only reachable input this assertion has.
+      //
+      // ⚠️ `tools` AND `tool_choice` USED TO BE ON THE BANNED LIST. The host
+      // widened its schema to accept them, so banning them here would now be
+      // asserting the opposite of the contract. They moved to the assertions
+      // below rather than being quietly deleted from the list.
       const body = buildChatCompletionBody({
         model: MODEL,
         messages: [{ role: 'user', content: 'hi' }],
         stream: true,
-        tool_choice: 'auto',
         response_format: { type: 'json_object' },
-        tools: [
-          {
-            type: 'function',
-            function: { name: 'search_models', description: 'd', parameters: {} },
-          },
-        ],
+        modalities: ['image'],
       } as unknown as Parameters<typeof buildChatCompletionBody>[0]);
-      for (const banned of [
-        'tools',
-        'tool_choice',
-        'response_format',
-        'stream',
-        'max_tokens',
-        'modalities',
-      ]) {
+      for (const banned of ['response_format', 'stream', 'max_tokens', 'modalities']) {
         expect(banned in body.params).toBe(false);
       }
+      // No tools were declared on THIS request, so neither key is emitted — an
+      // empty `tools` array is a different thing from an absent one.
+      expect('tools' in body.params).toBe(false);
+      expect('tool_choice' in body.params).toBe(false);
+    });
+
+    it('forwards declared tools, and maps toolChoice to the snake_case wire key', () => {
+      const tools = [
+        { type: 'function' as const, function: { name: 'search_models', description: 'd', parameters: {} } },
+      ];
+      const body = buildChatCompletionBody({
+        model: MODEL,
+        messages: [{ role: 'user', content: 'hi' }],
+        tools,
+        toolChoice: 'auto',
+      });
+      expect(body.params.tools).toEqual(tools);
+      // 🔴 SNAKE_CASE ON THE WIRE, camelCase in the app. The orchestrator reads
+      // `tool_choice`; an unknown key is IGNORED rather than rejected, so
+      // getting this backwards would leave the feature silently inert with every
+      // test still green. That is why the spelling is asserted, not assumed.
+      expect(body.params.tool_choice).toBe('auto');
+      expect('toolChoice' in body.params).toBe(false);
+    });
+
+    it('emits no tool keys for an EMPTY tools array — absent and empty differ', () => {
+      const body = buildChatCompletionBody({
+        model: MODEL,
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [],
+        toolChoice: 'auto',
+      });
+      expect('tools' in body.params).toBe(false);
+      expect('tool_choice' in body.params).toBe(false);
     });
 
     it('rejects a model that is not on the host allowlist', () => {

@@ -3,7 +3,6 @@ import {
   formatRoleLabel,
   estimateTokens,
   withSystemPrompt,
-  withRetrievalContext,
   serializeMessages,
   deserializeMessages,
   assembleChunks,
@@ -62,41 +61,10 @@ describe('chat', () => {
     });
   });
 
-  describe('withRetrievalContext', () => {
-    const base = [
-      { role: 'system', content: 'prompt' },
-      { role: 'user', content: 'first' },
-      { role: 'assistant', content: 'reply' },
-      { role: 'user', content: 'best anime lora?' },
-    ];
-
-    it('splices the context IMMEDIATELY BEFORE the latest user turn', () => {
-      const result = withRetrievalContext(base, 'CATALOG');
-      expect(result).toHaveLength(5);
-      expect(result[3]).toEqual({ role: 'system', content: 'CATALOG' });
-      expect(result[4]).toEqual({ role: 'user', content: 'best anime lora?' });
-      // The app's own system prompt still leads.
-      expect(result[0].content).toBe('prompt');
-    });
-
-    it('returns the array UNCHANGED for empty context', () => {
-      // An empty `content` is `.min(1)` on the host — a BAD_REQUEST for the
-      // whole request, not a message that gets dropped.
-      expect(withRetrievalContext(base, '')).toEqual(base);
-      expect(withRetrievalContext(base, '   ')).toEqual(base);
-    });
-
-    it('appends when there is no user turn at all', () => {
-      const result = withRetrievalContext([{ role: 'system', content: 'p' }], 'CATALOG');
-      expect(result[result.length - 1]).toEqual({ role: 'system', content: 'CATALOG' });
-    });
-
-    it('targets the LAST user turn, not the first', () => {
-      const result = withRetrievalContext(base, 'CATALOG');
-      const idx = result.findIndex((m) => m.content === 'CATALOG');
-      expect(result.slice(0, idx).filter((m) => m.role === 'user')).toHaveLength(1);
-    });
-  });
+  // 🔴 `withRetrievalContext`'s SUITE WAS DELETED WITH THE FUNCTION. It spliced a
+  // heuristic search's results in as a system message; grounding now arrives as
+  // `role:'tool'` messages the model asked for by name. Coverage for that lives
+  // in `./tools.test.ts` and `../tool-calling.e2e.test.tsx`.
 
   describe('serializeMessages', () => {
     it('preserves all fields including id', () => {

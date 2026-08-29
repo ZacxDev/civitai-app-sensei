@@ -24,11 +24,17 @@ describe('completion-types', () => {
   // ───────────────────────────────────────────────────────────────────────────
   // 🔴 THESE ARE THE `.strict()` BLOCKERS, PINNED AT THE TYPE LEVEL.
   //
-  // `chatCompletionParamsSchema` is `.strict()` over exactly
-  // `{ model, messages, maxTokens, temperature }`, and `chatMessageSchema` has
-  // no `'tool'` role and no `tool_call_id`. Making each rejected key
-  // INEXPRESSIBLE turns a runtime BAD_REQUEST — which costs a round trip and
-  // surfaces as a generic failure — into a compile error at the call site.
+  // `chatCompletionParamsSchema` is `.strict()`, so any key it does not name is
+  // a BAD_REQUEST for the WHOLE request. Making a rejected key INEXPRESSIBLE
+  // turns a runtime failure — which costs a round trip and surfaces generically
+  // — into a compile error at the call site.
+  //
+  // ⚠️ THE ACCEPTED SET GREW, AND THIS COMMENT USED TO SAY IT COULD NOT. It
+  // read "`.strict()` over exactly `{ model, messages, maxTokens, temperature }`
+  // and `chatMessageSchema` has no `'tool'` role and no `tool_call_id`". That
+  // was true when written and is now false: the host added `tools`,
+  // `tool_choice`, a `'tool'` role and `tool_call_id`. The pins below are the
+  // NEW boundary — they still fail on a key the host does not accept.
   //
   // `toMatchTypeOf` is deliberately NOT used here: it is structural and would
   // pass for a type that merely happens to be assignable. `keyof` enumerates
@@ -36,13 +42,16 @@ describe('completion-types', () => {
   // ───────────────────────────────────────────────────────────────────────────
   it('ChatCompletionRequest cannot express a param the host rejects', () => {
     expectTypeOf<keyof ChatCompletionRequest>().toEqualTypeOf<
-      'model' | 'messages' | 'max_tokens' | 'temperature'
+      'model' | 'messages' | 'max_tokens' | 'temperature' | 'tools' | 'toolChoice'
     >();
   });
 
-  it('a request message cannot carry tool_call_id', () => {
+  it('a request message carries exactly the tool-correlation fields, and no more', () => {
+    // `tool_call_id` and `tool_calls` are now EXPRESSIBLE because the host
+    // accepts them — this pin's job changed from forbidding them to bounding
+    // the set they joined.
     expectTypeOf<keyof ChatCompletionRequest['messages'][number]>().toEqualTypeOf<
-      'role' | 'content'
+      'role' | 'content' | 'tool_call_id' | 'tool_calls'
     >();
   });
 
