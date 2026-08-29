@@ -377,6 +377,14 @@ describe('the degraded no-tools path — the prompt must not claim what the wire
 
     // The wire really is tool-less — otherwise this test would be asserting
     // about a request that never took the degraded branch.
+    //
+    // ⚠️ THIS PAIR IS A PRECONDITION, NOT THE ISOLATING ASSERTION, and an
+    // earlier comment claimed otherwise. `orchestrator-bridge` already gates on
+    // `tools.length > 0`, so an empty `declarations` array yields a tool-less
+    // wire whether or not App branches correctly — a mutant that sends `tools`
+    // unconditionally from App survives both of these lines. What actually pins
+    // App's branch is the `NO_TOOLS_NOTICE` assertion below: the notice is
+    // appended only on the degraded path and nothing downstream can add it.
     expect('tools' in params).toBe(false);
     expect('tool_choice' in params).toBe(false);
 

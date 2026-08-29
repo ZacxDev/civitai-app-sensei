@@ -342,3 +342,129 @@ describe('tools — bounding a result keeps it valid JSON', () => {
     expect(JSON.parse(out)).toHaveProperty('error');
   });
 });
+
+describe('abort timing inside the 429 retry', () => {
+  beforeEach(() => {
+    requests = [];
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  /**
+   * 🔴 REGRESSION: an abort landing between the 429 RESPONSE and the SLEEP
+   * STARTING issued the retry the viewer had already abandoned.
+   *
+   * `abortableSleep` registers an `abort` listener — and `addEventListener`
+   * on an ALREADY-ABORTED signal never fires. Without the early return, the
+   * sleep therefore ran its full clamped duration (up to 15 s) and then
+   * resolved `true`, so the caller retried. The early return is what makes an
+   * abort that arrived a moment too early behave like one that arrived a moment
+   * later.
+   *
+   * The mutant that removes it survived all 259 tests before this.
+   */
+  it('🔴 an abort that lands BEFORE the sleep starts still cancels the retry', async () => {
+    const controller = new AbortController();
+    install(() => {
+      // Abort as a side effect of producing the 429: by the time `abortableSleep`
+      // is reached the signal is already aborted, which is the window that had
+      // no coverage.
+      controller.abort();
+      return new Response('slow down', { status: 429, headers: { 'retry-after': '120' } });
+    });
+
+    const started = Date.now();
+    const out = await callTool(call('{"query":"x"}'), { ...AUTH, signal: controller.signal });
+    const elapsed = Date.now() - started;
+
+    // Exactly one request: the retry was refused, not merely delayed.
+    expect(requests).toHaveLength(1);
+    // And it did not wait out the clamp first. The clamp is 15 s; anything in
+    // that neighbourhood means the sleep ran to completion and the early return
+    // was absent.
+    expect(elapsed).toBeLessThan(2000);
+    // The caller gets a tool-level error string, never a throw.
+    expect(JSON.parse(out).error).toBeTruthy();
+  });
+});
+
+describe('combineSignals fallback (runtimes without AbortSignal.any)', () => {
+  let savedAny: unknown;
+  beforeEach(() => {
+    requests = [];
+    savedAny = (AbortSignal as unknown as Record<string, unknown>).any;
+    // Force the fallback. On this runtime `AbortSignal.any` exists, so the
+    // fallback is otherwise unreachable and every assertion about it would be
+    // vacuous.
+    delete (AbortSignal as unknown as Record<string, unknown>).any;
+  });
+  afterEach(() => {
+    (AbortSignal as unknown as Record<string, unknown>).any = savedAny;
+    globalThis.fetch = originalFetch;
+  });
+
+  it('🔴 positive control: the fallback is actually the code under test here', () => {
+    expect((AbortSignal as unknown as Record<string, unknown>).any).toBeUndefined();
+  });
+
+  it('🔴 does not accumulate a listener on the caller signal per request', async () => {
+    // The fallback is only reachable while `AbortSignal.any` is absent. Assert
+    // it here rather than trusting the hook: if this ever holds, every listener
+    // assertion below is about the NATIVE path and proves nothing.
+    expect((AbortSignal as unknown as Record<string, unknown>).any).toBeUndefined();
+    install(() => new Response(JSON.stringify({ items: [] }), { status: 200 }));
+
+    const controller = new AbortController();
+    // 🔴 CAPTURE THE SIGNAL ONCE. Instrumenting `controller.signal.addEventListener`
+    // and then passing `controller.signal` again reads the accessor twice, and
+    // the object identity across those reads is not something this test should
+    // be asserting by accident — instrument and pass the SAME reference.
+    const signal = controller.signal;
+    let added = 0;
+    let removed = 0;
+    const realAdd = signal.addEventListener.bind(signal);
+    const realRemove = signal.removeEventListener.bind(signal);
+    signal.addEventListener = ((...args: unknown[]) => {
+      if (args[0] === 'abort') added += 1;
+      return (realAdd as unknown as (...a: unknown[]) => void)(...args);
+    }) as unknown as typeof signal.addEventListener;
+    signal.removeEventListener = ((...args: unknown[]) => {
+      if (args[0] === 'abort') removed += 1;
+      return (realRemove as unknown as (...a: unknown[]) => void)(...args);
+    }) as unknown as typeof signal.removeEventListener;
+
+    for (let i = 0; i < 5; i += 1) {
+      await callTool(call('{"query":"x"}'), { ...AUTH, signal });
+    }
+
+    // Positive control #1: the calls actually reached the network layer. A
+    // `callTool` that bailed on its arguments would never call `combineSignals`
+    // at all, and every listener assertion below would be about nothing.
+    expect(requests).toHaveLength(5);
+    // Positive control #2: the fallback really did register on the caller
+    // signal. Without this a broken instrument reading 0/0 would "pass".
+    expect(added).toBe(5);
+    // 🔴 THE POINT: each request's listener is removed when the OTHER signal
+    // wins. `{ once: true }` retires only the listener that FIRED, so the loser
+    // stayed registered for the caller signal's whole lifetime — one dead
+    // listener per tool request, measured 10 added / 0 removed before this.
+    expect(removed).toBe(added);
+  });
+
+  it('still aborts an in-flight request through the fallback', async () => {
+    const controller = new AbortController();
+    install((_url, init) => {
+      // A real fetch rejects on abort; model that so the fixture cannot pass by
+      // ignoring the signal.
+      if ((init as { signal?: AbortSignal })?.signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      controller.abort();
+      throw new DOMException('Aborted', 'AbortError');
+    });
+
+    const out = await callTool(call('{"query":"x"}'), { ...AUTH, signal: controller.signal });
+    expect(JSON.parse(out).error).toBeTruthy();
+  });
+});

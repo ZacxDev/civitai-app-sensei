@@ -175,14 +175,37 @@ const TOOL_REQUEST_TIMEOUT_MS = 15_000;
  * 🔴 AN UNCLAMPED `Retry-After` IS A HANG WITH A POLITE NAME. The header is
  * server-controlled; `Retry-After: 120` wedged the turn for two minutes with
  * the "Searching" state stuck on and Stop unable to end it, because the sleep
- * observed neither the caller's signal nor the request deadline. Capped at the
- * request timeout so the retry can never outlive the budget a single tool call
- * was already given.
+ * observed neither the caller's signal nor the request deadline.
+ *
+ * 🔴 THIS IS A PER-REQUEST BOUND, NOT A PER-CALL ONE — an earlier version of
+ * this comment claimed the latter ("the retry can never outlive the budget a
+ * single tool call was already given") and that was wrong. The retry RECURSES
+ * into `toolsFetch`, which mints a FRESH `AbortSignal.timeout`, so one
+ * `callTool` can span request (15 s) + sleep (≤15 s) + retry (15 s) ≈ 45 s.
+ * What actually bounds a call end-to-end is the CALLER's signal, which is why
+ * every entry point must pass one; the clamp only stops a hostile header from
+ * being honoured verbatim.
  */
 const MAX_RETRY_AFTER_MS = TOOL_REQUEST_TIMEOUT_MS;
 
 /**
  * `AbortSignal.any`, with a fallback for runtimes that lack it.
+ *
+ * Returns a `dispose` alongside the signal because a combined signal OUTLIVES
+ * nothing but the request it was made for, while the CALLER's signal lives for
+ * the whole turn.
+ *
+ * 🔴 `{ once: true }` IS NOT CLEANUP, AND CROSS-REMOVING ON ABORT IS NOT EITHER
+ * — that was this function's first fix and the test caught it as incomplete.
+ * `once` retires only the listener that FIRED, and an abort-time cross-remove
+ * only runs when something aborts. On the ORDINARY path — the request simply
+ * succeeds — neither signal ever aborts, so nothing was removed and the caller
+ * signal accumulated one dead listener per tool request. Measured 5 added / 0
+ * removed across 5 calls with the abort-time cleanup already in place.
+ *
+ * So the lifetime that matters is the REQUEST's, and only `toolsFetch` knows
+ * when that ends: it calls `dispose()` in a `finally`. Native `AbortSignal.any`
+ * needs none of this, which is why its arm returns a no-op.
  *
  * 🔴 A HARD DEPENDENCY HERE FAILS IN THE WORST POSSIBLE DIRECTION. `tsconfig`
  * targets ES2022 and TypeScript's DOM lib declares `AbortSignal.any`, so a
@@ -190,19 +213,49 @@ const MAX_RETRY_AFTER_MS = TOOL_REQUEST_TIMEOUT_MS;
  * which `fetchToolDeclarations` swallows into `[]`, parking the app in the
  * degraded no-tools state permanently, with no error a viewer or we could see.
  * The feature would simply appear never to have shipped.
+ *
+ * 🔴 BE EXACT ABOUT WHAT THIS DETECTION COVERS — an earlier version of this
+ * comment argued the hazard as a class and then closed half of it. The same
+ * silent-degradation argument applies verbatim to `AbortSignal.timeout`, which
+ * is a SECOND undetected dependency at the `toolsFetch` call site and is
+ * evaluated as an argument BEFORE this function runs — so on a runtime lacking
+ * it, this fallback never executes and detecting `any` buys nothing. Support
+ * for `timeout` is strictly wider than for `any` (both shipped together in
+ * every engine that has either), so no realistic runtime is exposed and no
+ * detection is added for it; `timeoutSignal` below records that reasoning at
+ * the site rather than leaving the asymmetry implicit.
  */
-function combineSignals(caller: AbortSignal | undefined, timeout: AbortSignal): AbortSignal {
-  if (!caller) return timeout;
+function combineSignals(
+  caller: AbortSignal | undefined,
+  timeout: AbortSignal,
+): { signal: AbortSignal; dispose: () => void } {
+  if (!caller) return { signal: timeout, dispose: () => {} };
   const anyOf = (AbortSignal as { any?: (s: AbortSignal[]) => AbortSignal }).any;
-  if (typeof anyOf === 'function') return anyOf([caller, timeout]);
+  if (typeof anyOf === 'function') return { signal: anyOf([caller, timeout]), dispose: () => {} };
   const controller = new AbortController();
+  const listeners: Array<[AbortSignal, () => void]> = [];
+  const dispose = () => {
+    for (const [signal, handler] of listeners) signal.removeEventListener('abort', handler);
+    listeners.length = 0;
+  };
   const forward = (s: AbortSignal) => {
-    if (s.aborted) controller.abort(s.reason);
-    else s.addEventListener('abort', () => controller.abort(s.reason), { once: true });
+    if (s.aborted) {
+      dispose();
+      controller.abort(s.reason);
+      return;
+    }
+    const handler = () => {
+      dispose();
+      controller.abort(s.reason);
+    };
+    listeners.push([s, handler]);
+    s.addEventListener('abort', handler, { once: true });
   };
   forward(caller);
-  forward(timeout);
-  return controller.signal;
+  // `caller` may already be aborted, in which case `forward` above fired
+  // synchronously and there is nothing left to register.
+  if (!controller.signal.aborted) forward(timeout);
+  return { signal: controller.signal, dispose };
 }
 
 /**
@@ -236,16 +289,32 @@ async function toolsFetch(
   // failure, so without a deadline a stalled POST leaves the conversation
   // in-flight indefinitely with no way out — Stop cannot reach `fetch` itself.
   // The caller's signal and this timeout are combined so either can end it.
-  const signal = combineSignals(auth.signal, AbortSignal.timeout(TOOL_REQUEST_TIMEOUT_MS));
+  // `AbortSignal.timeout` is used undetected on purpose — see `combineSignals`
+  // for why detecting `any` without detecting this one would be theatre.
+  const { signal, dispose } = combineSignals(
+    auth.signal,
+    AbortSignal.timeout(TOOL_REQUEST_TIMEOUT_MS),
+  );
 
-  const res = await fetch(`${BLOCKS_BASE_URL}${path}`, {
-    ...rest,
-    signal,
-    headers: {
-      Authorization: `Bearer ${auth.token}`,
-      ...(rest.body ? { 'Content-Type': 'application/json' } : {}),
-    },
-  });
+  // 🔴 DISPOSE ON EVERY EXIT, INCLUDING THE THROWING ONES. The combined signal
+  // is scoped to THIS request, but its listener sits on the caller's signal,
+  // which lives for the whole turn — so anything that leaves this function
+  // without disposing retains a dead listener. `finally` rather than a call
+  // after the `await` because `fetch` rejects on abort and on network failure,
+  // and those are exactly the paths where a leak would accumulate fastest.
+  let res: Response;
+  try {
+    res = await fetch(`${BLOCKS_BASE_URL}${path}`, {
+      ...rest,
+      signal,
+      headers: {
+        Authorization: `Bearer ${auth.token}`,
+        ...(rest.body ? { 'Content-Type': 'application/json' } : {}),
+      },
+    });
+  } finally {
+    dispose();
+  }
   // 429 ONLY, and one retry — the same reasoning `fetchCatalog` documents, with
   // the same conclusion: the rate limit is keyed on this block instance and
   // clears in a known short window, so it is worth waiting out. A retryable 503

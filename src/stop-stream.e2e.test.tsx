@@ -357,3 +357,166 @@ describe('Stop DURING a tool call must not overwrite its own write', () => {
     expect(submitFn).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * 🔴 REGRESSION: the abort guards read a MUTABLE REF, not the turn they belong to.
+ *
+ * `abortControllerRef.current` is replaced by every send. `handleStopStream`
+ * clears `isStreaming` synchronously, so a viewer can send again immediately —
+ * and that second send installs a FRESH, UN-ABORTED controller. Turn 1, still in
+ * flight, then asked turn 2's controller "are we aborted?" and every guard
+ * answered false. Measured before the fix:
+ *
+ *   write 2: [u:"FIRST",  a:""]                  ← Stop's own transcript
+ *   write 3: [u:"FIRST",  a:"", u:"SECOND"]      ← turn 2's send
+ *   write 4: [u:"FIRST",  a:"Error: Aborted"]    ← turn 1's catch, guard bypassed
+ *
+ * Turn 2's user message is gone. This is why four consecutive rounds of abort
+ * fixes did not catch it: EVERY existing test runs a single turn, so the ref and
+ * the turn are the same object and the bug is unreachable by construction.
+ *
+ * 🔴 THE ASSERTION IS A MONOTONICITY INVARIANT, not a final-state check. In some
+ * orderings turn 2's own completion later restores the array, so a final-state
+ * assertion passes over the defect; the loss is only permanent when turn 1
+ * settles last. What is always true, and is what the viewer actually loses, is
+ * that no write may DROP a message an earlier write already contained.
+ */
+describe('a second send while the first turn is still in flight', () => {
+  beforeEach(() => {
+    pollMode = 'pending';
+    storage.sets.length = 0;
+    submitFn.mockClear();
+    pollFn.mockClear();
+    cancelFn.mockClear();
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ tools: [] }), { status: 200 }),
+    ) as unknown as typeof globalThis.fetch;
+  });
+
+  it("🔴 turn 1's abort exit must not clobber turn 2 — no write may drop a message an earlier one had", async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+    fireEvent.click(screen.getByTestId('new-session-button'));
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'FIRST question' } });
+    fireEvent.click(screen.getByTestId('send-button'));
+    await waitFor(() => expect(submitFn).toHaveBeenCalledTimes(1));
+
+    // Stop turn 1 — then send turn 2 immediately, which is the ordinary thing a
+    // viewer does and the thing that swaps the ref out from under turn 1.
+    fireEvent.click(await screen.findByTestId('stop-button'));
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'SECOND question' } });
+    fireEvent.click(screen.getByTestId('send-button'));
+    await waitFor(() => expect(submitFn).toHaveBeenCalledTimes(2));
+
+    // Let turn 1's abort reach its catch. The bridge only observes the abort at
+    // the top of its next poll tick, so the window is real and bounded by the
+    // poll interval — derived, not hand-copied.
+    const BOUND_MS = POLL_INTERVAL_MS * 2.5;
+    const step = 50;
+    for (let waited = 0; waited < BOUND_MS; waited += step) {
+      await new Promise((r) => setTimeout(r, step));
+    }
+
+    // 🔴 THE INVARIANT. Once a write contains a user message, no later write may
+    // omit it. Pre-fix, write 4 dropped "SECOND question" — the viewer's message
+    // vanished from storage because turn 1 wrote a transcript built before it
+    // existed.
+    const writes = messageWrites().map(
+      (s) => s.value as Array<{ role: string; content: string }>,
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    const seen = new Set<string>();
+    for (const [i, arr] of writes.entries()) {
+      const users = new Set(arr.filter((m) => m.role === 'user').map((m) => m.content));
+      for (const previously of seen) {
+        expect(
+          users.has(previously),
+          `write ${i} dropped an earlier user message: ${previously}`,
+        ).toBe(true);
+      }
+      for (const u of users) seen.add(u);
+    }
+
+    // Positive control: this test is only meaningful if BOTH turns actually got
+    // as far as being persisted. Without it the loop above is vacuous on an
+    // empty or single-message history.
+    expect(seen.has('FIRST question')).toBe(true);
+    expect(seen.has('SECOND question')).toBe(true);
+  });
+});
+
+/**
+ * 🔴 REGRESSION: Stop was a no-op against the DECLARATIONS GET, and a submit was
+ * billed after it.
+ *
+ * `fetchToolDeclarations` was called with no caller signal, so Stop could not
+ * reach it; and even once the signal was threaded, the `catch` that degrades a
+ * failed fetch to `[]` swallows an AbortError identically to a 500 — so the turn
+ * continued and issued a BILLED submit for a turn the viewer had abandoned. The
+ * catch guard then suppressed the write, leaving a charge with no record.
+ *
+ * Passing the signal ends the REQUEST; the abort check after it ends the TURN.
+ * Both are needed, which is why this asserts on `submitFn`, not on storage.
+ */
+describe('Stop during the tool-declarations fetch', () => {
+  beforeEach(() => {
+    pollMode = 'pending';
+    storage.sets.length = 0;
+    submitFn.mockClear();
+    pollFn.mockClear();
+    cancelFn.mockClear();
+  });
+
+  it('🔴 must not bill a submit for a turn abandoned before the declarations landed', async () => {
+    let releaseDeclarations: (() => void) | null = null;
+    let fetchAborted = false;
+    globalThis.fetch = vi.fn(
+      (_url: unknown, init?: { signal?: AbortSignal }) =>
+        new Promise<Response>((resolve, reject) => {
+          releaseDeclarations = () =>
+            resolve(new Response(JSON.stringify({ tools: [] }), { status: 200 }));
+          // Honour the signal the way a real fetch does, so this fixture cannot
+          // pass merely because it ignores aborts.
+          init?.signal?.addEventListener('abort', () => {
+            fetchAborted = true;
+            reject(new DOMException('Aborted', 'AbortError'));
+          });
+        }),
+    ) as unknown as typeof globalThis.fetch;
+
+    render(<App />);
+    await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+    fireEvent.click(screen.getByTestId('new-session-button'));
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'a question' } });
+    fireEvent.click(screen.getByTestId('send-button'));
+
+    // Parked in the declarations GET: nothing has been submitted yet.
+    await waitFor(() => expect(releaseDeclarations).not.toBeNull());
+    expect(submitFn).not.toHaveBeenCalled();
+
+    fireEvent.click(await screen.findByTestId('stop-button'));
+
+    // 🔴 STOP MUST REACH THE REQUEST ITSELF, not merely the turn around it.
+    // Asserting only on billing is satisfied by the post-fetch abort check
+    // alone, so a mutant that drops the `signal` from `fetchToolDeclarations`
+    // survives — measured. Without the signal the GET runs to its own 15 s
+    // deadline (45 s if it 429s), holding the turn "in flight" with Stop
+    // already pressed. This is the assertion that pins the signal.
+    await waitFor(() => expect(fetchAborted).toBe(true), { timeout: 2000 });
+
+    // Release it anyway — a real fetch that ignored the abort must still not
+    // resume the turn. Pre-fix this is where it resumed and billed.
+    releaseDeclarations!();
+    for (let waited = 0; waited < 1000; waited += 50) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    expect(submitFn).not.toHaveBeenCalled();
+  });
+});

@@ -391,7 +391,34 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
     setIsStreaming(true);
     streamingRef.current = true;
-    abortControllerRef.current = new AbortController();
+
+    // 🔴 CAPTURE THE CONTROLLER; NEVER READ THE REF AGAIN IN THIS TURN.
+    //
+    // Every abort check in this function used to read `abortControllerRef
+    // .current`, which is MUTABLE and belongs to whichever turn started most
+    // recently — not to this one. `handleStopStream` clears `isStreaming`
+    // synchronously, so a viewer can send again immediately, and that second
+    // send replaces the ref with a FRESH, UN-ABORTED controller. Turn 1, still
+    // in flight, then read turn 2's controller and every guard evaluated false:
+    //
+    //   write 2: [u:"FIRST",  a:""]                  ← Stop's own transcript
+    //   write 3: [u:"FIRST",  a:"", u:"SECOND"]      ← turn 2's send
+    //   write 4: [u:"FIRST",  a:"Error: Aborted"]    ← turn 1, guard bypassed
+    //
+    // Turn 2's user message is gone. When turn 1 settles LAST the loss is
+    // permanent. This was the third consecutive fix to an abort exit that
+    // created the next one, and the reason is that all four exits asked a
+    // shared mutable cell "are we aborted?" instead of asking their own turn.
+    //
+    // 🔴 `aborted()` IS THE ONLY ABORT PREDICATE IN THIS FUNCTION, and that is
+    // the structural point rather than a style choice: it closes over THIS
+    // turn's controller, so a future guard written by reaching for what is in
+    // scope gets the right one by construction. `abortControllerRef` is written
+    // here and read only by `handleStopStream` — which SHOULD abort whatever
+    // turn is current. `App.abort-scope.test.ts` pins that split.
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const aborted = () => controller.signal.aborted;
 
     const assistantMsg: Message = {
       id: generateMessageId(),
@@ -430,10 +457,32 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // degrades to a tool-less conversation rather than taking the turn down.
       let declarations: toolsLib.ToolDeclaration[] = [];
       try {
-        declarations = await toolsLib.fetchToolDeclarations({ token: token_.raw });
+        declarations = await toolsLib.fetchToolDeclarations({
+          // 🔴 STOP MUST REACH THIS REQUEST TOO. Without the signal this GET
+          // was unabortable: its only deadline was the 15 s request timeout,
+          // and a 429 inside it slept a further clamped 15 s with no caller
+          // signal at all — so Stop was a no-op for up to ~45 s.
+          token: token_.raw,
+          signal: controller.signal,
+        });
       } catch {
         declarations = [];
       }
+
+      // 🔴 THE SIGNAL ALONE DOES NOT FIX IT — THE CATCH ABOVE SWALLOWS THE
+      // ABORT. `fetchToolDeclarations` rejecting with an AbortError is
+      // indistinguishable here from a 500 or a parse failure, and BOTH degrade
+      // to `[]` so the turn can continue tool-lessly. That degradation is right
+      // for a failure and wrong for a Stop: measured, a Stop pressed while this
+      // GET was parked produced 0 submits at the time of the Stop and then ONE
+      // BILLED SUBMIT when the request finally landed. The bridge submits
+      // before its first signal check, so the charge is real — and the catch
+      // guard below then correctly suppresses the write, leaving the viewer
+      // charged for an abandoned turn with no record of it.
+      //
+      // This exit is why "pass the signal" was not the whole fix: the signal
+      // ends the REQUEST, this ends the TURN.
+      if (aborted()) return;
 
       // 🔴 THE PROMPT MUST MATCH THE CAPABILITY THIS REQUEST ACTUALLY CARRIES.
       // `declarations` is the same value the `tools` key below is derived from,
@@ -466,7 +515,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             ...(toolsAvailable ? { tools: declarations, toolChoice: 'auto' as const } : {}),
           },
           onChunk,
-          abortControllerRef.current?.signal,
+          controller.signal,
         );
 
       let response = await submit();
@@ -483,7 +532,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // a Stop pressed while a tool POST is in flight still fell through to
         // another `submit()` — a second BILLED estimate+submit after the viewer
         // asked to stop.
-        if (abortControllerRef.current?.signal.aborted) break;
+        if (aborted()) break;
 
         const calls = response.toolCalls ?? [];
         if (calls.length === 0) break;
@@ -533,7 +582,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             calls.map((c) =>
               toolsLib.callTool(c, {
                 token: token_.raw,
-                signal: abortControllerRef.current?.signal,
+                signal: controller.signal,
               }),
             ),
           );
@@ -543,7 +592,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
         // A Stop landing while the tool POSTs were in flight must not be spent
         // on another submit.
-        if (abortControllerRef.current?.signal.aborted) break;
+        if (aborted()) break;
 
         apiMessages = [
           ...apiMessages,
@@ -583,7 +632,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // Placed after the loop rather than at each `break` so a future `break`
       // inherits it — the defect was one unguarded exit, and adding a third
       // exit should not be able to reintroduce it.
-      if (abortControllerRef.current?.signal.aborted) return;
+      if (aborted()) return;
 
       // On the cap, keep whatever prose the model DID write alongside its last
       // batch of calls and append the explanation — discarding it threw away
@@ -643,7 +692,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // never settles, which structurally removes this catch — pinning the one
       // shape where the fix is decisive rather than the ordinary one. Both paths
       // are covered now; see `stop-stream.e2e.test.tsx`.
-      if (abortControllerRef.current?.signal.aborted) {
+      if (aborted()) {
         return;
       }
       // 🔴 A WITHHOLD IS NOT AN ERROR. The host scanned the generated reply and
