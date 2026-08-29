@@ -106,6 +106,24 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    */
   const messagesRef = useRef<Message[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
+  /**
+   * Monotonic turn number. A turn increments it on entry and keeps the value;
+   * `turnSeqRef.current === mine` is therefore "I am still the current turn".
+   *
+   * 🔴 THIS IS NOT A DUPLICATE OF `abortControllerRef` — it answers a DIFFERENT
+   * question, and conflating them is what made the last fix incomplete.
+   * `aborted()` answers "was MY turn stopped"; this answers "is my turn still
+   * the one that owns the shared UI state". A turn that was never aborted but
+   * has been SUPERSEDED must still keep its hands off `isStreaming`, and no
+   * abort predicate can see that case.
+   *
+   * A plain counter rather than `abortControllerRef.current === controller`
+   * because that comparison is a fourth read of the mutable ref, which
+   * `App.abort-scope.test.ts` refuses by design — and rightly: the point of that
+   * guard is that abort questions go through `aborted()`. Ownership is a
+   * different axis and gets its own cell.
+   */
+  const turnSeqRef = useRef(0);
   const { estimate, submit, poll, cancel } = useBuzzWorkflow();
   const orchestrator = useMemo(
     () => createOrchestrator({ estimate, submit, poll, cancel }),
@@ -420,6 +438,31 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     abortControllerRef.current = controller;
     const aborted = () => controller.signal.aborted;
 
+    // 🔴 CLAIM OWNERSHIP OF THE SHARED STREAMING STATE, SO THE `finally` CAN
+    // CHECK IT. `setIsStreaming(false)` / `streamingRef.current = false` in this
+    // function's `finally` are writes to state shared by every turn, and they
+    // ran unconditionally — so a superseded turn settling late switched them off
+    // underneath the turn that now owned them.
+    //
+    // Measured, an ordinary Stop → send → send with no second Stop: turn 1's
+    // `finally` landed ~1 poll after turn 2 began, turn 2's Stop button
+    // disappeared, `onChunk`'s `!streamingRef.current` guard then dropped turn
+    // 2's chunks, and the reopened send gate accepted a THIRD send. Turn 2
+    // settled last and persisted an array built before turn 3 existed:
+    //
+    //   ["user:FIRST","assistant:","user:SECOND","assistant:TWO reply"]
+    //
+    // `THIRD question` and its BILLED reply were gone permanently. The viewer
+    // paid and had no record of it.
+    //
+    // 🔴 THE CAPTURED CONTROLLER CANNOT ANSWER THIS. Turn 1 was aborted here, so
+    // `aborted()` happens to be true — but turns 2 and 3 involve no Stop at all
+    // and the same clobber applies to any turn that is merely superseded. The
+    // question is ownership, not abortion, which is why this is a separate cell
+    // and why the previous round's "fixed structurally" claim was too broad: it
+    // closed every abort READ and left this shared WRITE untouched.
+    const mine = ++turnSeqRef.current;
+
     const assistantMsg: Message = {
       id: generateMessageId(),
       role: 'assistant',
@@ -725,8 +768,21 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       );
       if (withheld) depsRef.current.track('completion_withheld');
     } finally {
-      setIsStreaming(false);
-      streamingRef.current = false;
+      // 🔴 ONLY THE CURRENT TURN MAY CLEAR THE SHARED STREAMING STATE. See
+      // `mine` above for the measured three-turn message loss this prevents. A
+      // superseded turn settling late must leave `isStreaming` alone: the turn
+      // that owns it now is still running, and clearing it removes that turn's
+      // Stop button, makes `onChunk` drop its chunks, and reopens the send gate.
+      //
+      // 🔴 THE `catch` AND `try` EXITS ABOVE ARE ALREADY TURN-SAFE FOR A
+      // DIFFERENT REASON and this is not a substitute for them: they guard on
+      // `aborted()`, which asks whether THIS turn was stopped. This asks whether
+      // this turn is still current. A turn can be superseded without ever being
+      // aborted — that is precisely turns 2 and 3 in the case above.
+      if (turnSeqRef.current === mine) {
+        setIsStreaming(false);
+        streamingRef.current = false;
+      }
     }
   }, [
     activeSessionId,

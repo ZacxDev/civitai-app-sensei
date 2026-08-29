@@ -19,7 +19,12 @@ function call(args: string, name = 'search_models'): ToolCall {
 let requests: Array<{ url: string; method: string; auth: string; body: unknown }> = [];
 let originalFetch: typeof globalThis.fetch;
 
-function install(handler: (url: string, init?: RequestInit) => Response) {
+// The handler may return a promise: the abort-path fixtures need a request that
+// is genuinely IN FLIGHT when the signal fires, which a synchronous return
+// cannot express. The wrapper below already `return`s it from an async function,
+// so both shapes flatten identically at runtime — only the type was narrower
+// than the helper's own behaviour.
+function install(handler: (url: string, init?: RequestInit) => Response | Promise<Response>) {
   originalFetch = globalThis.fetch;
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : String(input);
@@ -452,19 +457,80 @@ describe('combineSignals fallback (runtimes without AbortSignal.any)', () => {
     expect(removed).toBe(added);
   });
 
-  it('still aborts an in-flight request through the fallback', async () => {
+  it("🔴 the caller's abort REACHES the request signal through the fallback", async () => {
+    // 🔴 THIS TEST USED TO BE VACUOUS, AND IT IS WORTH SAYING HOW. The fixture
+    // threw `AbortError` itself and the only assertion was that the returned
+    // JSON had a truthy `error` — which `callTool`'s own catch supplies for ANY
+    // rejection. Measured: making the fallback ignore the caller signal
+    // entirely (returning the bare timeout from `combineSignals`) left this
+    // test green; it died only in the listener-accounting test next door. So a
+    // test named for the abort path was pinned by a neighbouring guard.
+    //
+    // The isolating fact is that the CALLER's abort must show up on the signal
+    // the REQUEST was given. Nothing else in the chain can produce that.
     const controller = new AbortController();
+    let requestSignal: AbortSignal | undefined;
     install((_url, init) => {
-      // A real fetch rejects on abort; model that so the fixture cannot pass by
-      // ignoring the signal.
-      if ((init as { signal?: AbortSignal })?.signal?.aborted) {
-        throw new DOMException('Aborted', 'AbortError');
-      }
-      controller.abort();
-      throw new DOMException('Aborted', 'AbortError');
+      requestSignal = (init as { signal?: AbortSignal })?.signal;
+      // Park, so the abort lands while the request is genuinely in flight
+      // rather than after it has already failed for its own reasons.
+      return new Promise<Response>((_resolve, reject) => {
+        requestSignal?.addEventListener('abort', () =>
+          reject(new DOMException('Aborted', 'AbortError')),
+        );
+        queueMicrotask(() => controller.abort());
+      });
     });
 
     const out = await callTool(call('{"query":"x"}'), { ...AUTH, signal: controller.signal });
+
+    // Positive control: the fixture really did receive a signal to forward to.
+    expect(requestSignal, 'the request was given no signal at all').toBeDefined();
+    // 🔴 ISOLATING: the caller's abort propagated onto the request's own signal.
+    expect(
+      requestSignal!.aborted,
+      "the fallback did not forward the caller's abort to the request",
+    ).toBe(true);
     expect(JSON.parse(out).error).toBeTruthy();
+  });
+
+  it('🔴 the request signal is STILL LIVE while the body is read', async () => {
+    // 🔴 REGRESSION: `dispose()` ran in a `finally` around `fetch()`, but a
+    // resolved fetch means HEADERS — `res.json()` is a second await on a stream
+    // that can stall just as long. Measured on this arm: once `toolsFetch`
+    // returned, aborting the caller no longer reached the request signal
+    // (`aborted === false`), where the native arm read `true`. That is a window
+    // in which neither Stop nor the 15 s deadline can end a hung body, which is
+    // precisely what the deadline exists to prevent — reintroduced by the fix
+    // for a listener leak.
+    //
+    // Pinned at the moment that matters: while `json()` is executing, an abort
+    // must still land on the request's signal.
+    const controller = new AbortController();
+    let abortedDuringBodyRead: boolean | null = null;
+    install((_url, init) => {
+      const signal = (init as { signal?: AbortSignal })?.signal;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: new Headers(),
+        json: async () => {
+          // The body is being read. Abort now and observe whether the request
+          // signal — the one the fetch was handed — still sees it.
+          controller.abort();
+          abortedDuringBodyRead = signal?.aborted ?? null;
+          return { items: [{ id: 1, name: 'X' }], truncated: 0 };
+        },
+      } as unknown as Response);
+    });
+
+    await callTool(call('{"query":"x"}'), { ...AUTH, signal: controller.signal });
+
+    expect(
+      abortedDuringBodyRead,
+      'the combined signal was disposed before the body was read, so a stalled ' +
+        'body could not be aborted by Stop or by the request deadline',
+    ).toBe(true);
   });
 });

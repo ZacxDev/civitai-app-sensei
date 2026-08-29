@@ -399,6 +399,44 @@ describe('the degraded no-tools path — the prompt must not claim what the wire
     expect(system!.content).toMatch(/Do not claim to have looked anything up/i);
   });
 
+  it('🔴 a FAILED declarations fetch degrades the turn — it does not end it', async () => {
+    // 🔴 THE BRANCH NO TEST ENTERED. Every case in this describe stubs a 200
+    // with `{tools: []}`, which reaches the degraded state WITHOUT going through
+    // the `catch` — so the catch itself was uncovered, and mutating it to
+    // `{ declarations = []; return; }` survived the whole suite. That mutant
+    // turns a 500, a network error, a parse failure or the 15 s timeout into a
+    // silently abandoned turn: no reply, no error, no persist, and the viewer
+    // sees the composer come back with nothing added.
+    //
+    // The live code discriminates on `controller.signal.aborted` — a Stop ends
+    // the turn, a failure degrades it — which is the reliable signal rather than
+    // a message string. This pins the failure half.
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url.includes('/api/v1/blocks/tools')) {
+        return new Response('upstream exploded', { status: 500 });
+      }
+      return new Response(JSON.stringify({ items: [], metadata: {} }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    clearCache();
+
+    pollQueue = [textSnapshot('Answering without the catalog.')];
+    const all = await sendMessage('what is DreamShaper?');
+
+    // 🔴 ISOLATING: the turn REACHED the orchestrator. Under the mutant there is
+    // no submit at all, so this is the assertion that separates "degraded" from
+    // "abandoned" — the notice checks below would both pass vacuously on an
+    // empty array.
+    expect(all.length, 'a failed declarations fetch must not abandon the turn').toBe(1);
+
+    const params = all[0] as unknown as Record<string, unknown>;
+    expect('tools' in params).toBe(false);
+    const system = (params.messages as Array<{ role: string; content: string }>).find(
+      (m) => m.role === 'system',
+    );
+    expect(system!.content).toMatch(/Catalog lookup is unavailable for this message/i);
+  });
+
   it('POSITIVE CONTROL — with tools available the notice is ABSENT', async () => {
     // Without this, the assertion above would pass on a prompt that carried the
     // notice unconditionally — which would be a different lie, told on every

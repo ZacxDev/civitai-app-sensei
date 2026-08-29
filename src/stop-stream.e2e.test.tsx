@@ -520,3 +520,283 @@ describe('Stop during the tool-declarations fetch', () => {
     expect(submitFn).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * 🔴 REGRESSION: the turn's `finally` wrote SHARED state without checking whether
+ * the turn still owned it.
+ *
+ * `setIsStreaming(false)` / `streamingRef.current = false` ran unconditionally,
+ * so a SUPERSEDED turn settling late switched them off underneath the turn that
+ * owned them. Measured, an ordinary Stop → send → send with no second Stop:
+ *
+ *   1. turn 1's `finally` lands ~1 poll after turn 2 begins
+ *   2. turn 2's Stop button disappears; `onChunk`'s `!streamingRef.current`
+ *      guard then drops turn 2's chunks
+ *   3. the reopened send gate accepts a THIRD send
+ *   4. turn 2 settles last and persists an array built before turn 3 existed:
+ *      ["user:FIRST","assistant:","user:SECOND","assistant:TWO reply"]
+ *
+ * `THIRD question` and its BILLED reply are gone permanently.
+ *
+ * 🔴 NO ABORT PREDICATE CAN SEE THIS, which is why the previous round's
+ * "fixed structurally" claim was too broad. Turns 2 and 3 involve no Stop at all;
+ * the question is OWNERSHIP, not abortion. `turnSeqRef` answers it and
+ * `App.abort-scope.test.ts` deliberately says nothing about it.
+ */
+describe('a superseded turn must not clear the shared streaming state', () => {
+  beforeEach(() => {
+    pollMode = 'pending';
+    storage.sets.length = 0;
+    submitFn.mockClear();
+    pollFn.mockClear();
+    cancelFn.mockClear();
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ tools: [] }), { status: 200 }),
+    ) as unknown as typeof globalThis.fetch;
+  });
+
+  it("🔴 turn 1 settling late must not switch off turn 2's stream", async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+    fireEvent.click(screen.getByTestId('new-session-button'));
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'FIRST question' } });
+    fireEvent.click(screen.getByTestId('send-button'));
+    await waitFor(() => expect(submitFn).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByTestId('stop-button'));
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'SECOND question' } });
+    fireEvent.click(screen.getByTestId('send-button'));
+    await waitFor(() => expect(submitFn).toHaveBeenCalledTimes(2));
+
+    // Turn 2 is in flight, so its Stop button must be on screen. Positive
+    // control: without this the assertion after the wait could pass on a render
+    // that never had one.
+    expect(screen.queryByTestId('stop-button')).not.toBeNull();
+
+    // Let turn 1's abort reach its catch and run its `finally`. The bridge only
+    // observes the abort at the top of its next poll tick, so the window is real
+    // and bounded by the poll interval — imported, not hand-copied.
+    const BOUND_MS = POLL_INTERVAL_MS * 2.5;
+    for (let waited = 0; waited < BOUND_MS; waited += 50) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    // 🔴 THE INVARIANT. Turn 1 has finished; turn 2 has not. Pre-fix, turn 1's
+    // `finally` cleared the shared state and this button was gone.
+    expect(
+      screen.queryByTestId('stop-button'),
+      "turn 1's finally cleared isStreaming while turn 2 was still in flight",
+    ).not.toBeNull();
+
+    // 🔴 AND THE CONSEQUENCE THAT COSTS A MESSAGE: the send gate stays shut.
+    // Pre-fix it reopened, the send control came back while turn 2 was still
+    // streaming, and a third send was accepted whose reply turn 2 then overwrote
+    // out of existence.
+    //
+    // Asserted as the ABSENCE of the send control rather than by clicking it:
+    // while a turn is live the composer renders Stop in its place, so a click
+    // would throw on the missing element instead of measuring the gate. The
+    // absence is the same fact and it is the one that is observable in both
+    // arms — pre-fix this query returns an element.
+    expect(
+      screen.queryByTestId('send-button'),
+      'the send gate reopened while turn 2 was still streaming',
+    ).toBeNull();
+  });
+});
+
+/**
+ * 🔴 THE POST-LOOP ABORT GUARD, REACHED BY A SECOND TURN.
+ *
+ * An audit walk placed a wrong-turn read at the post-loop guard ONLY and it
+ * survived the entire suite: the two-turn test above uses the `{tools: []}`
+ * fixture, so it exits through the `catch` and never reaches that line, while
+ * every test that DOES reach it runs a single turn — where the ref and the turn
+ * are the same object and the defect is unreachable by construction.
+ *
+ * This is the seam: turn 1 inside the tool loop while turn 2 runs.
+ */
+describe('the post-loop abort guard, with a second turn in flight', () => {
+  let releaseToolPost: (() => void) | null = null;
+
+  beforeEach(() => {
+    pollMode = 'queue';
+    releaseToolPost = null;
+    storage.sets.length = 0;
+    submitFn.mockClear();
+    pollFn.mockClear();
+    cancelFn.mockClear();
+    toolPollQueue = [
+      {
+        workflowId: 'wf-tc',
+        status: 'succeeded',
+        cost: { total: 1 },
+        textOutputs: ['Round one prose.'],
+        toolCalls: [
+          {
+            id: 'call_1',
+            type: 'function',
+            function: { name: 'search_models', arguments: JSON.stringify({ query: 'dream' }) },
+          },
+        ],
+      },
+      { workflowId: 'wf-t', status: 'succeeded', cost: { total: 1 }, textOutputs: ['Turn two.'] },
+      { workflowId: 'wf-t', status: 'succeeded', cost: { total: 1 }, textOutputs: ['Turn two.'] },
+    ];
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : String(input);
+      const method = init?.method ?? 'GET';
+      if (url.includes('/api/v1/blocks/tools')) {
+        if (method === 'GET') {
+          return new Response(
+            JSON.stringify({
+              tools: [
+                {
+                  type: 'function',
+                  function: {
+                    name: 'search_models',
+                    description: 'Search the Civitai model catalog',
+                    parameters: { type: 'object', properties: { query: { type: 'string' } } },
+                  },
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Promise<Response>((resolve) => {
+          releaseToolPost = () =>
+            resolve(
+              new Response(JSON.stringify({ items: [{ id: 1, name: 'X' }], truncated: 0 }), {
+                status: 200,
+              }),
+            );
+        });
+      }
+      return new Response(JSON.stringify({ items: [], metadata: {} }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+  });
+
+  it('🔴 turn 1 leaving the tool loop must not clobber turn 2', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+    fireEvent.click(screen.getByTestId('new-session-button'));
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'FIRST question' } });
+    fireEvent.click(screen.getByTestId('send-button'));
+
+    // Turn 1 must actually be inside the tool loop — the whole point of the
+    // fixture. A Stop landing before it gets there proves nothing.
+    await waitFor(() => expect(releaseToolPost).not.toBeNull(), { timeout: 5000 });
+
+    fireEvent.click(await screen.findByTestId('stop-button'));
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+
+    // Turn 2, while turn 1 is still parked in its tool POST.
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'SECOND question' } });
+    fireEvent.click(screen.getByTestId('send-button'));
+    await waitFor(() => expect(submitFn.mock.calls.length).toBeGreaterThanOrEqual(2));
+
+    // Now release turn 1's POST so it leaves the loop and reaches the post-loop
+    // guard — the line the audit's walk survived at.
+    releaseToolPost!();
+
+    const BOUND_MS = POLL_INTERVAL_MS * 2.5;
+    for (let waited = 0; waited < BOUND_MS; waited += 50) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    // 🔴 MONOTONICITY, not final state: in some orderings turn 2 restores the
+    // array, so a final-state check passes over the defect. What the viewer
+    // actually loses is a message an earlier write already had.
+    const writes = messageWrites().map((s) => s.value as Array<{ role: string; content: string }>);
+    const seen = new Set<string>();
+    for (const [i, arr] of writes.entries()) {
+      const users = new Set(arr.filter((m) => m.role === 'user').map((m) => m.content));
+      for (const previously of seen) {
+        expect(users.has(previously), `write ${i} dropped an earlier user message: ${previously}`)
+          .toBe(true);
+      }
+      for (const u of users) seen.add(u);
+    }
+    expect(seen.has('FIRST question')).toBe(true);
+    expect(seen.has('SECOND question')).toBe(true);
+  });
+});
+
+/**
+ * 🔴 `onChunk`'s `!streamingRef.current` guard is the only thing stopping a
+ * stopped turn's chunks from rendering, and disabling it survived the whole
+ * suite.
+ *
+ * The bridge replays released text through `simulateStreaming` at ~20 ms/word
+ * and does NOT observe the abort signal while doing so (pre-existing on trunk,
+ * unchanged here — it is a rendering concern, not the persist bug). So after
+ * Stop the chunks keep arriving; what must not happen is that they keep landing
+ * in the transcript the viewer is looking at.
+ */
+describe('a stopped turn must stop RENDERING, not just stop billing', () => {
+  beforeEach(() => {
+    pollMode = 'queue';
+    storage.sets.length = 0;
+    submitFn.mockClear();
+    pollFn.mockClear();
+    cancelFn.mockClear();
+    // 60 words ≈ 1.2 s of replay, so Stop lands mid-stream with margin.
+    toolPollQueue = [
+      {
+        workflowId: 'wf-1',
+        status: 'succeeded',
+        cost: { total: 1 },
+        textOutputs: [Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ')],
+      },
+    ];
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ tools: [] }), { status: 200 }),
+    ) as unknown as typeof globalThis.fetch;
+  });
+
+  it('🔴 chunks arriving after Stop do not extend the transcript', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+    fireEvent.click(screen.getByTestId('new-session-button'));
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'a question' } });
+    fireEvent.click(screen.getByTestId('send-button'));
+
+    // Wait until the replay has actually started, so Stop lands MID-stream.
+    const bubble = () => document.body.textContent ?? '';
+    await waitFor(() => expect(bubble()).toContain('word0'), { timeout: 5000 });
+
+    fireEvent.click(await screen.findByTestId('stop-button'));
+    await new Promise((r) => setTimeout(r, 100));
+    const atStop = bubble();
+
+    // Let the rest of the replay run to COMPLETION. `simulateStreaming` is not
+    // abortable, so the chunks DO keep coming — only the guard stops them
+    // landing.
+    //
+    // 🔴 THE WAIT MUST OUTLAST THE WHOLE REPLAY OR THE TEST CANNOT DISCRIMINATE.
+    // A first version waited 700 ms against a 60-word × 20 ms ≈ 1.2 s replay, so
+    // `word59` had not been emitted yet in EITHER arm — the mutant survived and
+    // the test passed for the same reason the real code does. Derived from the
+    // fixture rather than guessed: 60 words × 20 ms, doubled for jsdom timer
+    // slop.
+    await new Promise((r) => setTimeout(r, 60 * 20 * 2));
+
+    // 🔴 POSITIVE CONTROL: the replay must genuinely have been incomplete when
+    // Stop landed, or "it did not grow" is trivially true of a finished stream.
+    expect(atStop, 'Stop landed after the replay had already finished').not.toContain('word59');
+
+    // 🔴 ISOLATING: no chunk that arrived after Stop reached the transcript.
+    expect(bubble()).toContain('word0');
+    expect(bubble(), 'a stopped turn kept rendering its chunks').not.toContain('word59');
+  });
+});

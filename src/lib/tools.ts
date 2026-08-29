@@ -222,8 +222,14 @@ const MAX_RETRY_AFTER_MS = TOOL_REQUEST_TIMEOUT_MS;
  * it, this fallback never executes and detecting `any` buys nothing. Support
  * for `timeout` is strictly wider than for `any` (both shipped together in
  * every engine that has either), so no realistic runtime is exposed and no
- * detection is added for it; `timeoutSignal` below records that reasoning at
- * the site rather than leaving the asymmetry implicit.
+ * detection is added for it.
+ *
+ * 🔴 THAT REASONING IS RECORDED AT THE CALL SITE TOO — see the comment above the
+ * `combineSignals(...)` call in `toolsFetch`. An earlier revision pointed here
+ * at an identifier named `timeoutSignal` that does not exist anywhere in `src/`,
+ * while the call site pointed back at this comment: a circular pair, one half of
+ * which named nothing. A cross-reference that cannot be followed is worse than
+ * none, because it reads as though the argument lives somewhere it does not.
  */
 function combineSignals(
   caller: AbortSignal | undefined,
@@ -302,9 +308,21 @@ async function toolsFetch(
   // without disposing retains a dead listener. `finally` rather than a call
   // after the `await` because `fetch` rejects on abort and on network failure,
   // and those are exactly the paths where a leak would accumulate fastest.
-  let res: Response;
+  //
+  // 🔴 THE BODY READ IS INSIDE THE SAME SCOPE, AND THAT IS THE POINT. A resolved
+  // `fetch` means HEADERS, not the whole response — `res.json()` is a second
+  // await on a stream that can stall just as long. An earlier revision returned
+  // the `Response` and let each caller read the body AFTER `dispose()` had
+  // already run, so on the fallback arm neither Stop nor the 15 s deadline could
+  // reach a hung body: measured, the request signal read `aborted === false`
+  // once `toolsFetch` returned, where the native arm read `true`. That is the
+  // exact hazard the deadline exists to prevent, reintroduced by the cleanup fix
+  // for a different leak. Returning the PARSED BODY keeps the request's lifetime
+  // and the signal's lifetime the same thing, by construction rather than by
+  // each caller remembering.
+  let retryAfterMs: number | null = null;
   try {
-    res = await fetch(`${BLOCKS_BASE_URL}${path}`, {
+    const res = await fetch(`${BLOCKS_BASE_URL}${path}`, {
       ...rest,
       signal,
       headers: {
@@ -312,32 +330,45 @@ async function toolsFetch(
         ...(rest.body ? { 'Content-Type': 'application/json' } : {}),
       },
     });
+    // 429 ONLY, and one retry — the same reasoning `fetchCatalog` documents,
+    // with the same conclusion: the rate limit is keyed on this block instance
+    // and clears in a known short window, so it is worth waiting out. A
+    // retryable 503 is deliberately NOT retried; a lookup that fails fast lets
+    // the model answer ungrounded rather than stalling the turn behind a
+    // backend flap.
+    //
+    // The delay is computed here but SLEPT below, outside this block, so the
+    // combined signal is disposed before a wait that can last 15 s.
+    if (res.status === 429 && retries > 0) {
+      const parsed = parseInt(res.headers.get('retry-after') ?? '2', 10);
+      // Clamped AND abortable: the header is server-controlled, and a sleep
+      // that ignores the caller's signal makes Stop a no-op for as long as it
+      // lasts.
+      retryAfterMs = Math.min(
+        Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : 2000,
+        MAX_RETRY_AFTER_MS,
+      );
+    } else {
+      if (!res.ok) {
+        throw new Error(`Civitai tools error: ${res.status} ${res.statusText}`);
+      }
+      return await res.json();
+    }
   } finally {
     dispose();
   }
-  // 429 ONLY, and one retry — the same reasoning `fetchCatalog` documents, with
-  // the same conclusion: the rate limit is keyed on this block instance and
-  // clears in a known short window, so it is worth waiting out. A retryable 503
-  // is deliberately NOT retried; a lookup that fails fast lets the model answer
-  // ungrounded rather than stalling the turn behind a backend flap.
-  if (res.status === 429 && retries > 0) {
-    const parsed = parseInt(res.headers.get('retry-after') ?? '2', 10);
-    // Clamped AND abortable: the header is server-controlled, and a sleep that
-    // ignores the caller's signal makes Stop a no-op for as long as it lasts.
-    const waitMs = Math.min(
-      Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : 2000,
-      MAX_RETRY_AFTER_MS,
-    );
-    const slept = await abortableSleep(waitMs, auth.signal);
-    // Aborted mid-wait: fail this call rather than issuing a retry the viewer
-    // has already asked us to abandon.
-    if (!slept) throw new DOMException('Aborted', 'AbortError');
-    return toolsFetch(init, auth, retries - 1);
+
+  // Only the 429 branch above leaves the block without returning or throwing.
+  // Stated rather than asserted with a bare `!`: if a future edit adds a fourth
+  // way out, this fails loudly instead of sleeping zero and retrying at once.
+  if (retryAfterMs === null) {
+    throw new Error('tools: unreachable — left the request block with no retry delay');
   }
-  if (!res.ok) {
-    throw new Error(`Civitai tools error: ${res.status} ${res.statusText}`);
-  }
-  return res;
+  const slept = await abortableSleep(retryAfterMs, auth.signal);
+  // Aborted mid-wait: fail this call rather than issuing a retry the viewer
+  // has already asked us to abandon.
+  if (!slept) throw new DOMException('Aborted', 'AbortError');
+  return toolsFetch(init, auth, retries - 1);
 }
 
 /**
@@ -349,8 +380,9 @@ async function toolsFetch(
  * catalog helper was unavailable.
  */
 export async function fetchToolDeclarations(auth: ToolAuth): Promise<ToolDeclaration[]> {
-  const res = await toolsFetch({ path: '/tools', method: 'GET' }, auth);
-  const data: unknown = await res.json();
+  // The parsed body, not a `Response` — `toolsFetch` reads it while the request
+  // signal is still live. See its comment for why that scope matters.
+  const data: unknown = await toolsFetch({ path: '/tools', method: 'GET' }, auth);
   const raw = (data as { tools?: unknown })?.tools;
   if (!Array.isArray(raw)) return [];
   return raw.filter((t): t is ToolDeclaration => {
@@ -392,7 +424,7 @@ export async function callTool(call: ToolCall, auth: ToolAuth): Promise<string> 
   }
 
   try {
-    const res = await toolsFetch(
+    const body: unknown = await toolsFetch(
       {
         path: '/tools',
         method: 'POST',
@@ -400,7 +432,6 @@ export async function callTool(call: ToolCall, auth: ToolAuth): Promise<string> 
       },
       auth,
     );
-    const body: unknown = await res.json();
     // Bounded defensively even though the host bounds its own projection: this
     // string becomes a message whose content the host caps at 8,000 chars, and
     // exceeding it is a reject of the WHOLE next request, not a truncation.
