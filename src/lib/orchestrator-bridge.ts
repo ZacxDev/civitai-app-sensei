@@ -310,7 +310,31 @@ export function buildChatCompletionBody(request: ChatCompletionRequest): Workflo
 export function extractReleasedText(snap: TextOutputSnapshot): string {
   const texts = snap.textOutputs;
   if (!Array.isArray(texts) || texts.length === 0) return '';
-  return texts.filter((t) => typeof t === 'string' && t.trim().length > 0).join('\n\n');
+
+  // 🔴 `textOutputs` IS NOT "THE REPLY" — IT ALSO CARRIES EVERY TOOL CALL'S RAW
+  // `arguments` JSON, AND RENDERING THAT VERBATIM WAS A USER-VISIBLE DEFECT.
+  //
+  // The host puts them there ON PURPOSE: `extractText` pushes
+  // `call.function.arguments` alongside `message.content` so the arguments go
+  // through the SAME content scan before anything is published
+  // (`chat-completion.step.ts`). That is a moderation guarantee, not a hint
+  // about what to display — and this function treated the union as prose, so a
+  // viewer who asked a catalog question saw `{"query":"popular","limit":5}`
+  // printed in the chat above the answer.
+  //
+  // 🔴 FILTERING BY THE RETURNED CALLS IS COMPLETE BY CONSTRUCTION, which is
+  // why this is exact rather than a heuristic. The host documents that
+  // `extractText` publishes "exactly the `arguments` of the calls
+  // [`extractToolCalls`] returns" — both go through one shared predicate, so no
+  // argument string can be in `textOutputs` without its call being in
+  // `toolCalls`. A blanket "looks like JSON" filter would instead eat a
+  // legitimate reply that happened to quote JSON.
+  const argumentStrings = new Set(extractToolCalls(snap).map((c) => c.function.arguments));
+
+  return texts
+    .filter((t) => typeof t === 'string' && t.trim().length > 0)
+    .filter((t) => !argumentStrings.has(t))
+    .join('\n\n');
 }
 
 /**

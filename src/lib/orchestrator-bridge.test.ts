@@ -654,3 +654,58 @@ describe('buildChatCompletionBody — params must satisfy the host .strict() sch
     expect(emitted).toContain('messages');
   });
 });
+
+/**
+ * 🔴 THE JSON LEAK — `textOutputs` is not "the reply".
+ *
+ * The host pushes every publishable tool call's raw `arguments` into
+ * `textOutputs` so they pass the SAME content scan as the prose
+ * (`chat-completion.step.ts`). `extractReleasedText` treated that union as the
+ * message, so a viewer asking a catalog question saw
+ * `{"query":"popular","limit":5}` printed above the answer.
+ *
+ * Filtering by the RETURNED calls is exact, not heuristic: the host documents
+ * that `extractText` publishes exactly the arguments of the calls
+ * `extractToolCalls` returns, so no argument string can appear without its call.
+ */
+describe('extractReleasedText — tool-call arguments must never render as prose', () => {
+  const call = (args: string) => ({
+    id: 'call_1',
+    type: 'function' as const,
+    function: { name: 'search_models', arguments: args },
+  });
+
+  it('🔴 drops the arguments JSON and keeps the model prose', () => {
+    const args = '{"query":"popular","limit":5}';
+    const text = extractReleasedText({
+      textOutputs: ['Let me look that up.', args],
+      toolCalls: [call(args)],
+    } as never);
+
+    expect(text).toBe('Let me look that up.');
+    expect(text).not.toContain('{"query"');
+  });
+
+  it('🔴 a tool-call-only round yields NO prose rather than the raw JSON', () => {
+    const args = '{"query":"anime"}';
+    expect(
+      extractReleasedText({ textOutputs: [args], toolCalls: [call(args)] } as never),
+    ).toBe('');
+  });
+
+  it('positive control: an ordinary reply is untouched', () => {
+    // Without this, a filter that dropped everything would pass both above.
+    expect(
+      extractReleasedText({ textOutputs: ['DreamShaper is a Checkpoint.'] } as never),
+    ).toBe('DreamShaper is a Checkpoint.');
+  });
+
+  it('🔴 prose that merely LOOKS like JSON survives — the filter is exact, not shape-based', () => {
+    // A blanket "starts with {" filter would eat this. The model can legitimately
+    // quote JSON when answering a question about an API.
+    const prose = 'The body is {"query":"x"} — pass it as JSON.';
+    expect(
+      extractReleasedText({ textOutputs: [prose], toolCalls: [] } as never),
+    ).toBe(prose);
+  });
+});

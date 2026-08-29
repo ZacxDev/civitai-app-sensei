@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Group } from '@civitai/blocks-react/ui';
 import type { Message } from '../types.js';
 import { formatRoleLabel } from '../lib/chat.js';
+import { MarkdownText } from './MarkdownText.js';
 import { token, radius } from '../theme.js';
 
 export interface MessageBubbleProps {
@@ -85,12 +86,24 @@ export function MessageBubble({ message, onRegenerate, onCopy }: MessageBubblePr
         style={{
           fontSize: 14,
           lineHeight: 1.6,
-          whiteSpace: 'pre-wrap',
+          // 🔴 NOT `pre-wrap` ANY MORE for a rendered message. The markdown
+          // renderer emits real block elements, and `pre-wrap` would preserve
+          // the source newlines AROUND them — doubling every gap. A message
+          // that renders as plain text still wraps, because the parser emits a
+          // paragraph per blank-line-separated run.
           wordBreak: 'break-word',
         }}
         data-testid="message-content"
       >
-        {message.content || '…'}
+        {/* 🔴 THE WITHHELD/ERROR BRANCH STAYS PLAIN. A withhold reason and an
+            `Error: …` string are FIRST-PARTY text with no markdown in them, and
+            running them through the renderer would let a future host-authored
+            reason string be parsed as markup. Only model prose is rendered. */}
+        {message.content
+          ? message.withheld
+            ? message.content
+            : <MarkdownText text={message.content} />
+          : '…'}
       </div>
     </div>
   );
