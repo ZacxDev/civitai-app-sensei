@@ -70,7 +70,17 @@ export const TEMPERATURE_MAX = 2;
  */
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
 
-const POLL_INTERVAL_MS = 1000;
+/**
+ * How long the poll loop waits between ticks.
+ *
+ * 🔴 EXPORTED SO A TEST CAN DERIVE ITS WAIT FROM IT RATHER THAN MIRROR IT.
+ * `stop-stream.e2e.test.tsx` needs a bound long enough for a second write to
+ * land; a hand-copied number there fails OPEN — raise this interval and the
+ * test's window silently becomes too short, so it stops observing the overwrite
+ * it exists to forbid and goes green for the wrong reason. Same shape as the
+ * round cap that mirrored the host's quantity without being tied to it.
+ */
+export const POLL_INTERVAL_MS = 1000;
 const POLL_TIMEOUT_MS = 60_000;
 
 /**

@@ -69,6 +69,28 @@ You can look up Civitai catalog data by calling the tools you have been given. C
 - Be concise and concrete. Link models as https://civitai.com/models/<id> using an id a tool returned.`;
 
 /**
+ * Appended to the system message on the turns where NO tools are sent.
+ *
+ * 🔴 THE PROMPT IS A CLAIM ABOUT THE WIRE, AND THE WIRE IS NOT CONSTANT.
+ * `fetchToolDeclarations` failing degrades the turn to a tool-less conversation
+ * — `tools` and `tool_choice` are simply omitted — but the system prompt was
+ * sent unchanged, so the model was told it could call tools on exactly the
+ * requests where it could not. That is the original defect this whole change
+ * set out to fix ("a model told it can search, then unable to, fabricates"),
+ * reinstated in the degraded branch by the fix for the default branch.
+ *
+ * 🔴 WHY AN APPENDED NOTICE RATHER THAN A SECOND DEFAULT PROMPT: the system
+ * prompt is viewer-editable and persisted. A second default would only correct
+ * viewers who never customised theirs, and would silently leave a custom prompt
+ * claiming tool access on a tool-less turn. This is composed at send time from
+ * the SAME condition that decides the wire, so it is true for every viewer
+ * regardless of what they wrote.
+ */
+export const NO_TOOLS_NOTICE = `
+
+Catalog lookup is unavailable for this message. Do not claim to have looked anything up. Answer from general knowledge and say plainly that you could not check the catalog.`;
+
+/**
  * Defaults this app has shipped, newest last. **Only used to decide whether a
  * STORED prompt is an untouched default that may be upgraded in place.**
  *
@@ -86,6 +108,19 @@ You can look up Civitai catalog data by calling the tools you have been given. C
  * case we deliberately cannot fix from here.
  */
 export const LEGACY_DEFAULT_SYSTEM_PROMPTS: readonly string[] = [
+  // Shipped as 0.1.0 (`8bd14a8` "Initial release" through `b287029`), where it
+  // lived inline in `DEFAULT_SETTINGS.systemPrompt` rather than as a named
+  // constant — which is why a search for `DEFAULT_SYSTEM_PROMPT` in the history
+  // does not find it, and why it was missed the first time this list was
+  // written. That build already persisted `sensei:settings`, so a viewer who
+  // opened Settings under 0.1.0 still holds this text.
+  //
+  // 🔴 IT IS NOT MERELY STALE, IT IS THE MOST DANGEROUS OF THE THREE: it claims
+  // catalog access (true again now, by a different mechanism) while carrying
+  // NONE of the anti-fabrication rules — no "ground every claim in what a tool
+  // returned", no "never guess a download count". A model on this prompt is
+  // told it can look things up and never told not to invent the answer.
+  `You are Civitai Sensei, an AI research assistant specializing in AI art and image generation. You can search the Civitai model catalog, look up model details, and find example images. Be helpful, concise, and knowledgeable about Stable Diffusion, LoRAs, checkpoints, and related tools.`,
   // Shipped through 0.1.5 — denies tool access and references the deleted
   // `CIVITAI CATALOG RESULTS` pre-attachment.
   `You are Civitai Sensei, an AI research assistant for AI art and image generation.

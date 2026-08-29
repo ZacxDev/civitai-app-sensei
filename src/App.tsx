@@ -14,7 +14,7 @@ import { Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
 
 import { palette, pageStyle, token, radius, mutedText } from './theme.js';
 import type { AppSettings, Message, Session } from './types.js';
-import { DEFAULT_SETTINGS, migrateSettings } from './types.js';
+import { DEFAULT_SETTINGS, migrateSettings, NO_TOOLS_NOTICE } from './types.js';
 import { AI_WRITE_BUDGETED, BUZZ_READ_SELF, hasGenerateScope } from './scopes.js';
 import { createOrchestrator } from './lib/orchestrator.js';
 import { TextOutputWithheldError } from './lib/orchestrator-bridge.js';
@@ -435,9 +435,14 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         declarations = [];
       }
 
+      // 🔴 THE PROMPT MUST MATCH THE CAPABILITY THIS REQUEST ACTUALLY CARRIES.
+      // `declarations` is the same value the `tools` key below is derived from,
+      // so the claim and the wire cannot disagree — including on the degraded
+      // path, where the fetch failed and no tools are sent at all.
+      const toolsAvailable = declarations.length > 0;
       let apiMessages = withSystemPrompt(
         updatedMessages.map((m) => ({ role: m.role, content: m.content })),
-        settings.systemPrompt,
+        toolsAvailable ? settings.systemPrompt : settings.systemPrompt + NO_TOOLS_NOTICE,
       );
 
       const onChunk = (chunk: string) => {
@@ -458,9 +463,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             messages: apiMessages,
             temperature: settings.temperature,
             max_tokens: settings.maxTokens,
-            ...(declarations.length > 0
-              ? { tools: declarations, toolChoice: 'auto' as const }
-              : {}),
+            ...(toolsAvailable ? { tools: declarations, toolChoice: 'auto' as const } : {}),
           },
           onChunk,
           abortControllerRef.current?.signal,
@@ -500,19 +503,27 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // Show the model's OWN query in the Research panel. This is the whole
         // argument for the change: the query is authored by the model from the
         // user's sentence, not stripped out of it by a stopword list.
+        // 🔴 CLEAR FIRST, UNCONDITIONALLY. Clearing inside `if (firstQuery)`
+        // left a previous manual search's results — and its label — on screen
+        // whenever the model called a tool that takes no `query` (an id lookup,
+        // say). Declarations are fetched, not authored here, so which tools
+        // have a `query` argument is not ours to assume. Any tool round makes
+        // the standing results stale; the label is what may or may not be
+        // replaceable.
+        //
+        // `calls[0]` is deliberate and not an oversight: the panel shows ONE
+        // query, so a round of parallel calls has no single label to display.
+        // Taking the first is honest about that; joining them would invent a
+        // query the model never wrote.
+        setSearchResults(null);
         const firstQuery = toolsLib.readQueryArgument(calls[0]);
         if (firstQuery) {
-          setSearchQuery(firstQuery);
-          // 🔴 CLEAR THE RESULTS WITH IT. `searchResults` is only ever written
-          // by the manual search box, and is cleared only on session switch —
-          // so setting the query alone rendered the MODEL's query as a label
-          // above a PREVIOUS manual search's results. Showing a query with
-          // nothing under it is honest; showing it over unrelated models is
-          // not. The tool result is not wired in as panel items deliberately:
-          // its projected shape (name/tags/creator/downloads/baseModel) is not
+          // The tool result is not wired in as panel items deliberately: its
+          // projected shape (name/tags/creator/downloads/baseModel) is not
           // `ModelSearchItem`, and mapping it here would be a second definition
-          // of the host's projection that can drift from the real one.
-          setSearchResults(null);
+          // of the host's projection that can drift from the real one. So the
+          // panel shows the model's own query over nothing, which is honest.
+          setSearchQuery(firstQuery);
         }
 
         setIsSearching(true);
@@ -556,11 +567,38 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         response = await submit();
       }
 
+      // 🔴 A STOP THAT LEFT THE LOOP MUST NOT REACH THE PERSIST BELOW. The two
+      // `break`s above exit on `signal.aborted` and then FELL THROUGH to the
+      // `persist('save the reply', …)` at the end of this block — which
+      // overwrote the transcript `handleStopStream` had just written, silently
+      // losing every earlier round's prose from storage.
+      //
+      // 🔴 THE CATCH'S GUARD DOES NOT COVER THIS. It only sees the THROW route,
+      // and `callTool` never throws on abort — it converts the AbortError into
+      // a tool-error string (`tools.ts`), so an abort during a tool POST leaves
+      // the loop normally and never touches the catch. The guard added there
+      // for the ordinary abort path and this one are two different exits from
+      // the same function; fixing one did not fix the other.
+      //
+      // Placed after the loop rather than at each `break` so a future `break`
+      // inherits it — the defect was one unguarded exit, and adding a third
+      // exit should not be able to reintroduce it.
+      if (abortControllerRef.current?.signal.aborted) return;
+
       // On the cap, keep whatever prose the model DID write alongside its last
       // batch of calls and append the explanation — discarding it threw away
       // content the viewer had already been charged for, and often the most
       // useful part of the turn.
-      const capNotice = `I looked things up ${rounds} time${rounds === 1 ? '' : 's'} and still could not finish that. Try asking something narrower.`;
+      // 🔴 `rounds` IS INCREMENTED AFTER THE CAP CHECK, so it is 0 in exactly
+      // the case this notice exists for: a first round whose parallel calls
+      // already exceed the cap. "I looked things up 0 times" is both absurd and
+      // wrong about what happened — nothing was looked up because the request
+      // was refused before spending on it. The guarding test matched only
+      // /could not finish that/i and read straight past it.
+      const capNotice =
+        rounds === 0
+          ? 'That needed more lookups at once than I am allowed to make. Try asking about one thing at a time.'
+          : `I looked things up ${rounds} time${rounds === 1 ? '' : 's'} and still could not finish that. Try asking something narrower.`;
       const partial = response.choices[0]?.message?.content?.trim();
       const replyText = hitRoundCap
         ? partial

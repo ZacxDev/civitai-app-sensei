@@ -161,6 +161,40 @@ describe('tools — callTool reports failure TO THE MODEL rather than throwing',
     expect(JSON.parse(out).error).toMatch(/429/);
   });
 
+  it('🔴 a 429 retry does NOT outlive the caller’s Stop', async () => {
+    // 🔴 THE SLEEP USED TO IGNORE THE SIGNAL ENTIRELY. `Retry-After` is
+    // server-controlled, so `Retry-After: 120` wedged the turn for two minutes
+    // with "Searching" stuck on and Stop unable to end it — the loop's abort
+    // checks are unreachable while this sleep is pending.
+    install(() => new Response('slow down', { status: 429, headers: { 'retry-after': '120' } }));
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = callTool(call('{"query":"x"}'), { ...AUTH, signal: controller.signal });
+    // Abort well inside the 120s the server asked for.
+    setTimeout(() => controller.abort(), 20);
+    const out = await pending;
+    const elapsed = Date.now() - started;
+
+    // ISOLATING: without the signal race this cannot return in under 120s.
+    // The bound is generous enough not to be timing-flaky and still two orders
+    // of magnitude below the unclamped wait.
+    expect(elapsed).toBeLessThan(3_000);
+    // It still reports to the model rather than throwing — the existing contract.
+    expect(JSON.parse(out)).toHaveProperty('error');
+    // Exactly one request: the retry was abandoned, not issued.
+    expect(requests).toHaveLength(1);
+  });
+
+  it('🔴 a hostile `Retry-After` is CLAMPED even with no signal to race', async () => {
+    // A viewer who never presses Stop must not be held either. Clamped to the
+    // per-request timeout, so a retry can never outlive the budget the call
+    // already had.
+    install(() => new Response('slow down', { status: 429, headers: { 'retry-after': '99999' } }));
+    const started = Date.now();
+    await callTool(call('{"query":"x"}'), AUTH);
+    expect(Date.now() - started).toBeLessThan(20_000);
+  }, 30_000);
+
   it('bounds the result to the host message cap', async () => {
     install(
       () => new Response(JSON.stringify({ blob: 'x'.repeat(20_000) }), { status: 200 }),
@@ -261,6 +295,39 @@ describe('tools — bounding a result keeps it valid JSON', () => {
       expect(typeof item.id).toBe('number');
       expect(item.blurb?.length).toBe(900);
     }
+  });
+
+  it('🔴 RE-COUNTS `truncated` — a bound that misreports itself is worse than none', () => {
+    // The host emits `{ items, truncated }` and `truncated` is what IT dropped.
+    // Spreading the record carried that number through unchanged while this
+    // function dropped more on top of it, handing the model a short list
+    // alongside an assertion that nothing was left out. The model then reports
+    // it to the viewer as the complete set.
+    const out = boundToolResponse(big(20));
+    const parsed = JSON.parse(out) as { items: unknown[]; truncated: number };
+    expect(parsed.items.length).toBeLessThan(20);
+    // ISOLATING: the exact count dropped, not merely "nonzero" — a `truncated`
+    // that is nonzero but wrong is the same class of lie.
+    expect(parsed.truncated).toBe(20 - parsed.items.length);
+  });
+
+  it('🔴 ADDS to the host’s own `truncated` rather than replacing it', () => {
+    // The host already dropped 7 before we saw the payload. Reporting only what
+    // WE dropped would under-count by 7 and tell the model more of the catalog
+    // was covered than actually was.
+    const body = {
+      items: Array.from({ length: 20 }, (_, i) => ({ id: i, blurb: 'x'.repeat(900) })),
+      truncated: 7,
+    };
+    const parsed = JSON.parse(boundToolResponse(body)) as { items: unknown[]; truncated: number };
+    expect(parsed.truncated).toBe(7 + (20 - parsed.items.length));
+  });
+
+  it('a response with no `truncated` field gets an honest count, not NaN', () => {
+    const body = { items: Array.from({ length: 20 }, (_, i) => ({ id: i, blurb: 'x'.repeat(900) })) };
+    const parsed = JSON.parse(boundToolResponse(body)) as { items: unknown[]; truncated: number };
+    expect(Number.isFinite(parsed.truncated)).toBe(true);
+    expect(parsed.truncated).toBe(20 - parsed.items.length);
   });
 
   it('falls back to a valid JSON error when nothing can fit', () => {

@@ -53,9 +53,43 @@ describe('DEFAULT_SYSTEM_PROMPT — must describe the retrieval the app actually
     // Without this, the two `not.toContain` assertions above would pass on any
     // string that merely omits the phrases — including an empty prompt. This
     // pins that they are testing the thing they name.
-    const legacy = LEGACY_DEFAULT_SYSTEM_PROMPTS[0];
-    expect(legacy).toContain('You cannot browse, search, or call tools');
+    //
+    // 🔴 FOUND BY ITS OWN INDEX. This read `LEGACY_DEFAULT_SYSTEM_PROMPTS[0]`,
+    // which silently became a DIFFERENT prompt the moment an older default was
+    // prepended to the list — the control then asserted the 0.1.0 text contains
+    // phrases only the 0.1.5 text ever had, and went red for a reason that had
+    // nothing to do with what it guards. A positional reference into a list
+    // that is documented "newest last" is a coupling waiting to break.
+    const legacy = LEGACY_DEFAULT_SYSTEM_PROMPTS.find((p) =>
+      p.includes('You cannot browse, search, or call tools'),
+    );
+    expect(legacy, 'the 0.1.5 default must still be in the legacy list').toBeDefined();
     expect(legacy).toContain('CIVITAI CATALOG RESULTS');
+  });
+
+  it('🔴 the v0.1.0 default is in the legacy list too — it was shipped and is still stored', () => {
+    // The list is the ONLY thing deciding whether a stored prompt gets upgraded,
+    // so an omission here is invisible: the viewer keeps the stale prompt and
+    // nothing reports it. 0.1.0 lived inline in `DEFAULT_SETTINGS.systemPrompt`
+    // rather than as a named constant, which is exactly why grepping the history
+    // for `DEFAULT_SYSTEM_PROMPT` missed it.
+    //
+    // It is the more dangerous of the two: it CLAIMS catalog access while
+    // carrying none of the anti-fabrication rules.
+    const v010 = LEGACY_DEFAULT_SYSTEM_PROMPTS.find((p) =>
+      p.includes('an AI research assistant specializing in AI art'),
+    );
+    expect(v010, 'the 0.1.0 default must be in the legacy list').toBeDefined();
+    expect(v010).not.toMatch(/never invent/i);
+    expect(migrateSettings({ ...DEFAULT_SETTINGS, systemPrompt: v010! }).systemPrompt).toBe(
+      DEFAULT_SYSTEM_PROMPT,
+    );
+  });
+
+  it('every legacy default is distinct — a duplicate would mean one was mis-transcribed', () => {
+    expect(new Set(LEGACY_DEFAULT_SYSTEM_PROMPTS).size).toBe(
+      LEGACY_DEFAULT_SYSTEM_PROMPTS.length,
+    );
   });
 
   it('the shipped default is the current prompt, not a legacy one', () => {

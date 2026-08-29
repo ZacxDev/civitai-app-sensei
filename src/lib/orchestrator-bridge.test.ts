@@ -4,6 +4,7 @@ import {
   buildChatCompletionBody,
   toStepMessages,
   extractReleasedText,
+  extractToolCalls,
   isAllowedModel,
   TextOutputWithheldError,
   CHAT_COMPLETION_STEP_ID,
@@ -495,5 +496,61 @@ describe('orchestrator-bridge', () => {
     it('the two lists are the same set', () => {
       expect(AVAILABLE_MODELS.map((m) => m.id).sort()).toEqual([...CHAT_COMPLETION_MODELS].sort());
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 `extractToolCalls` HAD NO TEST AT ALL — it was exported and imported by
+// nothing outside its own module, which is why a mutant deleting its
+// `type === 'function'` check survived the entire suite. An exported function
+// with no importer in the test tree is invisible to mutation scoring: the
+// battery reports a survivor and there is no test that could ever have killed
+// it.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('extractToolCalls — a type declaration is not a runtime check', () => {
+  const wellFormed = {
+    id: 'call_1',
+    type: 'function',
+    function: { name: 'search_models', arguments: '{"query":"x"}' },
+  };
+
+  it('keeps a well-formed function call — POSITIVE CONTROL', () => {
+    // Without this, every assertion below is satisfied by a function that
+    // returns [] unconditionally.
+    expect(extractToolCalls({ toolCalls: [wellFormed] } as never)).toEqual([wellFormed]);
+  });
+
+  it('🔴 DROPS a call whose `type` is not `function`', () => {
+    // `ToolCall` DECLARES `type: 'function'`, so without the runtime check the
+    // predicate narrows to a type the value does not satisfy and a call of some
+    // future kind is replayed verbatim as if it were a function call.
+    const other = { ...wellFormed, type: 'custom' };
+    expect(extractToolCalls({ toolCalls: [other] } as never)).toEqual([]);
+    // ISOLATING: the same object differing ONLY in `type` is kept, so this
+    // cannot be passing because some other field failed.
+    expect(extractToolCalls({ toolCalls: [{ ...other, type: 'function' }] } as never)).toHaveLength(1);
+  });
+
+  it('DROPS a call with `type` absent entirely', () => {
+    const { type: _dropped, ...noType } = wellFormed;
+    expect(extractToolCalls({ toolCalls: [noType] } as never)).toEqual([]);
+  });
+
+  it('drops malformed calls but keeps the well-formed ones alongside them', () => {
+    const calls = [
+      wellFormed,
+      { ...wellFormed, id: '' },
+      { ...wellFormed, type: 'custom' },
+      { ...wellFormed, function: { name: 'x' } },
+      { ...wellFormed, id: 'call_2' },
+    ];
+    const kept = extractToolCalls({ toolCalls: calls } as never);
+    expect(kept.map((c) => c.id)).toEqual(['call_1', 'call_2']);
+  });
+
+  it('is total on a snapshot with no tool calls', () => {
+    expect(extractToolCalls({} as never)).toEqual([]);
+    expect(extractToolCalls({ toolCalls: null } as never)).toEqual([]);
+    expect(extractToolCalls({ toolCalls: 'nope' } as never)).toEqual([]);
   });
 });

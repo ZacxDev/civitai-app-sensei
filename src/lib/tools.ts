@@ -132,8 +132,22 @@ export function boundToolResponse(body: unknown): string {
     // that legitimately found nothing, so the model would tell the viewer there
     // are no such models when the truth is that the result would not fit. An
     // explicit error is the honest answer and the model can act on it.
+    // 🔴 RE-COUNT `truncated`, NEVER COPY IT. The host emits `{ items, truncated }`
+    // (`boundToolResult` in its tool registry), where `truncated` is what the
+    // HOST dropped. Spreading `...record` carried that number through unchanged
+    // while this loop dropped more on top of it — handing the model 24 of 50
+    // records alongside `"truncated": 0`, an assertion that nothing was left
+    // out. That is the same lie the `keep >= 1` rule below refuses to tell in
+    // its stronger form: a bound that misreports itself is worse than a bound,
+    // because the model treats a complete-looking list as exhaustive.
+    const maybeTruncated = (record as { truncated?: unknown }).truncated;
+    const hostTruncated = typeof maybeTruncated === 'number' ? maybeTruncated : 0;
     for (let keep = record.items.length - 1; keep >= 1; keep -= 1) {
-      const candidate = JSON.stringify({ ...record, items: record.items.slice(0, keep) });
+      const candidate = JSON.stringify({
+        ...record,
+        items: record.items.slice(0, keep),
+        truncated: hostTruncated + (record.items.length - keep),
+      });
       if (candidate !== undefined && candidate.length <= MAX_MESSAGE_CHARS) return candidate;
     }
   }
@@ -155,6 +169,63 @@ export interface ToolAuth extends CatalogAuth {
 /** How long a single tool request may hang before it is abandoned. */
 const TOOL_REQUEST_TIMEOUT_MS = 15_000;
 
+/**
+ * The longest we will honour a server-supplied `Retry-After` before giving up.
+ *
+ * 🔴 AN UNCLAMPED `Retry-After` IS A HANG WITH A POLITE NAME. The header is
+ * server-controlled; `Retry-After: 120` wedged the turn for two minutes with
+ * the "Searching" state stuck on and Stop unable to end it, because the sleep
+ * observed neither the caller's signal nor the request deadline. Capped at the
+ * request timeout so the retry can never outlive the budget a single tool call
+ * was already given.
+ */
+const MAX_RETRY_AFTER_MS = TOOL_REQUEST_TIMEOUT_MS;
+
+/**
+ * `AbortSignal.any`, with a fallback for runtimes that lack it.
+ *
+ * 🔴 A HARD DEPENDENCY HERE FAILS IN THE WORST POSSIBLE DIRECTION. `tsconfig`
+ * targets ES2022 and TypeScript's DOM lib declares `AbortSignal.any`, so a
+ * runtime without it type-checks clean and then throws on EVERY tool request —
+ * which `fetchToolDeclarations` swallows into `[]`, parking the app in the
+ * degraded no-tools state permanently, with no error a viewer or we could see.
+ * The feature would simply appear never to have shipped.
+ */
+function combineSignals(caller: AbortSignal | undefined, timeout: AbortSignal): AbortSignal {
+  if (!caller) return timeout;
+  const anyOf = (AbortSignal as { any?: (s: AbortSignal[]) => AbortSignal }).any;
+  if (typeof anyOf === 'function') return anyOf([caller, timeout]);
+  const controller = new AbortController();
+  const forward = (s: AbortSignal) => {
+    if (s.aborted) controller.abort(s.reason);
+    else s.addEventListener('abort', () => controller.abort(s.reason), { once: true });
+  };
+  forward(caller);
+  forward(timeout);
+  return controller.signal;
+}
+
+/**
+ * Sleep that loses the race to an abort.
+ *
+ * Returns `false` when the signal ended it, so the caller can stop rather than
+ * proceed as if it had waited.
+ */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve(true);
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 async function toolsFetch(
   init: RequestInit & { path: string },
   auth: ToolAuth,
@@ -165,8 +236,7 @@ async function toolsFetch(
   // failure, so without a deadline a stalled POST leaves the conversation
   // in-flight indefinitely with no way out — Stop cannot reach `fetch` itself.
   // The caller's signal and this timeout are combined so either can end it.
-  const timeout = AbortSignal.timeout(TOOL_REQUEST_TIMEOUT_MS);
-  const signal = auth.signal ? AbortSignal.any([auth.signal, timeout]) : timeout;
+  const signal = combineSignals(auth.signal, AbortSignal.timeout(TOOL_REQUEST_TIMEOUT_MS));
 
   const res = await fetch(`${BLOCKS_BASE_URL}${path}`, {
     ...rest,
@@ -182,8 +252,17 @@ async function toolsFetch(
   // is deliberately NOT retried; a lookup that fails fast lets the model answer
   // ungrounded rather than stalling the turn behind a backend flap.
   if (res.status === 429 && retries > 0) {
-    const retryAfter = parseInt(res.headers.get('retry-after') ?? '2', 10);
-    await new Promise((r) => setTimeout(r, (Number.isFinite(retryAfter) ? retryAfter : 2) * 1000));
+    const parsed = parseInt(res.headers.get('retry-after') ?? '2', 10);
+    // Clamped AND abortable: the header is server-controlled, and a sleep that
+    // ignores the caller's signal makes Stop a no-op for as long as it lasts.
+    const waitMs = Math.min(
+      Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : 2000,
+      MAX_RETRY_AFTER_MS,
+    );
+    const slept = await abortableSleep(waitMs, auth.signal);
+    // Aborted mid-wait: fail this call rather than issuing a retry the viewer
+    // has already asked us to abandon.
+    if (!slept) throw new DOMException('Aborted', 'AbortError');
     return toolsFetch(init, auth, retries - 1);
   }
   if (!res.ok) {

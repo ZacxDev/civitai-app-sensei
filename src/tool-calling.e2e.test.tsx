@@ -272,9 +272,16 @@ describe('tool calling: the model forms its own query, one submit per round', ()
     pollQueue = [multiCallSnapshot(5), textSnapshot('unreachable')];
     await sendMessage('five at once', 1);
 
+    // 🔴 THE NOTICE MUST NOT CLAIM ZERO LOOKUPS AS IF THAT WERE A TALLY.
+    // `rounds` is incremented AFTER the cap check, so it is 0 in exactly this
+    // scenario — the one the notice exists for — and the old copy rendered
+    // "I looked things up 0 times and still could not finish that." The
+    // previous assertion matched only /could not finish that/i and read
+    // straight past it, which is why this test passed while saying that.
     await waitFor(() => {
-      expect(screen.getByText(/could not finish that/i)).toBeTruthy();
+      expect(screen.getByText(/more lookups at once than I am allowed/i)).toBeTruthy();
     });
+    expect(screen.queryByText(/looked things up 0 times/i)).toBeNull();
     // ISOLATING: had the bound counted rounds, this would be 2 (the round would
     // have run and resubmitted) and there would be five POSTs.
     expect(submitted).toHaveLength(1);
@@ -320,5 +327,185 @@ describe('tool calling: the model forms its own query, one submit per round', ()
     // The withhold ends the turn; no tool round is attempted off a withheld reply.
     expect(toolRequests.filter((r) => r.method === 'POST')).toHaveLength(0);
     expect(submitted).toHaveLength(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 THE DEGRADED PATH: the prompt is a CLAIM ABOUT THE WIRE, and the wire is
+// not constant.
+//
+// `fetchToolDeclarations` failing degrades the turn to a tool-less conversation
+// — `tools` and `tool_choice` are simply omitted — but the system prompt was
+// sent unchanged. So on exactly the requests where the model could NOT call a
+// tool, it was told that it could. That is the original defect this whole
+// change set out to fix ("a model told it can search, then unable to,
+// fabricates"), reinstated in the degraded branch by the fix for the default
+// branch — and it is the branch every pre-existing stop-stream test runs.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('the degraded no-tools path — the prompt must not claim what the wire lacks', () => {
+  beforeEach(() => {
+    // 🔴 `submitted` IS MODULE-LEVEL AND SHARED. Omitting this reset makes
+    // `all[0]` the FIRST submission of the whole file rather than this test's —
+    // so the assertions below would describe a request from another suite that
+    // took the tools-available branch, and pass while proving nothing.
+    submitted.length = 0;
+    toolRequests = [];
+    pollQueue = [];
+    submitFn.mockClear();
+    pollFn.mockClear();
+    clearCache();
+    originalFetch = globalThis.fetch;
+    // The host serves NO usable declarations — the same state a failed GET,
+    // a 404, or a runtime without `AbortSignal.any` all collapse to.
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url.includes('/api/v1/blocks/tools')) {
+        return new Response(JSON.stringify({ tools: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ items: [], metadata: {} }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('🔴 omits `tools` AND tells the model it cannot look anything up', async () => {
+    pollQueue = [textSnapshot('From general knowledge then.')];
+    const all = await sendMessage('what is DreamShaper?');
+    const params = all[0] as unknown as Record<string, unknown>;
+
+    // The wire really is tool-less — otherwise this test would be asserting
+    // about a request that never took the degraded branch.
+    expect('tools' in params).toBe(false);
+    expect('tool_choice' in params).toBe(false);
+
+    const system = (params.messages as Array<{ role: string; content: string }>).find(
+      (m) => m.role === 'system',
+    );
+    expect(system).toBeTruthy();
+    // 🔴 ISOLATING: the notice is present AND the standing claim is neutralised.
+    // Asserting only the first would pass while the prompt still said, two
+    // paragraphs above, that tools are available.
+    expect(system!.content).toMatch(/Catalog lookup is unavailable for this message/i);
+    expect(system!.content).toMatch(/Do not claim to have looked anything up/i);
+  });
+
+  it('POSITIVE CONTROL — with tools available the notice is ABSENT', async () => {
+    // Without this, the assertion above would pass on a prompt that carried the
+    // notice unconditionally — which would be a different lie, told on every
+    // successful turn.
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : String(input);
+      if (url.includes('/api/v1/blocks/tools')) {
+        const method = init?.method ?? 'GET';
+        return new Response(
+          JSON.stringify(
+            method === 'GET' ? { tools: DECLARATIONS } : { items: [], truncated: 0 },
+          ),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ items: [], metadata: {} }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    clearCache();
+
+    pollQueue = [textSnapshot('Answer.')];
+    const all = await sendMessage('what is DreamShaper?');
+    const params = all[0] as unknown as Record<string, unknown>;
+    expect('tools' in params).toBe(true);
+    const system = (params.messages as Array<{ role: string; content: string }>).find(
+      (m) => m.role === 'system',
+    );
+    expect(system!.content).not.toMatch(/Catalog lookup is unavailable/i);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 THE RESEARCH PANEL MUST NOT LABEL STALE RESULTS WITH A NEW QUERY.
+//
+// `searchResults` is written only by the manual search box and cleared only on
+// session switch. The tool loop sets `searchQuery` from the model's own call, so
+// clearing the results INSIDE `if (firstQuery)` left a previous manual search's
+// models on screen under a different query's label whenever the model called a
+// tool that takes no `query` argument — and declarations are FETCHED, so which
+// tools have one is not ours to assume.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('the Research panel — a tool round invalidates standing results', () => {
+  beforeEach(() => {
+    submitted.length = 0;
+    toolRequests = [];
+    pollQueue = [];
+    submitFn.mockClear();
+    pollFn.mockClear();
+    clearCache();
+    originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : String(input);
+      const method = init?.method ?? 'GET';
+      if (url.includes('/api/v1/blocks/tools')) {
+        return new Response(
+          JSON.stringify(
+            method === 'GET' ? { tools: DECLARATIONS } : { items: [], truncated: 0 },
+          ),
+          { status: 200 },
+        );
+      }
+      // The MANUAL search box's endpoint — one result the viewer can see.
+      return new Response(
+        JSON.stringify({
+          items: [{ id: 999, name: 'Anime Thing', type: 'Checkpoint', stats: {}, creator: {} }],
+          metadata: {},
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('🔴 clears standing results even when the tool call carries NO `query`', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+    fireEvent.click(screen.getByTestId('new-session-button'));
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+
+    // 1. A manual search populates the panel.
+    fireEvent.click(screen.getByTestId('open-research'));
+    fireEvent.change(await screen.findByTestId('research-search-input'), {
+      target: { value: 'anime' },
+    });
+    fireEvent.click(screen.getByTestId('research-search-button'));
+    // POSITIVE CONTROL: the results really are on screen, so the assertion
+    // below cannot pass merely because nothing was ever rendered.
+    await waitFor(() => expect(screen.getByTestId('research-result-999')).toBeTruthy());
+
+    // 2. A chat turn whose tool call has NO `query` argument — an id lookup.
+    pollQueue = [
+      {
+        workflowId: 'wf-nq',
+        status: 'succeeded',
+        cost: { total: 1 },
+        toolCalls: [
+          {
+            id: 'call_noquery',
+            type: 'function',
+            function: { name: 'search_models', arguments: JSON.stringify({ modelId: 1234 }) },
+          },
+        ],
+      },
+      textSnapshot('Answer.'),
+    ];
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'tell me about 1234' } });
+    fireEvent.click(screen.getByTestId('send-button'));
+
+    // 3. The stale models must be gone. ISOLATING: with the clear back inside
+    // `if (firstQuery)` this call — which has no `query` — leaves them on
+    // screen indefinitely.
+    await waitFor(() => expect(screen.queryByTestId('research-result-999')).toBeNull(), {
+      timeout: 8000,
+    });
   });
 });

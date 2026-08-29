@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { App } from './App.js';
 import { fakeAppStorage } from './test-helpers.js';
+import { POLL_INTERVAL_MS } from './lib/orchestrator-bridge.js';
 
 /**
  * 🔴 REGRESSION TEST FOR: a stopped stream spent Buzz and persisted NOTHING.
@@ -54,12 +55,24 @@ const submitFn = vi.fn(async () => ({ workflowId: 'wf-1', status: 'pending' }));
  * resolving so the bridge loops, observes the abort, and throws into the catch:
  * the real shape. Both are covered now.
  */
-let pollMode: 'never' | 'pending' = 'never';
-const pollFn = vi.fn(() =>
-  pollMode === 'never'
-    ? new Promise<never>(() => {})
-    : Promise.resolve({ workflowId: 'wf-1', status: 'pending' }),
-);
+let pollMode: 'never' | 'pending' | 'queue' = 'never';
+/**
+ * Snapshots for `'queue'` mode — the tool-calling shape.
+ *
+ * 🔴 WITHOUT THIS THE WHOLE SUITE WAS BLIND TO THE TOOL PATH. Every test here
+ * stubbed `GET /tools` to `{tools: []}`, so the app took the degraded no-tools
+ * branch and the tool loop never ran even once. The abort exit INSIDE that loop
+ * was therefore unreachable by any test in the file written to guard Stop.
+ */
+let toolPollQueue: Array<Record<string, unknown>> = [];
+const pollFn = vi.fn(() => {
+  if (pollMode === 'never') return new Promise<never>(() => {});
+  if (pollMode === 'queue') {
+    const next = toolPollQueue.shift();
+    return Promise.resolve(next ?? { workflowId: 'wf-1', status: 'pending' });
+  }
+  return Promise.resolve({ workflowId: 'wf-1', status: 'pending' });
+});
 const cancelFn = vi.fn(async () => undefined);
 
 vi.mock('@civitai/blocks-react', () => ({
@@ -187,7 +200,12 @@ describe('the ORDINARY abort path — the catch must not undo Stop', () => {
     // derived from that, not picked: wait up to ~2.5 intervals, exiting EARLY
     // the moment a second write appears. So a regression fails fast and a pass
     // costs the full wait — the right way round.
-    const BOUND_MS = 2_500;
+    // 🔴 DERIVED, NOT MIRRORED. This was a hardcoded `2_500` with a comment
+    // explaining it as 2.5 poll intervals — a mirror of a module-private
+    // constant that nothing tied it to. Raising the interval would have left
+    // this window too short to see the overwrite, and the test would have gone
+    // green for the wrong reason: it fails OPEN.
+    const BOUND_MS = POLL_INTERVAL_MS * 2.5;
     const step = 50;
     for (let waited = 0; waited < BOUND_MS && messageWrites().length < 2; waited += step) {
       await new Promise((r) => setTimeout(r, step));
@@ -209,5 +227,133 @@ describe('the ORDINARY abort path — the catch must not undo Stop', () => {
     expect(written.some((m) => m.role === 'user' && m.content === 'tell me about DreamShaper')).toBe(
       true,
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 THE THIRD EXIT: Stop DURING A TOOL POST.
+//
+// The two describes above cover Stop on the never-settling shape and Stop on
+// the ordinary abort path — both of which leave the send through the CATCH.
+// They cannot see this one, and not by accident: every test above stubs
+// `GET /tools` to `{tools: []}`, so the app takes the degraded no-tools branch
+// and the tool loop never runs. The abort exit inside that loop was unreachable
+// by the entire suite written to guard Stop.
+//
+// `callTool` never throws on abort — it converts the AbortError into a tool
+// error STRING — so this path leaves the loop by `break` and falls out of the
+// try normally, never touching the catch. It then reached
+// `persist('save the reply', …)` and overwrote the transcript Stop had just
+// written, losing every earlier round's prose from storage.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Stop DURING a tool call must not overwrite its own write', () => {
+  let releaseToolPost: (() => void) | null = null;
+
+  beforeEach(() => {
+    pollMode = 'queue';
+    releaseToolPost = null;
+    storage.sets.length = 0;
+    submitFn.mockClear();
+    pollFn.mockClear();
+    cancelFn.mockClear();
+    toolPollQueue = [
+      // Round 1: the model asks for a tool and writes prose alongside it.
+      {
+        workflowId: 'wf-tc',
+        status: 'succeeded',
+        cost: { total: 1 },
+        textOutputs: ['Round one prose.'],
+        toolCalls: [
+          {
+            id: 'call_1',
+            type: 'function',
+            function: { name: 'search_models', arguments: JSON.stringify({ query: 'dream' }) },
+          },
+        ],
+      },
+      // Never reached once Stop lands — present so a REGRESSION (the loop
+      // continuing past the abort) has something to resubmit into, which is
+      // what makes the "one submit" assertion below isolating.
+      { workflowId: 'wf-t', status: 'succeeded', cost: { total: 1 }, textOutputs: ['Round two.'] },
+    ];
+
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : String(input);
+      const method = init?.method ?? 'GET';
+      if (url.includes('/api/v1/blocks/tools')) {
+        if (method === 'GET') {
+          return new Response(
+            JSON.stringify({
+              tools: [
+                {
+                  type: 'function',
+                  function: {
+                    name: 'search_models',
+                    description: 'Search the Civitai model catalog',
+                    parameters: { type: 'object', properties: { query: { type: 'string' } } },
+                  },
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        // HELD IN FLIGHT until the test releases it — this is the window in
+        // which Stop is pressed, and the whole point of the fixture.
+        return new Promise<Response>((resolve) => {
+          releaseToolPost = () =>
+            resolve(
+              new Response(JSON.stringify({ items: [{ id: 1, name: 'X' }], truncated: 0 }), {
+                status: 200,
+              }),
+            );
+        });
+      }
+      return new Response(JSON.stringify({ items: [], metadata: {} }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+  });
+
+  it('🔴 keeps Stop’s transcript when the abort lands during a tool POST', async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+    fireEvent.click(screen.getByTestId('new-session-button'));
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('chat-input'), {
+      target: { value: 'tell me about DreamShaper' },
+    });
+    fireEvent.click(screen.getByTestId('send-button'));
+
+    // Wait until the tool POST is actually in flight. Without this the Stop
+    // could land before the loop is reached and the test would pass on the
+    // pre-change code — a fixture that cannot reach the path proves nothing.
+    await waitFor(() => expect(releaseToolPost).not.toBeNull(), { timeout: 5000 });
+
+    // Only writes caused by Stop or by what follows it are of interest.
+    storage.sets.length = 0;
+
+    fireEvent.click(await screen.findByTestId('stop-button'));
+    await waitFor(() => expect(messageWrites().length).toBeGreaterThan(0), { timeout: 3000 });
+    const afterStop = JSON.stringify(messageWrites().at(-1)!.value);
+
+    // Now let the held POST resolve. Pre-fix this is where the loop `break`s on
+    // the abort and falls through to the reply persist.
+    releaseToolPost!();
+
+    const BOUND_MS = POLL_INTERVAL_MS * 2.5;
+    const step = 50;
+    for (let waited = 0; waited < BOUND_MS && messageWrites().length < 2; waited += step) {
+      await new Promise((r) => setTimeout(r, step));
+    }
+
+    // 🔴 ISOLATING: exactly one write, and the stored array is byte-identical to
+    // what Stop wrote. Pre-fix a second write landed and replaced it.
+    expect(messageWrites()).toHaveLength(1);
+    expect(JSON.stringify(messageWrites().at(-1)!.value)).toBe(afterStop);
+
+    // And the loop really did stop: no second submit for a turn the viewer
+    // abandoned. Had the abort exit been missing, the queued round-two snapshot
+    // above would have been submitted and billed.
+    expect(submitFn).toHaveBeenCalledTimes(1);
   });
 });
