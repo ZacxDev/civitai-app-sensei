@@ -213,8 +213,37 @@ export interface CatalogCall {
  * without a block token) so a fixture that ignored it could not tell a
  * correctly-authenticated call from an anonymous one.
  */
+/**
+ * The tool declarations the host serves at `GET /api/v1/blocks/tools`.
+ *
+ * 🔴 SERVED BY DEFAULT, because the alternative was silently wrong. Before this
+ * branch existed the fake had no `/tools` case, so `fetchToolDeclarations` hit
+ * the "unexpected fetch" throw, `App.tsx` swallowed it (a failed fetch degrades
+ * to a tool-less conversation by design), and every suite using this helper
+ * exercised the DEGRADED path while its own comment said the failure path was
+ * "not silently exercised". Verified by execution: the throw fired twice per
+ * run and nothing reported it.
+ */
+export const BLOCK_TOOLS_RESPONSE = {
+  tools: [
+    {
+      type: 'function',
+      function: {
+        name: 'search_models',
+        description: 'Search the Civitai model catalog.',
+        parameters: {
+          type: 'object',
+          properties: { query: { type: 'string' }, limit: { type: 'integer' } },
+          required: ['query'],
+          additionalProperties: false,
+        },
+      },
+    },
+  ],
+};
+
 export function fakeBlockCatalogApi(
-  overrides: { models?: () => Response; images?: () => Response } = {},
+  overrides: { models?: () => Response; images?: () => Response; tools?: () => Response } = {},
 ) {
   const calls: CatalogCall[] = [];
   const originalFetch = globalThis.fetch;
@@ -228,6 +257,18 @@ export function fakeBlockCatalogApi(
       return (
         overrides.models?.() ??
         new Response(JSON.stringify(BLOCK_MODELS_RESPONSE), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+    }
+
+    // Matched BEFORE `/blocks/models` would be, and kept distinct from it: a
+    // tool CALL is a POST to this same path, so both verbs land here.
+    if (url.includes('/api/v1/blocks/tools')) {
+      return (
+        overrides.tools?.() ??
+        new Response(JSON.stringify(BLOCK_TOOLS_RESPONSE), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         })

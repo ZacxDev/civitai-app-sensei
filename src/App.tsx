@@ -14,13 +14,14 @@ import { Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
 
 import { palette, pageStyle, token, radius, mutedText } from './theme.js';
 import type { AppSettings, Message, Session } from './types.js';
-import { DEFAULT_SETTINGS } from './types.js';
+import { DEFAULT_SETTINGS, migrateSettings, NO_TOOLS_NOTICE } from './types.js';
 import { AI_WRITE_BUDGETED, BUZZ_READ_SELF, hasGenerateScope } from './scopes.js';
 import { createOrchestrator } from './lib/orchestrator.js';
 import { TextOutputWithheldError } from './lib/orchestrator-bridge.js';
 import * as sessionsLib from './lib/sessions.js';
 import * as researchLib from './lib/research.js';
-import { generateMessageId, withSystemPrompt, withRetrievalContext } from './lib/chat.js';
+import * as toolsLib from './lib/tools.js';
+import { generateMessageId, withSystemPrompt } from './lib/chat.js';
 import { generateTitle } from './lib/sessions.js';
 
 import { ChatArea } from './components/ChatArea.js';
@@ -80,7 +81,6 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const [researchOpen, setResearchOpen] = useState(false);
   const [searchResults, setSearchResults] = useState<researchLib.ModelSearchResult | null>(null);
   const [searchQuery, setSearchQuery] = useState<string | null>(null);
-  const [searchNarrowed, setSearchNarrowed] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [loading, setLoading] = useState(true);
   // 🔴 A REJECTED STORAGE CALL MUST NOT BE INDISTINGUISHABLE FROM SUCCESS. Every
@@ -98,7 +98,32 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const [gateRaised, setGateRaised] = useState(false);
 
   const streamingRef = useRef(false);
+  /**
+   * The live message array, for the one caller that must read it OUTSIDE React's
+   * render flow: {@link handleStopStream}. A functional `setMessages` updater
+   * could read the same value, but side-effecting inside an updater double-fires
+   * under StrictMode and this effect WRITES TO STORAGE.
+   */
+  const messagesRef = useRef<Message[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
+  /**
+   * Monotonic turn number. A turn increments it on entry and keeps the value;
+   * `turnSeqRef.current === mine` is therefore "I am still the current turn".
+   *
+   * 🔴 THIS IS NOT A DUPLICATE OF `abortControllerRef` — it answers a DIFFERENT
+   * question, and conflating them is what made the last fix incomplete.
+   * `aborted()` answers "was MY turn stopped"; this answers "is my turn still
+   * the one that owns the shared UI state". A turn that was never aborted but
+   * has been SUPERSEDED must still keep its hands off `isStreaming`, and no
+   * abort predicate can see that case.
+   *
+   * A plain counter rather than `abortControllerRef.current === controller`
+   * because that comparison is a fourth read of the mutable ref, which
+   * `App.abort-scope.test.ts` refuses by design — and rightly: the point of that
+   * guard is that abort questions go through `aborted()`. Ownership is a
+   * different axis and gets its own cell.
+   */
+  const turnSeqRef = useRef(0);
   const { estimate, submit, poll, cancel } = useBuzzWorkflow();
   const orchestrator = useMemo(
     () => createOrchestrator({ estimate, submit, poll, cancel }),
@@ -154,6 +179,14 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     [],
   );
 
+  // Mirror the message array into a ref so `handleStopStream` can persist the
+  // partial reply without depending on React's render cycle. Cheap, and the
+  // alternative (reading state inside a setState updater) writes to storage
+  // twice under StrictMode.
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   // ---- Load sessions on mount ----
   useEffect(() => {
     if (!ready) return;
@@ -164,7 +197,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         const storedSettings = await depsRef.current.appStorage.get<AppSettings>('sensei:settings');
         if (cancelled) return;
         setSessions(loaded);
-        if (storedSettings) setSettings(storedSettings);
+        // Migrated at LOAD, not at save: a viewer who has never reopened
+        // Settings still gets a corrected default prompt on their next send.
+        // `migrateSettings` is total — an edited prompt passes through.
+        if (storedSettings) setSettings(migrateSettings(storedSettings));
         if (loaded.length > 0) {
           setActiveSessionId(loaded[0].id);
           const msgs = await sessionsLib.getMessages(depsRef.current.appStorage, loaded[0].id);
@@ -373,7 +409,59 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
     setIsStreaming(true);
     streamingRef.current = true;
-    abortControllerRef.current = new AbortController();
+
+    // 🔴 CAPTURE THE CONTROLLER; NEVER READ THE REF AGAIN IN THIS TURN.
+    //
+    // Every abort check in this function used to read `abortControllerRef
+    // .current`, which is MUTABLE and belongs to whichever turn started most
+    // recently — not to this one. `handleStopStream` clears `isStreaming`
+    // synchronously, so a viewer can send again immediately, and that second
+    // send replaces the ref with a FRESH, UN-ABORTED controller. Turn 1, still
+    // in flight, then read turn 2's controller and every guard evaluated false:
+    //
+    //   write 2: [u:"FIRST",  a:""]                  ← Stop's own transcript
+    //   write 3: [u:"FIRST",  a:"", u:"SECOND"]      ← turn 2's send
+    //   write 4: [u:"FIRST",  a:"Error: Aborted"]    ← turn 1, guard bypassed
+    //
+    // Turn 2's user message is gone. When turn 1 settles LAST the loss is
+    // permanent. This was the third consecutive fix to an abort exit that
+    // created the next one, and the reason is that all four exits asked a
+    // shared mutable cell "are we aborted?" instead of asking their own turn.
+    //
+    // 🔴 `aborted()` IS THE ONLY ABORT PREDICATE IN THIS FUNCTION, and that is
+    // the structural point rather than a style choice: it closes over THIS
+    // turn's controller, so a future guard written by reaching for what is in
+    // scope gets the right one by construction. `abortControllerRef` is written
+    // here and read only by `handleStopStream` — which SHOULD abort whatever
+    // turn is current. `App.abort-scope.test.ts` pins that split.
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const aborted = () => controller.signal.aborted;
+
+    // 🔴 CLAIM OWNERSHIP OF THE SHARED STREAMING STATE, SO THE `finally` CAN
+    // CHECK IT. `setIsStreaming(false)` / `streamingRef.current = false` in this
+    // function's `finally` are writes to state shared by every turn, and they
+    // ran unconditionally — so a superseded turn settling late switched them off
+    // underneath the turn that now owned them.
+    //
+    // Measured, an ordinary Stop → send → send with no second Stop: turn 1's
+    // `finally` landed ~1 poll after turn 2 began, turn 2's Stop button
+    // disappeared, `onChunk`'s `!streamingRef.current` guard then dropped turn
+    // 2's chunks, and the reopened send gate accepted a THIRD send. Turn 2
+    // settled last and persisted an array built before turn 3 existed:
+    //
+    //   ["user:FIRST","assistant:","user:SECOND","assistant:TWO reply"]
+    //
+    // `THIRD question` and its BILLED reply were gone permanently. The viewer
+    // paid and had no record of it.
+    //
+    // 🔴 THE CAPTURED CONTROLLER CANNOT ANSWER THIS. Turn 1 was aborted here, so
+    // `aborted()` happens to be true — but turns 2 and 3 involve no Stop at all
+    // and the same clobber applies to any turn that is merely superseded. The
+    // question is ownership, not abortion, which is why this is a separate cell
+    // and why the previous round's "fixed structurally" claim was too broad: it
+    // closed every abort READ and left this shared WRITE untouched.
+    const mine = ++turnSeqRef.current;
 
     const assistantMsg: Message = {
       id: generateMessageId(),
@@ -384,83 +472,232 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setMessages([...updatedMessages, assistantMsg]);
 
     try {
-      // ── (a) RETRIEVE, then (b) INJECT, then (c) ONE completion. ────────────
+      // ── TOOL CALLING: the model forms its own query; one submit per round ──
       //
-      // 🔴 THIS REPLACES A LOOP THAT COULD NEVER RUN. The old code sent
-      // `tools: CIVITAI_TOOLS` and looped up to 5 rounds on `tool_calls` — but
-      // the host's params schema is `.strict()`, so `tools` was a
-      // `BAD_REQUEST`, and even had it not been, a `'textOutput'` step cannot
-      // return a tool call at all. The loop was unreachable code that made the
-      // system prompt's claim of catalog access look supported.
+      // 🔴 THIS IS THE LOOP THE OLD COMMENT SAID COULD NEVER RUN, AND NOW IT
+      // CAN. A previous revision sent `tools` and looped, which was dead code
+      // because the host's params schema was `.strict()` without them and a
+      // text-posture step had no channel to return a call on. Both have since
+      // changed host-side: `tools`/`tool_choice` are accepted, and structured
+      // calls arrive on a `toolCalls` snapshot field released only when the
+      // output scan releases.
       //
-      // Retrieval is deterministic and needs no model call: a search engine
-      // handles free text, so the user's own words ARE the query. It runs
-      // before the single completion and costs no Buzz — a wasted search is one
-      // HTTP request, never a charge. Failures are swallowed on purpose: an
-      // ungrounded answer is much better than no answer, and the rewritten
-      // system prompt tells the model to say when nothing was attached.
+      // 🔴 EACH ROUND IS ITS OWN SUBMIT — the money design, not a detail. A
+      // server-side loop would spend N times the token's PER-CALL budget inside
+      // one call, and a mid-loop failure would have already paid for the
+      // completed rounds with nothing to show for them. Per-round submits mean
+      // every round is separately quoted against the live orchestrator price,
+      // separately gated on `buzzBudget`, and separately reserved against the
+      // per-user, per-app and dev-session caps.
       //
-      // 🔴 THE QUERY IS DERIVED, NOT THE RAW SENTENCE. This used to pass
-      // `content` — the user's whole question — straight to a KEYWORD search, so
-      // "What is DreamShaper?" matched on "What is" and returned ten unrelated
-      // models, which were then injected as authoritative catalog context. The
-      // model dutifully reported that the results did not include DreamShaper.
-      // `retrieveForTurn` strips the interrogative and retries narrowed when the
-      // hits look unrelated; see `lib/research.ts` for the A/B against the live
-      // endpoint.
-      let catalogContext = '';
-      if (researchLib.shouldRetrieve(content)) {
+      // 🔴 THE ROUND CAP IS THE HOST'S. `MAX_TOOL_ROUNDS` is mirrored here only
+      // so the app can stop cleanly and SAY SO; the host counts `role:'tool'`
+      // messages in a `.superRefine` on both the estimate and the submit path,
+      // so exceeding it is a BAD_REQUEST no matter what this code believes.
+      //
+      // Declarations are FETCHED, never authored here — a model must not be
+      // shown a contract the route does not enforce. Failing to fetch them
+      // degrades to a tool-less conversation rather than taking the turn down.
+      let declarations: toolsLib.ToolDeclaration[] = [];
+      try {
+        declarations = await toolsLib.fetchToolDeclarations({
+          // 🔴 STOP MUST REACH THIS REQUEST TOO. Without the signal this GET
+          // was unabortable: its only deadline was the 15 s request timeout,
+          // and a 429 inside it slept a further clamped 15 s with no caller
+          // signal at all — so Stop was a no-op for up to ~45 s.
+          token: token_.raw,
+          signal: controller.signal,
+        });
+      } catch {
+        declarations = [];
+      }
+
+      // 🔴 THE SIGNAL ALONE DOES NOT FIX IT — THE CATCH ABOVE SWALLOWS THE
+      // ABORT. `fetchToolDeclarations` rejecting with an AbortError is
+      // indistinguishable here from a 500 or a parse failure, and BOTH degrade
+      // to `[]` so the turn can continue tool-lessly. That degradation is right
+      // for a failure and wrong for a Stop: measured, a Stop pressed while this
+      // GET was parked produced 0 submits at the time of the Stop and then ONE
+      // BILLED SUBMIT when the request finally landed. The bridge submits
+      // before its first signal check, so the charge is real — and the catch
+      // guard below then correctly suppresses the write, leaving the viewer
+      // charged for an abandoned turn with no record of it.
+      //
+      // This exit is why "pass the signal" was not the whole fix: the signal
+      // ends the REQUEST, this ends the TURN.
+      if (aborted()) return;
+
+      // 🔴 THE PROMPT MUST MATCH THE CAPABILITY THIS REQUEST ACTUALLY CARRIES.
+      // `declarations` is the same value the `tools` key below is derived from,
+      // so the claim and the wire cannot disagree — including on the degraded
+      // path, where the fetch failed and no tools are sent at all.
+      const toolsAvailable = declarations.length > 0;
+      let apiMessages = withSystemPrompt(
+        updatedMessages.map((m) => ({ role: m.role, content: m.content })),
+        toolsAvailable ? settings.systemPrompt : settings.systemPrompt + NO_TOOLS_NOTICE,
+      );
+
+      const onChunk = (chunk: string) => {
+        if (!streamingRef.current) return;
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last.id === assistantMsg.id) {
+            return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
+          }
+          return prev;
+        });
+      };
+
+      const submit = () =>
+        orchestrator.submitChatCompletion(
+          {
+            model: settings.model,
+            messages: apiMessages,
+            temperature: settings.temperature,
+            max_tokens: settings.maxTokens,
+            ...(toolsAvailable ? { tools: declarations, toolChoice: 'auto' as const } : {}),
+          },
+          onChunk,
+          controller.signal,
+        );
+
+      let response = await submit();
+      let rounds = 0;
+      // 🔴 COUNTS `role:'tool'` MESSAGES, NOT ROUNDS — the quantity the host's
+      // `.superRefine` actually counts. One round answering N parallel calls
+      // contributes N. Counting rounds here let a single 5-call round exceed a
+      // mirrored cap of 3 on the first iteration.
+      let toolMessages = 0;
+      let hitRoundCap = false;
+
+      for (;;) {
+        // Stop must end the loop, not just the in-flight request. Without this
+        // a Stop pressed while a tool POST is in flight still fell through to
+        // another `submit()` — a second BILLED estimate+submit after the viewer
+        // asked to stop.
+        if (aborted()) break;
+
+        const calls = response.toolCalls ?? [];
+        if (calls.length === 0) break;
+
+        if (toolMessages + calls.length > toolsLib.MAX_TOOL_RESULT_MESSAGES) {
+          // A terminal state with a user-visible explanation, not a silent stop
+          // and not an unhandled rejection. The viewer has been charged for
+          // every round that ran and is owed an account of why it stopped.
+          // Checked BEFORE executing the calls: running them would spend on
+          // results that could never be submitted.
+          hitRoundCap = true;
+          break;
+        }
+        rounds += 1;
+        toolMessages += calls.length;
+
+        // Show the model's OWN query in the Research panel. This is the whole
+        // argument for the change: the query is authored by the model from the
+        // user's sentence, not stripped out of it by a stopword list.
+        // 🔴 CLEAR FIRST, UNCONDITIONALLY. Clearing inside `if (firstQuery)`
+        // left a previous manual search's results — and its label — on screen
+        // whenever the model called a tool that takes no `query` (an id lookup,
+        // say). Declarations are fetched, not authored here, so which tools
+        // have a `query` argument is not ours to assume. Any tool round makes
+        // the standing results stale; the label is what may or may not be
+        // replaceable.
+        //
+        // `calls[0]` is deliberate and not an oversight: the panel shows ONE
+        // query, so a round of parallel calls has no single label to display.
+        // Taking the first is honest about that; joining them would invent a
+        // query the model never wrote.
+        setSearchResults(null);
+        const firstQuery = toolsLib.readQueryArgument(calls[0]);
+        if (firstQuery) {
+          // The tool result is not wired in as panel items deliberately: its
+          // projected shape (name/tags/creator/downloads/baseModel) is not
+          // `ModelSearchItem`, and mapping it here would be a second definition
+          // of the host's projection that can drift from the real one. So the
+          // panel shows the model's own query over nothing, which is honest.
+          setSearchQuery(firstQuery);
+        }
+
         setIsSearching(true);
+        let results: string[];
         try {
-          const turn = await researchLib.retrieveForTurn(
-            content,
-            { token: token_.raw },
-            { limit: researchLib.MAX_CONTEXT_MODELS },
+          results = await Promise.all(
+            calls.map((c) =>
+              toolsLib.callTool(c, {
+                token: token_.raw,
+                signal: controller.signal,
+              }),
+            ),
           );
-          catalogContext = researchLib.formatCatalogContext(turn.results, turn.query);
-          // The ResearchPanel then shows exactly what grounded the answer AND
-          // the query that produced it — the user can SEE both rather than take
-          // them on trust. Showing the query is what makes a bad retrieval
-          // visible instead of silently poisoning the answer.
-          setSearchResults(turn.results);
-          setSearchQuery(turn.query);
-          setSearchNarrowed(turn.narrowed);
-        } catch {
-          catalogContext = '';
         } finally {
           setIsSearching(false);
         }
+
+        // A Stop landing while the tool POSTs were in flight must not be spent
+        // on another submit.
+        if (aborted()) break;
+
+        apiMessages = [
+          ...apiMessages,
+          // The ask. Carries the model's own interim prose when it wrote any —
+          // discarding it would replay a history the viewer saw stream and then
+          // saw vanish. `toStepMessages` keeps this message for its `tool_calls`
+          // even when the content is empty.
+          {
+            role: 'assistant',
+            content: response.choices[0]?.message?.content ?? '',
+            tool_calls: calls,
+          },
+          // The answers, each correlated to the id it answers.
+          ...calls.map((c, k) => ({
+            role: 'tool',
+            content: results[k],
+            tool_call_id: c.id,
+          })),
+        ];
+
+        response = await submit();
       }
 
-      const apiMessages = withRetrievalContext(
-        withSystemPrompt(
-          updatedMessages.map((m) => ({ role: m.role, content: m.content })),
-          settings.systemPrompt,
-        ),
-        catalogContext,
-      );
+      // 🔴 A STOP THAT LEFT THE LOOP MUST NOT REACH THE PERSIST BELOW. The two
+      // `break`s above exit on `signal.aborted` and then FELL THROUGH to the
+      // `persist('save the reply', …)` at the end of this block — which
+      // overwrote the transcript `handleStopStream` had just written, silently
+      // losing every earlier round's prose from storage.
+      //
+      // 🔴 THE CATCH'S GUARD DOES NOT COVER THIS. It only sees the THROW route,
+      // and `callTool` never throws on abort — it converts the AbortError into
+      // a tool-error string (`tools.ts`), so an abort during a tool POST leaves
+      // the loop normally and never touches the catch. The guard added there
+      // for the ordinary abort path and this one are two different exits from
+      // the same function; fixing one did not fix the other.
+      //
+      // Placed after the loop rather than at each `break` so a future `break`
+      // inherits it — the defect was one unguarded exit, and adding a third
+      // exit should not be able to reintroduce it.
+      if (aborted()) return;
 
-      const response = await orchestrator.submitChatCompletion(
-        {
-          model: settings.model,
-          messages: apiMessages,
-          temperature: settings.temperature,
-          max_tokens: settings.maxTokens,
-        },
-        (chunk) => {
-          if (!streamingRef.current) return;
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (last.id === assistantMsg.id) {
-              return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
-            }
-            return prev;
-          });
-        },
-        abortControllerRef.current?.signal,
-      );
+      // On the cap, keep whatever prose the model DID write alongside its last
+      // batch of calls and append the explanation — discarding it threw away
+      // content the viewer had already been charged for, and often the most
+      // useful part of the turn.
+      // 🔴 `rounds` IS INCREMENTED AFTER THE CAP CHECK, so it is 0 in exactly
+      // the case this notice exists for: a first round whose parallel calls
+      // already exceed the cap. "I looked things up 0 times" is both absurd and
+      // wrong about what happened — nothing was looked up because the request
+      // was refused before spending on it. The guarding test matched only
+      // /could not finish that/i and read straight past it.
+      const capNotice =
+        rounds === 0
+          ? 'That needed more lookups at once than I am allowed to make. Try asking about one thing at a time.'
+          : `I looked things up ${rounds} time${rounds === 1 ? '' : 's'} and still could not finish that. Try asking something narrower.`;
+      const partial = response.choices[0]?.message?.content?.trim();
+      const replyText = hitRoundCap
+        ? partial
+          ? `${partial}\n\n${capNotice}`
+          : capNotice
+        : response.choices[0].message.content;
 
-      const replyText = response.choices[0].message.content;
       if (replyText) {
         setMessages((prev) => {
           const last = prev[prev.length - 1];
@@ -488,6 +725,19 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         ]),
       );
     } catch (e) {
+      // 🔴 A USER STOP IS NOT AN ERROR, AND MUST NOT OVERWRITE ITS OWN WRITE.
+      // `handleStopStream` aborts and persists what was streamed; aborting then
+      // rejects the in-flight submit and lands HERE, where the write below used
+      // to replace that content with `Error: Aborted` — so Stop's whole purpose
+      // was undone a moment after it ran, on the ordinary abort path.
+      //
+      // 🔴 THE ORIGINAL REGRESSION TEST COULD NOT SEE THIS. It used a poll that
+      // never settles, which structurally removes this catch — pinning the one
+      // shape where the fix is decisive rather than the ordinary one. Both paths
+      // are covered now; see `stop-stream.e2e.test.tsx`.
+      if (aborted()) {
+        return;
+      }
       // 🔴 A WITHHOLD IS NOT AN ERROR. The host scanned the generated reply and
       // refused to release it; the Buzz was spent and the capability worked as
       // designed. Rendering the host's own user-facing reason — rather than
@@ -518,8 +768,21 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       );
       if (withheld) depsRef.current.track('completion_withheld');
     } finally {
-      setIsStreaming(false);
-      streamingRef.current = false;
+      // 🔴 ONLY THE CURRENT TURN MAY CLEAR THE SHARED STREAMING STATE. See
+      // `mine` above for the measured three-turn message loss this prevents. A
+      // superseded turn settling late must leave `isStreaming` alone: the turn
+      // that owns it now is still running, and clearing it removes that turn's
+      // Stop button, makes `onChunk` drop its chunks, and reopens the send gate.
+      //
+      // 🔴 THE `catch` AND `try` EXITS ABOVE ARE ALREADY TURN-SAFE FOR A
+      // DIFFERENT REASON and this is not a substitute for them: they guard on
+      // `aborted()`, which asks whether THIS turn was stopped. This asks whether
+      // this turn is still current. A turn can be superseded without ever being
+      // aborted — that is precisely turns 2 and 3 in the case above.
+      if (turnSeqRef.current === mine) {
+        setIsStreaming(false);
+        streamingRef.current = false;
+      }
     }
   }, [
     activeSessionId,
@@ -538,7 +801,27 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setIsStreaming(false);
     abortControllerRef.current?.abort();
     orchestrator.cancel?.();
-  }, [orchestrator]);
+
+    // 🔴 PERSIST WHAT WAS STREAMED, HERE, RATHER THAN LEAVING IT TO THE
+    // COMPLETION PROMISE. Aborting rejects the in-flight submit, and the catch
+    // below DOES eventually write — but it is asynchronous, and a viewer who
+    // stops a reply and immediately reloads beats it. Measured on the live
+    // store: after a two-exchange verification the array was
+    // `[user, assistant, user]` — three elements. The second reply was not
+    // written incompletely, it was never written AT ALL.
+    //
+    // 🔴 THE BUZZ WAS ALREADY SPENT. The submit was charged the moment it was
+    // made; stopping the stream stops the RENDERING, not the billing. Losing
+    // the partial reply means the viewer paid and has nothing, and no record of
+    // why — the same reasoning the withhold path already applies one branch
+    // over, which was applied to withholds and missed here.
+    const current = messagesRef.current;
+    if (activeSessionId && current.length > 0) {
+      void persist('save the stopped reply', () =>
+        sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, current),
+      );
+    }
+  }, [orchestrator, persist, activeSessionId]);
 
   const handleRegenerate = useCallback(async (messageId: string) => {
     // 🔴 GATE BEFORE THE DESTRUCTIVE SLICE. The slice below removes the
@@ -575,10 +858,8 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     try {
       const results = await researchLib.searchModels(query, { token: token_.raw });
       setSearchResults(results);
-      // A panel search is already keywords — it is shown VERBATIM, and never
-      // marked "narrowed", because nothing rewrote it.
+      // A panel search is shown VERBATIM — nothing rewrites it.
       setSearchQuery(query);
-      setSearchNarrowed(false);
     } catch {
       setSearchResults(null);
     } finally {
@@ -806,7 +1087,6 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             onToggle={() => setResearchOpen(!researchOpen)}
             searchResults={searchResults}
             lastQuery={searchQuery}
-            narrowed={searchNarrowed}
             isSearching={isSearching}
             onSearch={handleResearchSearch}
             onInsert={handleInsertResearch}

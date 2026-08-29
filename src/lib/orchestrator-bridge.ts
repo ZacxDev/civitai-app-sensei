@@ -1,4 +1,5 @@
 import type { ChatCompletionRequest, ChatCompletionResponse } from './completion-types.js';
+import type { ToolCall } from './tools.js';
 import type { OrchestratorAdapter } from './orchestrator.js';
 import { simulateStreaming } from './streaming.js';
 import type { WorkflowBody, WorkflowBodyStep, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks';
@@ -60,10 +61,26 @@ export const MAX_MESSAGE_CHARS = 8_000;
 export const TEMPERATURE_MIN = 0;
 export const TEMPERATURE_MAX = 2;
 
-/** The roles the host's `chatMessageSchema` accepts. `'tool'` is NOT one of them. */
-const ALLOWED_ROLES = new Set(['system', 'user', 'assistant']);
+/**
+ * 🔴 `'tool'` IS NOW A FIRST-CLASS ROLE, not a dropped one. The host's
+ * `chatMessageSchema` became a discriminated union over the role, so a tool
+ * result is representable and a tool round can be fed back. Before this it was
+ * DROPPED here — silently, which meant a tool result simply never reached the
+ * model and the loop could not close.
+ */
+const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
 
-const POLL_INTERVAL_MS = 1000;
+/**
+ * How long the poll loop waits between ticks.
+ *
+ * 🔴 EXPORTED SO A TEST CAN DERIVE ITS WAIT FROM IT RATHER THAN MIRROR IT.
+ * `stop-stream.e2e.test.tsx` needs a bound long enough for a second write to
+ * land; a hand-copied number there fails OPEN — raise this interval and the
+ * test's window silently becomes too short, so it stops observing the overwrite
+ * it exists to forbid and goes green for the wrong reason. Same shape as the
+ * round cap that mirrored the host's quantity without being tied to it.
+ */
+export const POLL_INTERVAL_MS = 1000;
 const POLL_TIMEOUT_MS = 60_000;
 
 /**
@@ -81,6 +98,13 @@ const POLL_TIMEOUT_MS = 60_000;
 type TextOutputSnapshot = BlockWorkflowSnapshot & {
   textOutputs?: string[];
   textOutputWithheld?: { reason: string };
+  /**
+   * Structured tool calls, published by the host ONLY on a released verdict —
+   * the same gate as `textOutputs`, and every `arguments` string is scanned as
+   * text before publication. Widened locally for the same reason as the two
+   * above: the field arrives at runtime and only the TYPE is missing.
+   */
+  toolCalls?: ToolCall[];
 };
 
 /**
@@ -123,25 +147,75 @@ function clampTemperature(t: number | undefined): number | undefined {
  *
  * Three bounds, each of which is a hard reject server-side rather than a
  * truncation:
- *  - role must be system/user/assistant. A `'tool'`-role message (the app's
- *    tool-result carrier) has no representation in this step and is DROPPED
- *    here rather than sent to be rejected.
+ *  - role must be system/user/assistant/tool. A `'tool'` message IS sent — the
+ *    host's schema is a discriminated union over the role and accepts it with a
+ *    `tool_call_id`. (It used to be dropped here, which is why a tool result
+ *    never reached the model and the loop could not close.)
  *  - content is 1..8000 chars. Empty/whitespace-only messages are dropped;
  *    over-long ones are truncated.
  *  - at most 32 messages. The FIRST system message is preserved and the most
  *    recent turns are kept — trimming from the front would silently discard the
  *    app's system prompt, which is the one message that must always survive.
  */
-export function toStepMessages(
-  messages: ChatCompletionRequest['messages'],
-): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
+export type StepMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  /**
+   * OPTIONAL, and only for the one shape that legitimately has none: an
+   * assistant turn whose entire content IS its `tool_calls`. The host requires
+   * at least one of the two and rejects a present-but-empty string (`.min(1)`),
+   * so such a message omits the key rather than sending `''`.
+   */
+  content?: string;
+  tool_call_id?: string;
+  tool_calls?: ToolCall[];
+};
+
+export function toStepMessages(messages: ChatCompletionRequest['messages']): StepMessage[] {
   const usable = messages
     .filter((m) => ALLOWED_ROLES.has(m.role))
+    // 🔴 A `'tool'` MESSAGE WITHOUT ITS `tool_call_id` IS DROPPED, not sent.
+    // The host correlates every tool answer against an id some PRECEDING
+    // assistant turn declared, and an uncorrelated one is a BAD_REQUEST for the
+    // whole payload — which would lose the entire conversation, not just the
+    // orphan. A stored session from before tool calling can contain exactly
+    // this shape.
+    //
+    // 🔴 BE EXACT ABOUT WHAT THIS CHECKS: PRESENCE, NOT CORRELATION. It requires
+    // a non-empty `tool_call_id` string; it does NOT verify that any preceding
+    // assistant turn declared that id. A `[system, user, tool(id=stale)]` array
+    // passes here and is rejected by the host. That is not reachable through
+    // `App` today — the send path drops the id when mapping stored messages —
+    // but the guard is narrower than the sentence above, and the sentence is
+    // what a reader would act on.
+    .filter((m) => m.role !== 'tool' || (typeof m.tool_call_id === 'string' && m.tool_call_id.length > 0))
     .map((m) => ({
-      role: m.role as 'system' | 'user' | 'assistant',
+      role: m.role as StepMessage['role'],
       content: (m.content ?? '').slice(0, MAX_MESSAGE_CHARS),
+      ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
+      // Replayed so the host can correlate the answer that follows it. Only an
+      // assistant turn carries these.
+      ...(m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0
+        ? { tool_calls: m.tool_calls }
+        : {}),
     }))
-    .filter((m) => m.content.trim().length > 0);
+    // 🔴 AN ASSISTANT TURN WHOSE CONTENT IS ITS TOOL CALLS MUST SURVIVE THIS.
+    // When the model asks for a tool it returns `content: null`, so the
+    // empty-content drop below would delete the very message that DECLARES the
+    // call ids — and the host then rejects the tool answers that follow it as
+    // uncorrelated, failing the whole payload rather than the orphan. That is
+    // the loop silently never closing.
+    .filter((m) => (m.content ?? '').trim().length > 0 || (m.tool_calls?.length ?? 0) > 0)
+    // Now drop the key ENTIRELY where it is empty, because the host's `content`
+    // is `.min(1)` when present. 🔴 `{ ...m, content: undefined }` would NOT do
+    // this: the SDK transport is postMessage, which uses structured clone, and
+    // structured clone PRESERVES an explicit `undefined` value rather than
+    // dropping the key the way `JSON.stringify` would. The key has to be
+    // omitted at construction.
+    .map((m) => {
+      if ((m.content ?? '').trim().length > 0) return m;
+      const { content: _dropped, ...rest } = m;
+      return rest;
+    });
 
   if (usable.length <= MAX_MESSAGES) return usable;
 
@@ -168,11 +242,21 @@ export function buildChatCompletionBody(request: ChatCompletionRequest): Workflo
 
   const temperature = clampTemperature(request.temperature);
 
-  // 🔴 EXACTLY FOUR KEYS, AND NEVER MORE. The host's `chatCompletionParamsSchema`
-  // is `.strict()`, so `tools`, `tool_choice`, `response_format`, `stream`,
-  // `max_tokens` (the snake_case spelling) and `modalities` are each a
-  // BAD_REQUEST rather than a field that gets dropped. Adding one here breaks
-  // every call, not just the feature that wanted it.
+  // 🔴 ONLY KEYS THE HOST'S `.strict()` SCHEMA ACCEPTS. `response_format`,
+  // `stream`, `max_tokens` (the snake_case spelling), `n`, `seed` and
+  // `modalities` are each a BAD_REQUEST for the WHOLE request rather than a
+  // field that gets dropped — adding one breaks every call, not just the
+  // feature that wanted it.
+  //
+  // ⚠️ `tools`/`tool_choice` WERE ON THAT FORBIDDEN LIST AND ARE NOT ANY MORE.
+  // The host widened its schema to accept them; this comment used to say they
+  // were rejected, which was true when written.
+  //
+  // 🔴 THE WIRE SPELLING IS `tool_choice`, SNAKE_CASE — taken from the
+  // orchestrator's own `[JsonPropertyName("tool_choice")]`, not from this app's
+  // camelCase field name. Getting it backwards does not error: the orchestrator
+  // would ignore an unknown key and the feature would be silently inert, which
+  // is why the two spellings are mapped in exactly one place — here.
   return {
     kind: 'step',
     step: CHAT_COMPLETION_STEP_ID,
@@ -181,6 +265,12 @@ export function buildChatCompletionBody(request: ChatCompletionRequest): Workflo
       messages,
       maxTokens: clampMaxTokens(request.max_tokens),
       ...(temperature !== undefined ? { temperature } : {}),
+      ...(request.tools && request.tools.length > 0
+        ? {
+            tools: request.tools,
+            ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
+          }
+        : {}),
     },
   };
 }
@@ -204,6 +294,35 @@ export function extractReleasedText(snap: TextOutputSnapshot): string {
   return texts.filter((t) => typeof t === 'string' && t.trim().length > 0).join('\n\n');
 }
 
+/**
+ * Read the structured tool calls off a poll snapshot.
+ *
+ * 🔴 THE HOST PUBLISHES THESE ONLY ON A RELEASED VERDICT — the same gate as
+ * `textOutputs` — and every `arguments` string is ALSO returned by the step's
+ * text extractor, so it passes the content scan before it is published. That is
+ * what makes reading them here safe; it is not a property of this function.
+ *
+ * Shape-checked rather than trusted: this value crosses the postMessage boundary
+ * with no validation, and a malformed entry handed to `JSON.parse` downstream
+ * would surface as an unrelated crash.
+ */
+export function extractToolCalls(snap: TextOutputSnapshot): ToolCall[] {
+  const raw = snap.toolCalls;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (c): c is ToolCall =>
+      typeof c?.id === 'string' &&
+      c.id.length > 0 &&
+      // `ToolCall` DECLARES `type: 'function'`; without checking it the
+      // predicate narrows to a type the value does not satisfy, and a call of
+      // some future kind would be replayed verbatim as if it were a function
+      // call. A type declaration is not a runtime check.
+      c?.type === 'function' &&
+      typeof c?.function?.name === 'string' &&
+      typeof c?.function?.arguments === 'string',
+  );
+}
+
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
@@ -222,9 +341,13 @@ function delay(ms: number): Promise<void> {
  * replaying the completed, released text through `simulateStreaming`; the
  * `stream` field on the request is ignored.
  *
- * 🔴 NO TOOL CALLS. The step never exposes `tools` and its `extractText`
- * deliberately does not read `tool_calls`, so a tool call can neither be
- * requested nor returned. Responses always carry `finish_reason: 'stop'`.
+ * 🔴 TOOL CALLS ARE CARRIED, and the finish reason distinguishes them. The
+ * step accepts `tools`/`tool_choice` and the host publishes a `tool_calls`
+ * reply on a verdict-gated `toolCalls` snapshot field — released only when the
+ * output scan releases. A response carrying calls reports
+ * `finish_reason: 'tool_calls'`; one carrying prose reports `'stop'`. This
+ * block previously asserted the opposite while the code below already set
+ * `'tool_calls'`.
  */
 export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdapter {
   let lastWorkflowId: string | undefined;
@@ -295,12 +418,21 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       }
 
       const content = extractReleasedText(snap);
+      const toolCalls = extractToolCalls(snap);
 
-      if (!content) {
+      // 🔴 A TOOL-CALL REPLY HAS NO CONTENT, AND THAT IS NOT AN EMPTY RESPONSE.
+      // When the model decides to call a tool it returns `finishReason:
+      // 'tool_calls'` with `content: null` — the step's text extractor then
+      // yields nothing but the structured calls are present. Throwing here (as
+      // this did before tool calling existed) would turn every successful tool
+      // round into "Chat completion returned empty response", i.e. the feature
+      // would appear broken precisely when it worked.
+      if (!content && toolCalls.length === 0) {
         throw new Error('Chat completion returned empty response');
       }
 
-      if (onChunk) {
+      // Only stream real prose. A tool round has nothing to show the viewer yet.
+      if (onChunk && content) {
         await simulateStreaming(content, onChunk);
       }
 
@@ -313,7 +445,7 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
           {
             index: 0,
             message: { role: 'assistant', content },
-            finish_reason: 'stop',
+            finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop',
           },
         ],
         usage: {
@@ -321,6 +453,7 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
           completion_tokens: completionTokens,
           total_tokens: promptTokens + completionTokens,
         },
+        ...(toolCalls.length > 0 ? { toolCalls } : {}),
       };
     },
 

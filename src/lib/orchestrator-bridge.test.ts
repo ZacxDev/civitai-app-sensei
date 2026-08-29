@@ -4,6 +4,7 @@ import {
   buildChatCompletionBody,
   toStepMessages,
   extractReleasedText,
+  extractToolCalls,
   isAllowedModel,
   TextOutputWithheldError,
   CHAT_COMPLETION_STEP_ID,
@@ -90,36 +91,62 @@ describe('orchestrator-bridge', () => {
       expect('temperature' in body.params).toBe(false);
     });
 
-    it('NEVER forwards tools, tool_choice, response_format or stream', () => {
+    it('still drops the params the host rejects — and no longer drops tools', () => {
       // 🔴 THE CAST IS THE POINT, AND IT IS NOT A LOOPHOLE. `ChatCompletionRequest`
-      // no longer DECLARES these keys, so the app cannot express them — that is
-      // the primary guard and it is compile-time. This test keeps the RUNTIME
+      // does not DECLARE the banned keys, so the app cannot express them — that
+      // is the primary guard and it is compile-time. This test keeps the RUNTIME
       // guard honest for the inputs a type cannot police: a deserialized stored
       // request, an `any` from a future refactor, a hand-built object. Deleting
       // the cast would delete the only reachable input this assertion has.
+      //
+      // ⚠️ `tools` AND `tool_choice` USED TO BE ON THE BANNED LIST. The host
+      // widened its schema to accept them, so banning them here would now be
+      // asserting the opposite of the contract. They moved to the assertions
+      // below rather than being quietly deleted from the list.
       const body = buildChatCompletionBody({
         model: MODEL,
         messages: [{ role: 'user', content: 'hi' }],
         stream: true,
-        tool_choice: 'auto',
         response_format: { type: 'json_object' },
-        tools: [
-          {
-            type: 'function',
-            function: { name: 'search_models', description: 'd', parameters: {} },
-          },
-        ],
+        modalities: ['image'],
       } as unknown as Parameters<typeof buildChatCompletionBody>[0]);
-      for (const banned of [
-        'tools',
-        'tool_choice',
-        'response_format',
-        'stream',
-        'max_tokens',
-        'modalities',
-      ]) {
+      for (const banned of ['response_format', 'stream', 'max_tokens', 'modalities']) {
         expect(banned in body.params).toBe(false);
       }
+      // No tools were declared on THIS request, so neither key is emitted — an
+      // empty `tools` array is a different thing from an absent one.
+      expect('tools' in body.params).toBe(false);
+      expect('tool_choice' in body.params).toBe(false);
+    });
+
+    it('forwards declared tools, and maps toolChoice to the snake_case wire key', () => {
+      const tools = [
+        { type: 'function' as const, function: { name: 'search_models', description: 'd', parameters: {} } },
+      ];
+      const body = buildChatCompletionBody({
+        model: MODEL,
+        messages: [{ role: 'user', content: 'hi' }],
+        tools,
+        toolChoice: 'auto',
+      });
+      expect(body.params.tools).toEqual(tools);
+      // 🔴 SNAKE_CASE ON THE WIRE, camelCase in the app. The orchestrator reads
+      // `tool_choice`; an unknown key is IGNORED rather than rejected, so
+      // getting this backwards would leave the feature silently inert with every
+      // test still green. That is why the spelling is asserted, not assumed.
+      expect(body.params.tool_choice).toBe('auto');
+      expect('toolChoice' in body.params).toBe(false);
+    });
+
+    it('emits no tool keys for an EMPTY tools array — absent and empty differ', () => {
+      const body = buildChatCompletionBody({
+        model: MODEL,
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [],
+        toolChoice: 'auto',
+      });
+      expect('tools' in body.params).toBe(false);
+      expect('tool_choice' in body.params).toBe(false);
     });
 
     it('rejects a model that is not on the host allowlist', () => {
@@ -469,5 +496,61 @@ describe('orchestrator-bridge', () => {
     it('the two lists are the same set', () => {
       expect(AVAILABLE_MODELS.map((m) => m.id).sort()).toEqual([...CHAT_COMPLETION_MODELS].sort());
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 `extractToolCalls` HAD NO TEST AT ALL — it was exported and imported by
+// nothing outside its own module, which is why a mutant deleting its
+// `type === 'function'` check survived the entire suite. An exported function
+// with no importer in the test tree is invisible to mutation scoring: the
+// battery reports a survivor and there is no test that could ever have killed
+// it.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('extractToolCalls — a type declaration is not a runtime check', () => {
+  const wellFormed = {
+    id: 'call_1',
+    type: 'function',
+    function: { name: 'search_models', arguments: '{"query":"x"}' },
+  };
+
+  it('keeps a well-formed function call — POSITIVE CONTROL', () => {
+    // Without this, every assertion below is satisfied by a function that
+    // returns [] unconditionally.
+    expect(extractToolCalls({ toolCalls: [wellFormed] } as never)).toEqual([wellFormed]);
+  });
+
+  it('🔴 DROPS a call whose `type` is not `function`', () => {
+    // `ToolCall` DECLARES `type: 'function'`, so without the runtime check the
+    // predicate narrows to a type the value does not satisfy and a call of some
+    // future kind is replayed verbatim as if it were a function call.
+    const other = { ...wellFormed, type: 'custom' };
+    expect(extractToolCalls({ toolCalls: [other] } as never)).toEqual([]);
+    // ISOLATING: the same object differing ONLY in `type` is kept, so this
+    // cannot be passing because some other field failed.
+    expect(extractToolCalls({ toolCalls: [{ ...other, type: 'function' }] } as never)).toHaveLength(1);
+  });
+
+  it('DROPS a call with `type` absent entirely', () => {
+    const { type: _dropped, ...noType } = wellFormed;
+    expect(extractToolCalls({ toolCalls: [noType] } as never)).toEqual([]);
+  });
+
+  it('drops malformed calls but keeps the well-formed ones alongside them', () => {
+    const calls = [
+      wellFormed,
+      { ...wellFormed, id: '' },
+      { ...wellFormed, type: 'custom' },
+      { ...wellFormed, function: { name: 'x' } },
+      { ...wellFormed, id: 'call_2' },
+    ];
+    const kept = extractToolCalls({ toolCalls: calls } as never);
+    expect(kept.map((c) => c.id)).toEqual(['call_1', 'call_2']);
+  });
+
+  it('is total on a snapshot with no tool calls', () => {
+    expect(extractToolCalls({} as never)).toEqual([]);
+    expect(extractToolCalls({ toolCalls: null } as never)).toEqual([]);
+    expect(extractToolCalls({ toolCalls: 'nope' } as never)).toEqual([]);
   });
 });

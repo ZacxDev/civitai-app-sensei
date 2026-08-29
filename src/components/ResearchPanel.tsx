@@ -10,8 +10,6 @@ export interface ResearchPanelProps {
   searchResults: ModelSearchResult | null;
   /** The query actually SENT for the last retrieval — not what the user typed. */
   lastQuery?: string | null;
-  /** True when `lastQuery` is the narrowed retry rather than the first attempt. */
-  narrowed?: boolean;
   isSearching: boolean;
   onSearch: (query: string) => void;
   onInsert: (text: string) => void;
@@ -65,7 +63,6 @@ export function ResearchPanel({
   onToggle,
   searchResults,
   lastQuery,
-  narrowed,
   isSearching,
   onSearch,
   onInsert,
@@ -123,16 +120,15 @@ export function ResearchPanel({
         </Group>
         {/*
           🔴 THE QUERY THAT WAS ACTUALLY SENT, not the sentence that was typed.
-          A chat turn is rewritten into keywords before it reaches the catalog
-          (`deriveSearchQuery`), and when that rewrite is wrong the reply is
-          grounded in the wrong models with nothing on screen to say so — which
-          is exactly how the DreamShaper case went unnoticed. Showing the query
-          makes a bad retrieval visible instead of silently poisoning an answer.
+          For a chat turn this is the query the MODEL wrote when it called a
+          catalog tool; for a panel search it is what was typed, verbatim. Either
+          way a bad query is visible instead of silently poisoning an answer —
+          which is exactly how the DreamShaper case went unnoticed. (It used to
+          be a stopword rewrite of the sentence; `deriveSearchQuery` is gone.)
         */}
         {lastQuery ? (
           <div style={{ ...mutedText, marginTop: 8, fontSize: 11 }} data-testid="research-query">
             Searched for: <strong>{lastQuery}</strong>
-            {narrowed ? ' (narrowed — the first search looked unrelated)' : ''}
           </div>
         ) : null}
       </div>

@@ -199,22 +199,6 @@ describe('ResearchPanel — the query actually used', () => {
     expect(screen.getByTestId('research-query').textContent).toContain('DreamShaper');
   });
 
-  it('says so when the narrowed retry was the one used', () => {
-    render(
-      <ResearchPanel
-        isOpen={true}
-        onToggle={vi.fn()}
-        searchResults={REAL_RESULTS}
-        lastQuery="dreamshaper"
-        narrowed
-        isSearching={false}
-        onSearch={vi.fn()}
-        onInsert={vi.fn()}
-      />,
-    );
-    expect(screen.getByTestId('research-query').textContent).toContain('narrowed');
-  });
-
   it('shows no query line before anything has been searched', () => {
     render(
       <ResearchPanel

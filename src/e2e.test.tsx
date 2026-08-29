@@ -41,8 +41,12 @@ vi.mock('@civitai/blocks-react', () => ({
 }));
 
 describe('E2E: Sensei App', () => {
-  // Every send now runs a catalog retrieval first. Stub it so the suite makes
-  // no network call and the retrieval failure path is not silently exercised.
+  // Every send fetches tool declarations first. Stub the whole blocks surface —
+  // `/tools` included — so the suite makes no network call AND runs the normal
+  // tool-enabled path. 🔴 The fake had no `/tools` branch for one revision, so
+  // `fetchToolDeclarations` threw, `App.tsx` swallowed it, and these tests
+  // silently exercised the DEGRADED no-tools path while this comment claimed
+  // the opposite.
   let api: ReturnType<typeof fakeBlockCatalogApi>;
   beforeEach(() => {
     clearCache();

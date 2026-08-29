@@ -1,3 +1,4 @@
+import type { ToolCall } from './tools.js';
 import type { Message } from '../types.js';
 
 const ROLE_LABELS: Record<string, string> = {
@@ -23,6 +24,17 @@ export function estimateTokens(text: string): number {
 export interface ApiMessage {
   role: string;
   content: string;
+  /**
+   * Present on a `role: 'tool'` message — the id of the call it answers. The
+   * host correlates every tool answer against an id a PRECEDING assistant turn
+   * declared, and rejects the whole payload if it cannot.
+   */
+  tool_call_id?: string;
+  /**
+   * Present on an assistant turn that ASKED for tools. Replayed on the next
+   * round so the answers that follow it correlate.
+   */
+  tool_calls?: ToolCall[];
 }
 
 /**
@@ -38,27 +50,12 @@ export function withSystemPrompt(
   return [{ role: 'system', content: systemPrompt }, ...withoutSystem];
 }
 
-/**
- * Splice retrieved catalog context in as a `system` message IMMEDIATELY BEFORE
- * the latest user turn.
- *
- * Position is the whole point. Placed at the head it competes with the app's
- * own system prompt and is separated from the question by the entire history;
- * placed after the user turn it reads as an answer. Directly before the
- * question it reads as "here is what the search returned, now answer this".
- *
- * Returns the input unchanged when `context` is empty — an empty `content` is
- * `.min(1)` on the host, i.e. a `BAD_REQUEST` for the whole request, not a
- * message that gets dropped.
- */
-export function withRetrievalContext(messages: ApiMessage[], context: string): ApiMessage[] {
-  if (!context.trim()) return messages;
+// 🔴 `withRetrievalContext` WAS DELETED HERE, not disabled. It spliced a
+// heuristic search's results in as a `system` message before the latest user
+// turn. Grounding now arrives as `role:'tool'` messages the model asked for by
+// name, so there is nothing to inject and no second grounding path to keep in
+// step with the first.
 
-  const lastUserIdx = messages.map((m) => m.role).lastIndexOf('user');
-  const injected: ApiMessage = { role: 'system', content: context };
-  if (lastUserIdx === -1) return [...messages, injected];
-  return [...messages.slice(0, lastUserIdx), injected, ...messages.slice(lastUserIdx)];
-}
 
 export interface StoredMessage {
   id: string;
