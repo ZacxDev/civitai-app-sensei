@@ -750,6 +750,18 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             finalMsg,
           ]),
         );
+      } else {
+        // 🔴 THE ACCEPTED LOSS, MADE OBSERVABLE. Discarding this reply is the
+        // deliberate trade — the alternative is deleting the viewer's newer
+        // message — but the viewer WAS charged for it, and every other
+        // cost-bearing outcome in this file emits an event
+        // (`completion_withheld`, `storage_error`). Without this one the
+        // frequency of the trade is unmeasurable in production, so no evidence
+        // could ever accumulate to justify revisiting it once the host can
+        // serve a block its own write (civitai #4456) and a merge becomes
+        // possible. A silent accepted cost is how an accepted cost stops being
+        // reviewed.
+        depsRef.current.track('reply_discarded_superseded');
       }
     } catch (e) {
       // 🔴 A USER STOP IS NOT AN ERROR, AND MUST NOT OVERWRITE ITS OWN WRITE.
@@ -798,6 +810,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             { ...assistantMsg, content: body, ...(withheld ? { withheld: true } : {}) },
           ]),
         );
+      } else {
+        // Same accepted loss as the success path above, same reason for
+        // counting it. A withhold reaching here was still CHARGED.
+        depsRef.current.track('reply_discarded_superseded');
       }
       if (withheld) depsRef.current.track('completion_withheld');
     } finally {
@@ -850,16 +866,31 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // over, which was applied to withholds and missed here.
     const current = messagesRef.current;
     if (activeSessionId && current.length > 0) {
-      // 🔴 STOP DELIBERATELY DOES NOT CLAIM, AND THAT IS A MEASURED DECISION.
-      // A claim here looks like prudent defence-in-depth and is in fact
-      // UNREACHABLE: Stop only exists while `isStreaming`, which only this
-      // instance's own `handleSend` sets — and that send already claimed a newer
-      // ticket than any turn stranded by an earlier unmount. So the bump could
-      // never change an outcome. It was written, then removed when a mutation
-      // that deleted it survived all 278 tests: nothing could distinguish its
-      // presence from its absence, because there is no state in which it acts.
-      // A guard that cannot be reached is not protection, it is a false claim
-      // that the case is handled.
+      // 🔴 STOP DELIBERATELY DOES NOT CLAIM. A claim here looks like prudent
+      // defence-in-depth; it cannot change an outcome, and it was removed when a
+      // mutation deleting it survived all 278 tests.
+      //
+      // The reason is what this write CONTAINS, not who claimed last. It writes
+      // `messagesRef.current`, which for a given session is either the array
+      // just loaded from storage — a subset of anything a stranded turn would
+      // write — or one some live claim already covers. There is no state in
+      // which bumping the ticket first changes what ends up stored.
+      //
+      // ⚠️ AN EARLIER VERSION OF THIS COMMENT ARGUED IT FROM A FALSE PREMISE,
+      // and the premise is worth naming because it is tempting: "Stop only
+      // exists while `isStreaming`, so this instance's own send already claimed
+      // a newer ticket." `isStreaming` is instance-wide, not per session, and
+      // nothing disables the session switcher mid-stream — so the session
+      // active at Stop is NOT necessarily the session the in-flight turn
+      // claimed. The conclusion survives; that route to it does not.
+      //
+      // 🔴 That same gap is a REAL pre-existing defect, tracked on clawgate
+      // #427 and deliberately not fixed here: this write targets
+      // `activeSessionId` rather than the streaming turn's session, so
+      // switching sessions mid-stream and pressing Stop writes one
+      // conversation's transcript under another's key. It predates this change
+      // and is out of scope for #425 — but do not read the paragraph above as
+      // saying the write always targets the right key. It does not.
       void persist('save the stopped reply', () =>
         sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, current),
       );

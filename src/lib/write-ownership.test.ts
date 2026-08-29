@@ -49,3 +49,36 @@ describe('message-write ownership', () => {
     expect(ownsMessageWrite('s-forged', real - 1)).toBe(false);
   });
 });
+
+/**
+ * The CLAIM-BEFORE-FIRST-WRITE ordering, pinned as source text.
+ *
+ * `App.tsx` states "CLAIM THIS SESSION'S MESSAGE KEY BEFORE THE FIRST WRITE OF
+ * THE TURN". That ordering is the correct defensive choice — a claim taken after
+ * the user-message persist leaves a window in which a stranded turn's write can
+ * still land as the owner — but nothing enforced it: moving the claim below that
+ * `await` left the whole suite green.
+ *
+ * 🔴 A SOURCE-TEXT GUARD, WITH THE LIMITS THAT IMPLIES. It cannot prove the
+ * dataflow; it pins the one thing a behavioural test could not see, in the same
+ * spirit as `App.abort-scope.test.ts`. It is expected to fail on a legitimate
+ * refactor of `handleSend`'s opening, and updating it is a deliberate act.
+ */
+describe('claim ordering in handleSend', () => {
+  it('🔴 the claim precedes the turn\'s first storage write', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+
+    const claimAt = src.indexOf('const myWrite = claimMessageWrite(activeSessionId);');
+    const firstWriteAt = src.indexOf("await persist('save your message'");
+
+    expect(claimAt, 'the claim must exist').toBeGreaterThan(-1);
+    expect(firstWriteAt, "the turn's first write must exist").toBeGreaterThan(-1);
+    expect(
+      claimAt,
+      'the ticket must be claimed BEFORE the first write of the turn: a claim taken ' +
+        'after it leaves a window where a turn stranded by an unmount is still the ' +
+        'owner and its later write is accepted.',
+    ).toBeLessThan(firstWriteAt);
+  });
+});

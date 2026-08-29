@@ -40,7 +40,19 @@ const submitFn = vi.fn(async () => {
 
 /** workflowId → the released reply. Absent means "still pending, forever". */
 const settling = new Map<string, string>();
+/**
+ * workflowIds that settle as FAILED — the turn's OTHER exit.
+ *
+ * 🔴 THE ERROR EXIT NEEDS ITS OWN COVERAGE, and for a turn stranded by an
+ * unmount it is at least as likely as the success one. A stranded workflow can
+ * end `failed` / `expired` / `canceled`, be withheld, or simply outlive the
+ * bridge's poll deadline — all of which land in `handleSend`'s `catch`, which
+ * carries its own ownership gate on a DIFFERENT line from the success path's.
+ * Without this arm a mutant deleting that second gate survives the whole suite.
+ */
+const failing = new Set<string>();
 const pollFn = vi.fn(async (workflowId: string) => {
+  if (failing.has(workflowId)) return { workflowId, status: 'failed' };
   const released = settling.get(workflowId);
   if (released !== undefined) return { workflowId, status: 'succeeded', textOutputs: [released] };
   return { workflowId, status: 'pending' };
@@ -95,6 +107,7 @@ beforeEach(() => {
   storage.store.clear();
   storage.sets.length = 0;
   settling.clear();
+  failing.clear();
   submitCount = 0;
   submitFn.mockClear();
   pollFn.mockClear();
@@ -194,5 +207,64 @@ describe('a turn stranded by unmount', () => {
       written.some((m) => m.role === 'assistant' && m.content === 'the answer the viewer paid for'),
       'the reply the viewer was charged for must reach storage',
     ).toBe(true);
+  });
+});
+
+/**
+ * 🔴 THE OTHER EXIT. `handleSend` has TWO deferred writes behind TWO separate
+ * ownership gates: the success path's, and the one in the `catch` that handles
+ * an error or a withhold. They are different lines, and a mutation deleting the
+ * catch-path gate survived the entire suite while the success path stayed
+ * covered — half the fix shipping untested.
+ *
+ * For a turn stranded by an unmount the error exit is at least as likely as the
+ * success one: the workflow can end `failed` / `expired` / `canceled`, be
+ * withheld, or outlive the bridge's poll deadline. All land here.
+ */
+describe('a turn stranded by unmount that ends in ERROR', () => {
+  it('🔴 must not clobber a newer message from the CATCH path either', async () => {
+    const first = render(<App />);
+    await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+    fireEvent.click(screen.getByTestId('new-session-button'));
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'FIRST question' } });
+    fireEvent.click(screen.getByTestId('send-button'));
+    await waitFor(() => expect(submitFn).toHaveBeenCalledTimes(1));
+
+    first.unmount();
+
+    render(<App />);
+    await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'SECOND question' } });
+    fireEvent.click(screen.getByTestId('send-button'));
+    await waitFor(() => expect(submitFn).toHaveBeenCalledTimes(2));
+
+    // The stranded turn FAILS rather than succeeding — the bridge throws, and
+    // `handleSend` lands in its `catch`. `aborted()` is false there (nothing
+    // stopped this turn), so the ownership gate is the only thing standing
+    // between it and a write of `[FIRST, "Error: …"]` that deletes "SECOND".
+    failing.add('wf-1');
+    await letPollsRun();
+
+    const writes = messageWrites().map((s) => s.value as Array<{ role: string; content: string }>);
+    const seen = new Set<string>();
+    for (const [i, arr] of writes.entries()) {
+      const users = new Set(arr.filter((m) => m.role === 'user').map((m) => m.content));
+      for (const previously of seen) {
+        expect(users.has(previously), `write ${i} dropped an earlier user message: ${previously}`).toBe(
+          true,
+        );
+      }
+      for (const u of users) seen.add(u);
+    }
+
+    expect(seen.has('FIRST question'), 'turn 1 never persisted its user message').toBe(true);
+    expect(seen.has('SECOND question'), 'turn 2 never persisted its user message').toBe(true);
+
+    const committed = messageWrites().at(-1)!.value as Array<{ role: string; content: string }>;
+    expect(committed.some((m) => m.content === 'SECOND question')).toBe(true);
   });
 });
