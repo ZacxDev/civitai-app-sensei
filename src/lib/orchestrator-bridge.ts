@@ -252,11 +252,30 @@ export function buildChatCompletionBody(request: ChatCompletionRequest): Workflo
   // The host widened its schema to accept them; this comment used to say they
   // were rejected, which was true when written.
   //
-  // 🔴 THE WIRE SPELLING IS `tool_choice`, SNAKE_CASE — taken from the
-  // orchestrator's own `[JsonPropertyName("tool_choice")]`, not from this app's
-  // camelCase field name. Getting it backwards does not error: the orchestrator
-  // would ignore an unknown key and the feature would be silently inert, which
-  // is why the two spellings are mapped in exactly one place — here.
+  // 🔴 THE KEY IS `toolChoice`, camelCase — AND THE PREVIOUS COMMENT HERE WAS
+  // WRONG ABOUT BOTH THE SPELLING AND THE CONSEQUENCE. It said the wire spelling
+  // is `tool_choice`, "taken from the orchestrator's own
+  // `[JsonPropertyName("tool_choice")]`", and that getting it backwards "does not
+  // error … the feature would be silently inert".
+  //
+  // 🔴 THIS APP DOES NOT TALK TO THE ORCHESTRATOR. It talks to the civitai HOST,
+  // one layer above, and the HOST owns that camel→snake mapping: its params
+  // schema takes `toolChoice` and its `buildStep` emits `tool_choice` to the
+  // orchestrator (`chat-completion.step.ts`). Reading the orchestrator's wire
+  // name and sending it to the host skips a layer.
+  //
+  // 🔴 AND IT IS A HARD ERROR, NOT INERTNESS. The host's params schema is
+  // `.strict()`, so an unknown key is a BAD_REQUEST for the WHOLE request:
+  //   invalid params for step 'chat-completion':
+  //     [{ "code": "unrecognized_keys", "keys": ["tool_choice"] }]
+  // Shipped in 0.1.6 and it broke EVERY send, not just tool-calling ones —
+  // `tools`+`toolChoice` are attached whenever declarations are available, which
+  // is always once the route is live. The estimate 400s, and the app reports it
+  // as "Workflow estimate returned zero or missing cost" because the guard it
+  // trips is a PRICE check, which is why it read as a billing fault.
+  //
+  // The exact accepted key set is pinned in `orchestrator-bridge.test.ts`, so a
+  // future rename fails here rather than in production.
   return {
     kind: 'step',
     step: CHAT_COMPLETION_STEP_ID,
@@ -268,7 +287,7 @@ export function buildChatCompletionBody(request: ChatCompletionRequest): Workflo
       ...(request.tools && request.tools.length > 0
         ? {
             tools: request.tools,
-            ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
+            ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
           }
         : {}),
     },

@@ -119,7 +119,7 @@ describe('orchestrator-bridge', () => {
       expect('tool_choice' in body.params).toBe(false);
     });
 
-    it('forwards declared tools, and maps toolChoice to the snake_case wire key', () => {
+    it('forwards declared tools, and keeps the HOST key `toolChoice` (camelCase)', () => {
       const tools = [
         { type: 'function' as const, function: { name: 'search_models', description: 'd', parameters: {} } },
       ];
@@ -130,12 +130,20 @@ describe('orchestrator-bridge', () => {
         toolChoice: 'auto',
       });
       expect(body.params.tools).toEqual(tools);
-      // 🔴 SNAKE_CASE ON THE WIRE, camelCase in the app. The orchestrator reads
-      // `tool_choice`; an unknown key is IGNORED rather than rejected, so
+      // 🔴 THIS TEST USED TO ASSERT THE DEFECT, AND ITS OLD COMMENT EXPLAINED
+      // WHY IT WAS RIGHT TO. It read: "SNAKE_CASE ON THE WIRE … the orchestrator
+      // reads `tool_choice`; an unknown key is IGNORED rather than rejected, so
       // getting this backwards would leave the feature silently inert with every
-      // test still green. That is why the spelling is asserted, not assumed.
-      expect(body.params.tool_choice).toBe('auto');
-      expect('toolChoice' in body.params).toBe(false);
+      // test still green." Both halves were wrong, and being asserted is what
+      // made the mistake survive review, five audits and a release.
+      //
+      // The app talks to the HOST, not the orchestrator. The host's params
+      // schema takes `toolChoice` and does the camel→snake mapping itself; and
+      // that schema is `.strict()`, so an unknown key is a BAD_REQUEST for the
+      // WHOLE request, never an ignored field. 0.1.6 shipped `tool_choice` and
+      // broke EVERY send.
+      expect(body.params.toolChoice).toBe('auto');
+      expect('tool_choice' in body.params).toBe(false);
     });
 
     it('emits no tool keys for an EMPTY tools array — absent and empty differ', () => {
@@ -552,5 +560,97 @@ describe('extractToolCalls — a type declaration is not a runtime check', () =>
     expect(extractToolCalls({} as never)).toEqual([]);
     expect(extractToolCalls({ toolCalls: null } as never)).toEqual([]);
     expect(extractToolCalls({ toolCalls: 'nope' } as never)).toEqual([]);
+  });
+});
+
+/**
+ * 🔴 THE PARAMS KEY SET THE HOST ACCEPTS — the guard 0.1.6 did not have.
+ *
+ * The host's `chatCompletionParamsSchema` is `.strict()`, so an unknown key is a
+ * BAD_REQUEST for the WHOLE request, not a dropped field. 0.1.6 sent
+ * `tool_choice` (the ORCHESTRATOR's wire spelling) where the host takes
+ * `toolChoice`, and because `tools`+`toolChoice` are attached whenever tool
+ * declarations are available — always, once the route is live — EVERY send
+ * failed, not merely tool-calling ones. The server said:
+ *
+ *   invalid params for step 'chat-completion':
+ *     [{ "code": "unrecognized_keys", "keys": ["tool_choice"] }]
+ *
+ * 🔴 THIS PINS THE WHOLE SET, NOT THE ONE KEY THAT BROKE. A test asserting
+ * `toolChoice` is present would pass while some future field ships a second
+ * wrong spelling; `.strict()` means any unknown key is equally fatal, so the
+ * guard has to be an exact-set comparison in both directions.
+ *
+ * The expected set is transcribed from the host's own schema
+ * (`chat-completion.step.ts` — `model`, `messages`, `maxTokens`, `temperature?`,
+ * `tools?`, `toolChoice?`). It is a SECOND COPY and that is acknowledged: the
+ * app cannot import from the host repo. The trade is deliberate — a copy that
+ * fails loudly in CI beats a mismatch that 400s every request in production.
+ */
+const HOST_ACCEPTED_PARAM_KEYS = new Set([
+  'model',
+  'messages',
+  'maxTokens',
+  'temperature',
+  'tools',
+  'toolChoice',
+]);
+
+describe('buildChatCompletionBody — params must satisfy the host .strict() schema', () => {
+  const baseRequest = {
+    model: CHAT_COMPLETION_MODELS[0],
+    messages: [{ role: 'user' as const, content: 'hello' }],
+    max_tokens: 256,
+    temperature: 0.7,
+  };
+
+  it('🔴 emits NO key the host would reject — the whole set, both directions', () => {
+    const withTools = buildChatCompletionBody({
+      ...baseRequest,
+      tools: [
+        {
+          type: 'function' as const,
+          function: { name: 'search_models', description: 'x', parameters: { type: 'object' } },
+        },
+      ],
+      toolChoice: 'auto' as const,
+    });
+
+    const emitted = Object.keys(withTools.params as Record<string, unknown>);
+    const unknown = emitted.filter((k) => !HOST_ACCEPTED_PARAM_KEYS.has(k));
+    expect(
+      unknown,
+      `these keys are not in the host's .strict() schema and make the WHOLE request a ` +
+        `BAD_REQUEST: ${unknown.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('🔴 spells the tool-choice key `toolChoice`, never the orchestrator wire name', () => {
+    // The direct regression. The host owns the camel->snake mapping; this app
+    // talks to the HOST, so sending `tool_choice` skips a layer.
+    const body = buildChatCompletionBody({
+      ...baseRequest,
+      tools: [
+        {
+          type: 'function' as const,
+          function: { name: 'search_models', description: 'x', parameters: { type: 'object' } },
+        },
+      ],
+      toolChoice: 'auto' as const,
+    });
+    const params = body.params as Record<string, unknown>;
+    expect(params.toolChoice).toBe('auto');
+    expect(params).not.toHaveProperty('tool_choice');
+  });
+
+  it('positive control: a tool-less request still emits only accepted keys', () => {
+    // Without this, a build that emitted NOTHING would satisfy the set check
+    // above vacuously.
+    const plain = buildChatCompletionBody(baseRequest);
+    const emitted = Object.keys(plain.params as Record<string, unknown>);
+    expect(emitted.length).toBeGreaterThan(0);
+    expect(emitted.filter((k) => !HOST_ACCEPTED_PARAM_KEYS.has(k))).toEqual([]);
+    expect(emitted).toContain('model');
+    expect(emitted).toContain('messages');
   });
 });

@@ -16,7 +16,11 @@ interface SubmittedParams {
   maxTokens: number;
   temperature?: number;
   tools?: Array<{ type: string; function: { name: string } }>;
-  tool_choice?: string;
+  // 🔴 `toolChoice`, NOT `tool_choice` — the HOST's key. This declaration was
+  // the THIRD place the wrong spelling was written down (payload, assertion,
+  // and this type), and the type is why the mistake type-checked: it made the
+  // fixture agree with the defect, so nothing anywhere disagreed.
+  toolChoice?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -169,7 +173,7 @@ describe('tool calling: the model forms its own query, one submit per round', ()
     globalThis.fetch = originalFetch;
   });
 
-  it('FETCHES the declarations and puts them on the wire as `tools` + snake_case `tool_choice`', async () => {
+  it('FETCHES the declarations and puts them on the wire as `tools` + `toolChoice`', async () => {
     pollQueue = [textSnapshot('Here is an answer.')];
     const all = await sendMessage('what is DreamShaper?');
 
@@ -181,10 +185,12 @@ describe('tool calling: the model forms its own query, one submit per round', ()
 
     const first = all[0];
     expect(first.tools?.[0].function.name).toBe('search_models');
-    // 🔴 SNAKE_CASE ON THE WIRE. The app's own field is `toolChoice`; an
-    // unknown key would be ignored and the feature silently inert.
-    expect(first.tool_choice).toBe('auto');
-    expect('toolChoice' in first).toBe(false);
+    // 🔴 THE HOST'S KEY IS `toolChoice`. This assertion previously pinned
+    // `tool_choice` — the ORCHESTRATOR's spelling, one layer too low — and the
+    // host's `.strict()` schema rejects it as `unrecognized_keys`, failing the
+    // whole request rather than ignoring the field.
+    expect(first.toolChoice).toBe('auto');
+    expect('tool_choice' in first).toBe(false);
   });
 
   it('drives a tool POST with the MODEL-authored arguments, then resubmits with the result', async () => {
