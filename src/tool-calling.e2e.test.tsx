@@ -69,6 +69,10 @@ vi.mock('@civitai/blocks-react', () => ({
   useBlockResize: () => {},
   useRequestConsent: () => ({ requestConsent: vi.fn() }),
   useRequestSignIn: () => ({ requestSignIn: vi.fn() }),
+  // The host's native resource picker. A no-op stub (the viewer dismisses without
+  // picking) for every suite that is not ABOUT mentions — see
+  // `mention-grounding.e2e.test.tsx` for the driven one.
+  useResourcePicker: () => ({ open: vi.fn().mockResolvedValue(null) }),
   useBlockToken: () => ({ raw: 'block-jwt-test', scopes: ['ai:write:budgeted', 'buzz:read:self'] }),
   useBuzzBalance: () => ({ balance: { blue: 100, green: 0, yellow: 200 } }),
   useBuzzWorkflow: () => ({
@@ -474,20 +478,51 @@ describe('the degraded no-tools path — the prompt must not claim what the wire
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🔴 THE RESEARCH PANEL MUST NOT LABEL STALE RESULTS WITH A NEW QUERY.
+// 🔴 A LATER TOOL ROUND MUST NOT INHERIT AN EARLIER ROUND'S QUERY LABEL.
 //
-// `searchResults` is written only by the manual search box and cleared only on
-// session switch. The tool loop sets `searchQuery` from the model's own call, so
-// clearing the results INSIDE `if (firstQuery)` left a previous manual search's
-// models on screen under a different query's label whenever the model called a
-// tool that takes no `query` argument — and declarations are FETCHED, so which
-// tools have one is not ours to assume.
+// RETARGETED FROM "the Research panel must not label stale results" when the
+// panel was removed (clawgate #434). The panel's `searchResults` are gone — the
+// catalog no longer enters this iframe at all — but the DEFECT SURVIVES THE
+// PANEL, because the mechanism was never the results: it was writing the label
+// CONDITIONALLY (`if (firstQuery) setLabel(firstQuery)`) while a round that
+// carries no `query` argument leaves the previous value standing. Declarations
+// are FETCHED, so which tools take a `query` is not ours to assume, and an id
+// lookup legitimately has none.
+//
+// The label now lives inline in the composer (`lookup-query`), so the same
+// hazard is: round 1 searches "anime style", round 2 is an id lookup, and the
+// viewer is told the app is looking up "anime style" when it is not.
+//
+// Each round's tool POST is held open, so the assertion is made WHILE round 2
+// is in flight — the only window in which the stale label is observable. Round
+// 1's arm is the positive control: it proves the label renders at all, so round
+// 2's absence is not merely a probe wired to nothing.
+//
+// 🔴 WHAT THIS CASE DOES **NOT** PIN, MEASURED RATHER THAN ASSUMED. An earlier
+// revision of this comment called it "ISOLATING BY CONSTRUCTION". It is not.
+// TWO redundant mechanisms keep the label honest — the UNCONDITIONAL write
+// (`setLookupQuery(readQueryArgument(...))`, which writes `null` for a
+// no-query round) and the per-round CLEAR in the `finally` — and each MASKS the
+// other. Mutating either one alone leaves this case GREEN:
+//
+//   conditional write (`if (q) setLookupQuery(q)`)  -> SURVIVED
+//   `finally` clear removed                          -> SURVIVED
+//   BOTH removed together                            -> KILLED
+//     ("AssertionError: expected <span …> to be null")
+//
+// So this case observes the PROPERTY, and the property is genuinely guarded —
+// but no single-guard mutant can kill it, and neither guard is individually
+// necessary. Do not read a green run here as evidence that either mechanism is
+// still present; read it as evidence that at least one is.
 // ─────────────────────────────────────────────────────────────────────────────
-describe('the Research panel — a tool round invalidates standing results', () => {
+describe('the lookup label — a round with no `query` must not inherit the last one', () => {
+  let releaseTool: (() => void) | null = null;
+
   beforeEach(() => {
     submitted.length = 0;
     toolRequests = [];
     pollQueue = [];
+    releaseTool = null;
     submitFn.mockClear();
     pollFn.mockClear();
     clearCache();
@@ -495,49 +530,54 @@ describe('the Research panel — a tool round invalidates standing results', () 
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : String(input);
       const method = init?.method ?? 'GET';
-      if (url.includes('/api/v1/blocks/tools')) {
-        return new Response(
-          JSON.stringify(
-            method === 'GET' ? { tools: DECLARATIONS } : { items: [], truncated: 0 },
-          ),
-          { status: 200 },
-        );
+      if (url.includes('/api/v1/blocks/tools') && method === 'GET') {
+        return new Response(JSON.stringify({ tools: DECLARATIONS }), { status: 200 });
       }
-      // The MANUAL search box's endpoint — one result the viewer can see.
-      return new Response(
-        JSON.stringify({
-          items: [{ id: 999, name: 'Anime Thing', type: 'Checkpoint', stats: {}, creator: {} }],
-          metadata: {},
-        }),
-        { status: 200 },
-      );
+      if (url.includes('/api/v1/blocks/tools')) {
+        // 🔴 RECORDED HERE TOO. This describe installs its OWN fetch rather than
+        // `installFetch()`, so the shared recorder does not run — and a test
+        // that counts `toolRequests` against a stub that never appends is
+        // reading a number wired to nothing.
+        toolRequests.push({ url, method, authorization: '', body: undefined });
+        // Held open until the test releases it, so the in-flight window is
+        // observable rather than a race.
+        await new Promise<void>((resolve) => {
+          releaseTool = resolve;
+        });
+        return new Response(JSON.stringify({ items: [], truncated: 0 }), { status: 200 });
+      }
+      throw new Error(`unexpected fetch to ${url}`);
     }) as unknown as typeof globalThis.fetch;
   });
 
   afterEach(() => {
+    releaseTool?.();
     globalThis.fetch = originalFetch;
   });
 
-  it('🔴 clears standing results even when the tool call carries NO `query`', async () => {
+  it('🔴 shows a round’s OWN query, and NOTHING when that round has none', async () => {
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
     fireEvent.click(screen.getByTestId('new-session-button'));
     await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
 
-    // 1. A manual search populates the panel.
-    fireEvent.click(screen.getByTestId('open-research'));
-    fireEvent.change(await screen.findByTestId('research-search-input'), {
-      target: { value: 'anime' },
-    });
-    fireEvent.click(screen.getByTestId('research-search-button'));
-    // POSITIVE CONTROL: the results really are on screen, so the assertion
-    // below cannot pass merely because nothing was ever rendered.
-    await waitFor(() => expect(screen.getByTestId('research-result-999')).toBeTruthy());
-
-    // 2. A chat turn whose tool call has NO `query` argument — an id lookup.
     pollQueue = [
+      // Round 1 — a real search, WITH a query.
       {
-        workflowId: 'wf-nq',
+        workflowId: 'wf-q1',
+        status: 'succeeded',
+        cost: { total: 1 },
+        toolCalls: [
+          {
+            id: 'call_q',
+            type: 'function',
+            function: { name: 'search_models', arguments: JSON.stringify({ query: 'anime style' }) },
+          },
+        ],
+      },
+      // Round 2 — an id lookup, NO query argument.
+      {
+        workflowId: 'wf-q2',
         status: 'succeeded',
         cost: { total: 1 },
         toolCalls: [
@@ -550,14 +590,29 @@ describe('the Research panel — a tool round invalidates standing results', () 
       },
       textSnapshot('Answer.'),
     ];
+
     fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'tell me about 1234' } });
     fireEvent.click(screen.getByTestId('send-button'));
 
-    // 3. The stale models must be gone. ISOLATING: with the clear back inside
-    // `if (firstQuery)` this call — which has no `query` — leaves them on
-    // screen indefinitely.
-    await waitFor(() => expect(screen.queryByTestId('research-result-999')).toBeNull(), {
-      timeout: 8000,
-    });
-  });
+    // POSITIVE CONTROL — round 1's own query is on screen while its POST runs.
+    await waitFor(
+      () => expect(screen.getByTestId('lookup-query').textContent).toContain('anime style'),
+      { timeout: 8000 },
+    );
+    await waitFor(() => expect(releaseTool).not.toBeNull());
+    releaseTool!();
+    releaseTool = null;
+
+    // Round 2 is now in flight, and it carries NO query. The label must be
+    // ABSENT — with the write back inside `if (firstQuery)` it would still read
+    // "anime style".
+    await waitFor(() => expect(toolRequests.length).toBeGreaterThanOrEqual(2), { timeout: 8000 });
+    expect(screen.queryByTestId('lookup-query')).toBeNull();
+
+    await waitFor(() => expect(releaseTool).not.toBeNull());
+    releaseTool!();
+    // 🔴 20 s, not the 5 s default: this case deliberately HOLDS two requests
+    // open, so the default budget is consumed by the very mechanism that makes
+    // the assertion isolating. A timeout here would read as a product failure.
+  }, 20_000);
 });

@@ -25,6 +25,10 @@ vi.mock('@civitai/blocks-react', () => ({
   useBlockResize: () => {},
   useRequestConsent: () => ({ requestConsent: vi.fn() }),
   useRequestSignIn: () => ({ requestSignIn: vi.fn() }),
+  // The host's native resource picker. A no-op stub (the viewer dismisses without
+  // picking) for every suite that is not ABOUT mentions — see
+  // `mention-grounding.e2e.test.tsx` for the driven one.
+  useResourcePicker: () => ({ open: vi.fn().mockResolvedValue(null) }),
   useBlockToken: () => ({ raw: 'block-jwt-test', scopes: ['ai:write:budgeted', 'buzz:read:self'] }),
   useBuzzBalance: () => ({ balance: { blue: 100, green: 0, yellow: 200 } }),
   useBuzzWorkflow: () => ({
@@ -178,19 +182,23 @@ describe('E2E: Sensei App', () => {
     });
   });
 
-  it('research panel toggle', async () => {
+  // 🔴 THE RESEARCH-PANEL TOGGLE CASE THAT USED TO SIT HERE IS REPLACED, NOT
+  // DROPPED (clawgate #434). Its subject — an in-iframe catalog search — was
+  // removed on purpose; the affordance that took its place is the mention
+  // picker, and the end-to-end for it lives in `mention-grounding.e2e.test.tsx`
+  // because it needs a driven host picker. What belongs HERE is the shape of
+  // the composer the toggle's removal left behind.
+  it('the composer offers the mention picker where the Research toggle used to be', async () => {
     render(<App />);
     await waitFor(() => {
       expect(screen.queryByTestId('app-loading')).toBeNull();
     });
-    expect(screen.getByTestId('open-research')).toBeTruthy();
-    fireEvent.click(screen.getByTestId('open-research'));
+    fireEvent.click(screen.getByTestId('start-chat-button'));
     await waitFor(() => {
-      expect(screen.getByTestId('research-panel')).toBeTruthy();
+      expect(screen.getByTestId('chat-input')).toBeTruthy();
     });
-    fireEvent.click(screen.getByTestId('close-research'));
-    await waitFor(() => {
-      expect(screen.queryByTestId('research-panel')).toBeNull();
-    });
+
+    expect(screen.queryByTestId('open-research')).toBeNull();
+    expect(screen.getByTestId('add-mention-button')).toBeTruthy();
   });
 });

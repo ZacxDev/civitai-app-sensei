@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { App } from './App.js';
-import { fakeAppStorage, fakeBlockCatalogApi } from './test-helpers.js';
+import {
+  fakeAppStorage,
+  fakeBlockCatalogApi,
+  BLOCK_GENERATION_RESOURCE,
+} from './test-helpers.js';
 import { clearCache } from './lib/research.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -44,6 +48,9 @@ const pollResult = vi.fn();
 /** The CHARGING call. Asserting on this is tighter than asserting on poll. */
 const submitSpy = vi.fn();
 
+/** What the host's picker hands back. `null` = the viewer dismissed it. */
+let pickerResult: { versionId: number } | null = { versionId: 5678 };
+
 vi.mock('@civitai/blocks-react', () => ({
   useAppStorage: () => storage.appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
@@ -53,6 +60,10 @@ vi.mock('@civitai/blocks-react', () => ({
   useBuzzBalance: () => ({ balance: { blue: 100, green: 0, yellow: 200 } }),
   useRequestConsent: () => ({ requestConsent }),
   useRequestSignIn: () => ({ requestSignIn }),
+  // The host's native resource picker. Driven here (rather than stubbed to
+  // "dismissed") because one case needs a real attachment on the composer to
+  // assert a gated send does not eat it.
+  useResourcePicker: () => ({ open: () => Promise.resolve(pickerResult) }),
   useBuzzWorkflow: () => ({
     estimate: vi
       .fn()
@@ -342,31 +353,111 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
     expect(screen.getByText(new RegExp(REPLY))).toBeTruthy();
   });
 
-  it("gates Research -> Insert, the path that never touches the composer", async () => {
-    // 🔴 THE ONLY TEST THAT CAN KILL App's OWN GATE. Send goes through
-    // ChatArea's gate and Regenerate through its own, so if this path were
-    // untested, deleting `if (sendGate) { raiseGate(); return; }` from
-    // `handleSend` would pass the entire suite — while letting a gated Insert
-    // fall through to `submitChatCompletion`, the Buzz-spending call, against
-    // a token the platform will reject.
-    render(<App />);
+  // ───────────────────────────────────────────────────────────────────────────
+  // 🔴 THE "Research -> Insert" CASE IS GONE, AND ITS COVERAGE IS GENUINELY
+  // REDUCED. SAY SO RATHER THAN QUIETLY REPLACING IT (clawgate #434).
+  //
+  // That case called itself "THE ONLY TEST THAT CAN KILL App's OWN GATE", and it
+  // was right: `handleInsertResearch` sent directly, bypassing `ChatArea`
+  // entirely, so `handleSend`'s own `if (sendGate) { raiseGate(); return; }` was
+  // the sole guard on that path and the test ISOLATED it.
+  //
+  // `handleInsertResearch` is deleted with the panel. Every surviving caller of
+  // `handleSend` — the composer and Regenerate — checks the gate BEFORE calling
+  // it, on the SAME condition. So App's own check is now defence in depth with
+  // NO reachable path that isolates it, and a mutation deleting it SURVIVES.
+  // Measured, not assumed: `if (sendGate) { raiseGate(); return; }` was removed
+  // from `handleSend` and the WHOLE suite run — 336 passed, 0 failed.
+  //
+  // 🔴 THE SAME SHADOWING COVERS THE ORDERING INSIDE `handleSend`, so say so
+  // here rather than let the case below imply otherwise. Moving
+  // `setPendingMentions([])` ABOVE the gate also SURVIVES this suite, for the
+  // identical reason: `ChatArea` returns first, so `handleSend` never runs on
+  // the gated path. The case below therefore pins the USER-VISIBLE outcome —
+  // a refused send does not eat the attachments — and it is `ChatArea`'s gate,
+  // not App's ordering, that currently delivers it.
+  //
+  // It is kept anyway, because the next non-composer caller reintroduces the
+  // hazard, and it is cheaper to keep a redundant guard than to notice its
+  // absence later. What is NOT kept is a test claiming to cover it — a guard
+  // whose test cannot fail is worse than an untested guard, because it stops
+  // anyone looking.
+  //
+  // The case below is what the mention path actually adds to this gate's
+  // surface, and it is a real one: a gated send must not silently EAT the
+  // attachments.
+  // ───────────────────────────────────────────────────────────────────────────
+  it('a gated send keeps the viewer’s attachments — nothing is consumed or spent', async () => {
+    // 🔴 THE PRECONDITION IS NOW BUILT THE WAY PRODUCTION BUILDS IT, and the
+    // rewrite is the point rather than an accommodation. This test used to
+    // attach WHILE gated — which the composer no longer permits, because a
+    // viewer who cannot send must not be able to drive the host picker and an
+    // authenticated resolve. That route was never the production one anyway:
+    // `sendGate` is DERIVED from the live token, so the reachable path to
+    // "attached AND gated" is the gate CLOSING under a composer that already
+    // holds chips — a re-mint that drops the consent-gated scope, which is the
+    // same mechanism the `grants it and retries` case below exercises in the
+    // other direction.
+    currentScopes = GRANTED_SCOPES;
+    const { rerender } = render(<App />);
     await startSession();
 
-    fireEvent.click(screen.getByTestId('open-research'));
-    fireEvent.change(screen.getByTestId('research-search-input'), {
-      target: { value: 'anime' },
-    });
-    fireEvent.click(screen.getByTestId('research-search-button'));
-
+    fireEvent.click(screen.getByTestId('add-mention-button'));
+    fireEvent.click(screen.getByTestId('mention-type-Checkpoint'));
     await waitFor(() => {
-      expect(screen.getByTestId('insert-model-1234')).toBeTruthy();
+      expect(screen.getByTestId(`mention-${BLOCK_GENERATION_RESOURCE.versionId}`)).toBeTruthy();
     });
-    fireEvent.click(screen.getByTestId('insert-model-1234'));
+
+    // The host re-mints without the spend scope. `sendGate` escalates on its own
+    // — it is derived, never stored.
+    currentScopes = UNGRANTED_SCOPES;
+    rerender(<App />);
+
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'What is this?' } });
+    fireEvent.click(screen.getByTestId('send-button'));
 
     await waitFor(() => {
       expect(requestConsent).toHaveBeenCalled();
     });
     expect(submitSpy).not.toHaveBeenCalled();
+    // The end-to-end property: a refused send leaves the viewer's attachment
+    // exactly where it was.
+    expect(screen.getByTestId(`mention-${BLOCK_GENERATION_RESOURCE.versionId}`)).toBeTruthy();
+    // ⚠️ WHAT THIS DOES **NOT** COVER, MEASURED RATHER THAN ASSUMED. Its
+    // original comment claimed to pin `App.handleSend`'s clear-vs-gate ORDERING
+    // — "if that clear ran ABOVE the gate, a refused send would drop the
+    // viewer's attachment". It does not, and never did: `ChatArea.handleSend`
+    // checks `sendGate` and returns BEFORE calling `onSend`, so `App.handleSend`
+    // is never entered on this path at all. Moving `setPendingMentions([])`
+    // above `App.handleSend`'s own gate SURVIVES this test — verified at HEAD
+    // (`f6920fe`) against the ORIGINAL test as well as this one, so it is a
+    // pre-existing gap and not something the rewrite introduced.
+    //
+    // No UI route reaches `App.handleSend` while gated: `ChatArea` gates before
+    // `onSend`, `handleRegenerate` gates before calling it, and
+    // `handleInsertResearch` — the third caller its comment names — was deleted
+    // with the Research panel. That gate is defence in depth, and defence in
+    // depth is not reachable by construction. Killing this mutant would need a
+    // COMPOUND one (ChatArea's ordering AND App's), which is a different and
+    // weaker claim; it is recorded here rather than dressed up as coverage.
+  });
+
+  it('🔴 a gated viewer cannot drive the HOST picker at all', async () => {
+    // The other side of the rewrite above, pinned so the composer's gate cannot
+    // be quietly dropped: attaching is grounding for a send this viewer cannot
+    // make, and it costs a rate-limited, authenticated resolve to find that out.
+    // They are ASKED for the missing scope instead — the picker is not
+    // `disabled`, because `'consent'` is the DEFAULT state of a first-time
+    // viewer and a dead control on first run is the defect this file is about.
+    render(<App />);
+    await startSession();
+
+    const launcher = screen.getByTestId('add-mention-button');
+    expect(launcher.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(launcher);
+
+    expect(screen.queryByTestId('mention-type-menu')).toBeNull();
+    expect(requestConsent).toHaveBeenCalled();
   });
 
   it('asks even when the last stored message is the same text (dedup must not win)', async () => {
@@ -407,11 +498,18 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
   });
 
   it("App's own dedup must not win over the gate either", async () => {
-    // The App-side mirror of the ordering test. `handleInsertResearch` sends
-    // "Tell me more about <model>" directly, bypassing ChatArea entirely — so
-    // if App's dedup sat above its gate, inserting the same model twice (with
-    // that text already the last stored message, as a failed completion
-    // leaves it) would return silently: no prompt, no banner, nothing.
+    // 🔴 RETARGETED FROM "Research -> Insert" TO REGENERATE (clawgate #434), and
+    // it still isolates App's DEDUP even though it no longer isolates App's
+    // GATE. `handleRegenerate` re-sends the last user message verbatim, so on a
+    // session restored with that text as its last stored message —
+    // exactly what a failed completion leaves behind, since the assistant reply
+    // is only persisted on success — `handleSend`'s dedup
+    // (`lastMsg.content === content`) is live. With the dedup sitting ABOVE the
+    // gate, this returns silently: no prompt, no banner, nothing.
+    //
+    // 🔴 IT MUST GO THROUGH THE STORED-SESSION SETUP, NOT A FRESH SEND. A gated
+    // send never appends a message, so pressing Send twice never reaches the
+    // dedup at all and cannot see this.
     const now = Date.now();
     await storage.appStorage.set('sensei:sessions', {
       sessions: [
@@ -420,28 +518,26 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
     });
     await storage.appStorage.set('sensei:messages:sess-dedup', [
       { id: 'm1', role: 'user', content: 'Tell me more about Test Model', timestamp: now },
+      { id: 'm2', role: 'assistant', content: 'A previous reply.', timestamp: now + 1 },
     ]);
 
     render(<App />);
     await waitFor(() => {
       expect(screen.queryByTestId('app-loading')).toBeNull();
     });
-
-    fireEvent.click(screen.getByTestId('open-research'));
-    fireEvent.change(screen.getByTestId('research-search-input'), {
-      target: { value: 'anime' },
-    });
-    fireEvent.click(screen.getByTestId('research-search-button'));
     await waitFor(() => {
-      expect(screen.getByTestId('insert-model-1234')).toBeTruthy();
+      expect(screen.getByTestId('regenerate-button')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByTestId('insert-model-1234'));
+    fireEvent.click(screen.getByTestId('regenerate-button'));
 
     await waitFor(() => {
       expect(requestConsent).toHaveBeenCalledTimes(1);
     });
     expect(submitSpy).not.toHaveBeenCalled();
+    // And the reply it would have replaced is still on screen — the gate is
+    // asked BEFORE the destructive slice.
+    expect(screen.getByText('A previous reply.')).toBeTruthy();
   });
 
   it('states the banner copy exactly, on both gates', async () => {

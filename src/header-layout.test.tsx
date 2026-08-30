@@ -34,6 +34,10 @@ vi.mock('@civitai/blocks-react', () => ({
   useBlockResize: () => {},
   useRequestConsent: () => ({ requestConsent: vi.fn() }),
   useRequestSignIn: () => ({ requestSignIn: vi.fn() }),
+  // The host's native resource picker. A no-op stub (the viewer dismisses without
+  // picking) for every suite that is not ABOUT mentions — see
+  // `mention-grounding.e2e.test.tsx` for the driven one.
+  useResourcePicker: () => ({ open: vi.fn().mockResolvedValue(null) }),
   useBlockToken: () => ({ raw: 'block-jwt-test', scopes: ['ai:write:budgeted', 'buzz:read:self'] }),
   useBuzzBalance: () => ({ balance: { blue: 100, green: 0, yellow: 200 } }),
   useBuzzWorkflow: () => ({
@@ -69,45 +73,64 @@ describe('header layout — Settings must be reachable', () => {
     cleanup();
   });
 
-  it('both controls live inside the header', async () => {
+  it('the Settings control lives inside the header', async () => {
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
 
     const header = screen.getByTestId('app-header');
     expect(header.contains(screen.getByTestId('settings-button'))).toBe(true);
-    expect(header.contains(screen.getByTestId('open-research'))).toBe(true);
   });
 
-  it('neither control is taken out of normal flow', async () => {
+  // ───────────────────────────────────────────────────────────────────────────
+  // 🔴 RETARGETED, NOT WEAKENED, WHEN THE RESEARCH TOGGLE WAS DELETED
+  // (clawgate #434). The original two cases named `open-research` by testid, so
+  // removing that control would have deleted the guard along with the button —
+  // and the DEFECT CLASS outlives the instance: the next header control added
+  // beside ⚙️ can be absolutely positioned over it exactly as the toggle was.
+  //
+  // So the assertion now quantifies over EVERY interactive control in the
+  // header rather than over a hardcoded pair. That is strictly wider than what
+  // it replaced: it covers ⚙️, the toggle if it ever returns, and anything not
+  // yet written. Its positive control is the count assertion — a guard that
+  // iterates an EMPTY set is vacuous and passes while proving nothing, which is
+  // exactly the failure mode a testid-keyed loop degrades into once its testid
+  // stops existing.
+  // ───────────────────────────────────────────────────────────────────────────
+  it('NO header control is taken out of normal flow', async () => {
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
 
-    // 🔴 THIS IS THE ASSERTION THAT WOULD HAVE CAUGHT THE BUG. Pre-fix,
-    // `open-research` carried an inline `position: absolute`, and that is the
-    // whole mechanism by which it landed on top of ⚙️.
-    for (const id of ['open-research', 'settings-button']) {
-      for (const position of positionsUpToHeader(screen.getByTestId(id))) {
+    const header = screen.getByTestId('app-header');
+    const controls = [...header.querySelectorAll('button, a, [role="button"]')] as HTMLElement[];
+
+    // POSITIVE CONTROL: the loop below is meaningless over an empty set.
+    expect(controls.length).toBeGreaterThanOrEqual(1);
+
+    for (const control of controls) {
+      // Pre-fix, `open-research` carried an inline `position: absolute`, and
+      // that is the whole mechanism by which it landed on top of ⚙️ —
+      // `elementFromPoint` at the centre of `settings-button` returned the
+      // toggle, so Settings could not be opened at all.
+      for (const position of positionsUpToHeader(control)) {
         expect(position).not.toBe('absolute');
         expect(position).not.toBe('fixed');
       }
     }
   });
 
-  it('the toggle stays in the header whether the panel is open or closed', async () => {
-    // The overlap only existed in the CLOSED state, because that is the branch
-    // that rendered the absolutely-positioned button. Assert both states so a
-    // future "just move it back when closed" cannot pass.
+  it('the Research panel and its toggle are GONE from the rendered app', async () => {
+    // Asserted on the RENDER, not on the absence of a test file: deleting a
+    // suite proves nothing about whether the control still ships. The panel put
+    // the catalog inside the iframe; the replacement puts the search in host
+    // chrome, so this is a security-relevant removal and not merely a UI one.
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
 
-    const header = screen.getByTestId('app-header');
+    expect(screen.queryByTestId('open-research')).toBeNull();
     expect(screen.queryByTestId('research-panel')).toBeNull();
-    expect(header.contains(screen.getByTestId('open-research'))).toBe(true);
-
-    fireEvent.click(screen.getByTestId('open-research'));
-    await waitFor(() => expect(screen.getByTestId('research-panel')).toBeTruthy());
-    expect(header.contains(screen.getByTestId('open-research'))).toBe(true);
-    expect(header.contains(screen.getByTestId('research-panel'))).toBe(false);
+    expect(screen.queryByTestId('research-search-input')).toBeNull();
+    expect(screen.queryByTestId('research-search-button')).toBeNull();
+    expect(screen.queryByTestId('close-research')).toBeNull();
   });
 
   it('a click on Settings opens the Settings modal', async () => {

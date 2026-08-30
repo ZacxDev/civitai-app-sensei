@@ -1,3 +1,5 @@
+import type { ResolvedResource } from './lib/mentions.js';
+
 export interface Message {
   id: string;
   /**
@@ -5,8 +7,15 @@ export interface Message {
    * `role:'tool'` messages for the wire (see `App.tsx`'s loop and
    * `toStepMessages`), but they live only inside one send's `apiMessages` array
    * and are never persisted — what goes to storage is the user turn and the
-   * final assistant reply. The member also lets sessions written by older builds
-   * deserialize; `ChatArea` renders such a message as nothing.
+   * final assistant reply.
+   *
+   * ⚠️ CORRECTED: this used to add "the member also lets sessions written by
+   * older builds deserialize", which asserted that such sessions EXIST. They do
+   * not — no shipped build has ever written a `role:'tool'` message to KV; the
+   * history is worked through in `lib/chat.ts`'s `deserializeMessages`. The
+   * member is kept because `deserializeMessages` CASTS `role` from the stored
+   * row, so the type must admit whatever a row can carry, and because a future
+   * build could persist one. `ChatArea` renders such a message as nothing.
    */
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
@@ -17,6 +26,24 @@ export interface Message {
    * rather than as an assistant turn.
    */
   withheld?: boolean;
+  /**
+   * Catalog resources the viewer ATTACHED to this turn, already resolved through
+   * `GET /api/v1/blocks/generation-resources`. Set only on a `'user'` message.
+   *
+   * 🔴 A MESSAGE ENHANCEMENT, NOT PART OF `content`. The viewer's typed text is
+   * never rewritten to mention the pick — a composer that edits what you wrote
+   * is its own defect — so the attachment travels beside the text and is
+   * rendered as its own card by `MessageBubble`.
+   *
+   * 🔴 STORED, BUT NOT REPLAYED ON THE WIRE FOR AN OLDER TURN. `handleSend`
+   * builds the synthetic tool exchange from the CURRENT turn's mentions only, so
+   * exactly one `role:'tool'` slot is consumed per submit and 2 of the host's 3
+   * remain for real tool rounds. Replaying every historical turn's mentions
+   * would exhaust the cap on the third mentioned message of a conversation and
+   * `BAD_REQUEST` on the fourth — a permanent tax for grounding the model
+   * already has in its own transcript.
+   */
+  mentions?: ResolvedResource[];
 }
 
 export interface Session {

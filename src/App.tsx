@@ -8,6 +8,7 @@ import {
   useBuzzWorkflow,
   useRequestConsent,
   useRequestSignIn,
+  useResourcePicker,
 } from '@civitai/blocks-react';
 import type { UseAppStorage } from '@civitai/blocks-react';
 import { Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
@@ -17,17 +18,18 @@ import type { AppSettings, Message, Session } from './types.js';
 import { DEFAULT_SETTINGS, migrateSettings, NO_TOOLS_NOTICE } from './types.js';
 import { AI_WRITE_BUDGETED, BUZZ_READ_SELF, hasGenerateScope } from './scopes.js';
 import { createOrchestrator } from './lib/orchestrator.js';
-import { TextOutputWithheldError } from './lib/orchestrator-bridge.js';
+import { TextOutputWithheldError, toStepMessages } from './lib/orchestrator-bridge.js';
 import * as sessionsLib from './lib/sessions.js';
-import * as researchLib from './lib/research.js';
 import * as toolsLib from './lib/tools.js';
+import * as mentionsLib from './lib/mentions.js';
+import type { ResolvedResource } from './lib/mentions.js';
 import { generateMessageId, withSystemPrompt } from './lib/chat.js';
 import { generateTitle } from './lib/sessions.js';
 import { claimMessageWrite, ownsMessageWrite } from './lib/write-ownership.js';
 
 import { ChatArea } from './components/ChatArea.js';
+import type { MentionPickerType } from './components/ResourceMention.js';
 import { SessionList } from './components/SessionList.js';
-import { ResearchPanel, ResearchToggle } from './components/ResearchPanel.js';
 import { SettingsBar } from './components/SettingsBar.js';
 import { SettingsModal } from './components/SettingsModal.js';
 
@@ -114,10 +116,14 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [researchOpen, setResearchOpen] = useState(false);
-  const [searchResults, setSearchResults] = useState<researchLib.ModelSearchResult | null>(null);
-  const [searchQuery, setSearchQuery] = useState<string | null>(null);
-  const [isSearching, setIsSearching] = useState(false);
+  // 🔴 THE RESEARCH PANEL IS GONE, NOT HIDDEN. `researchOpen`, `searchResults`
+  // and the in-iframe search that fed them were removed with it (clawgate #434).
+  // The viewer now searches in the HOST's own picker chrome, so this iframe
+  // never receives a catalog list at all — a strictly narrower surface than the
+  // panel had. What survives is the model's own query, shown inline while a
+  // lookup is in flight; see `ChatArea`'s `lookupQuery`.
+  const [lookupQuery, setLookupQuery] = useState<string | null>(null);
+  const [pendingMentions, setPendingMentions] = useState<ResolvedResource[]>([]);
   const [loading, setLoading] = useState(true);
   // 🔴 A REJECTED STORAGE CALL MUST NOT BE INDISTINGUISHABLE FROM SUCCESS. Every
   // storage call in this app used to be either unguarded (`createSession`, whose
@@ -127,6 +133,12 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   // 0.1.4 consent bug and takes a session of measurement to tell apart. Now every
   // one of them goes through `persist` and lands here.
   const [storageError, setStorageError] = useState<string | null>(null);
+  // Attaching a model can fail for reasons that are NOT storage and NOT the
+  // send: the host declined to open the picker, the resolve 429'd, or the clamp
+  // withheld the resource. Given its own cell so the sentence can be accurate —
+  // "Couldn't save…" for a failed attach would be a second lie on top of the
+  // first, which is the defect `storageError` itself exists to prevent.
+  const [mentionError, setMentionError] = useState<string | null>(null);
   // Whether the viewer has actually run into the capability gate. The gate
   // ITSELF is derived (below), never stored — storing it is what let an earlier
   // draft show a stale "sign in" banner to a viewer who had since signed in but
@@ -173,6 +185,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    * this cell rather than a second counter to keep in step.
    */
   const streamingTurnRef = useRef<StreamingTurn | null>(null);
+  const { open: openResourcePicker } = useResourcePicker();
   const { estimate, submit, poll, cancel } = useBuzzWorkflow();
   const orchestrator = useMemo(
     () => createOrchestrator({ estimate, submit, poll, cancel }),
@@ -264,6 +277,70 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     return () => { cancelled = true; };
   }, [ready]);
 
+  // ---- Composer state belongs to ONE conversation ----
+  //
+  // 🔴 ONE PLACE, KEYED ON THE ID ITSELF, RATHER THAN A CLEAR AT EACH CALLER.
+  // `createSession` used to be the only route that cleared this, with the right
+  // reason attached to it — "Attachments belong to the message being composed…
+  // carrying them across would silently ground a question the viewer has not
+  // asked yet" — and that reason is about the CONVERSATION CHANGING, not about
+  // the "+ New" button. Three routes move `activeSessionId`: `createSession`,
+  // `selectSession`, and `deleteSession` (to `next[0]`, without ever being a
+  // switcher click, which is exactly the one a per-call-site fix forgets). This
+  // is the #427 class in the composer axis — state keyed on the VIEWED session
+  // written by something that does not check which session it is in — and the
+  // lesson from #427 is that it closes at the state, not at the control.
+  //
+  // WHAT IS CLEARED AND WHY EACH ONE:
+  //  - `pendingMentions`: the attachments that would ground the next question.
+  //    Carrying them across attaches another conversation's resources — and
+  //    they are BILLED grounding, not decoration.
+  //  - `mentionError`: describes a failed attach on the composer just left. A
+  //    banner about a conversation you are no longer in is the "say only what is
+  //    true on every path" defect one banner over.
+  //  - `lookupQuery`: the model's own query for a lookup in flight. `ChatArea`
+  //    renders it whenever `isStreaming` is true, and `isStreaming` is
+  //    INSTANCE-wide, so after a switch it would label the new conversation with
+  //    the old one's query. Clearing under-reports (the label stays blank until
+  //    the next round sets it, and switching back does not restore it), and an
+  //    under-report about a conversation you are in beats an accurate report
+  //    about one you are not.
+  //
+  // `storageError` is deliberately NOT cleared: it is app-level, not composer
+  // state, and a failed `deleteSession` sets it on exactly the route that then
+  // moves the id — clearing it here would hide the failure it just reported.
+  //
+  // 🔴 THIS EFFECT IS ONLY HALF THE COMPOSER, AND THE OTHER HALF IS NOT HERE.
+  // `input` and `menuOpen` are `useState` inside `ChatArea`, so no effect in
+  // this component can reach them; they are bound to the conversation by
+  // `key={activeSessionId}` on the `<ChatArea>` element below, where the choice
+  // between that and lifting them up here is argued in full. The rule is one
+  // rule — "composer state belongs to one conversation" — declared once per
+  // OWNER, because there are two owners and neither can write the other's
+  // state. If you add a cell to either side, put it under the matching
+  // mechanism; do not add a third.
+  //
+  // Each of the three clears below has its own test in
+  // `composer-session-scope.e2e.test.tsx`, and each of those tests was watched
+  // to fail with only its own line removed. Before that file existed a mutant
+  // reduced to `setPendingMentions([])` alone passed all 351 tests — this
+  // comment argued three clears while the suite pinned one.
+  //
+  // ⚠️ WHAT THIS DOES **NOT** CLOSE, so nobody reads it as the whole class: an
+  // IN-FLIGHT pick. `handlePickMention` awaits the host modal and then the
+  // resolve, and writes `pendingMentions` when they land — if the session
+  // changed while that resolve was in the air, this effect has already run and
+  // the chip is added to the conversation the viewer switched TO. Narrow (the
+  // host modal is chrome the viewer cannot click past, so the window is the
+  // resolve round trip alone) and not fixed here, because closing it needs the
+  // pick to carry the session it was made in, which is a different change with
+  // its own red/green matrix. Recorded rather than implied.
+  useEffect(() => {
+    setPendingMentions([]);
+    setMentionError(null);
+    setLookupQuery(null);
+  }, [activeSessionId]);
+
   // ---- Load messages when session changes ----
   useEffect(() => {
     if (!activeSessionId) { setMessages([]); return; }
@@ -298,8 +375,11 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setSessions(next);
     setActiveSessionId(session.id);
     setMessages([]);
-    setSearchResults(null);
-    setSearchQuery(null);
+    // 🔴 THE COMPOSER CLEAR USED TO LIVE HERE AND HAS MOVED to the
+    // `[activeSessionId]` effect above — one rule, one place. It was correct
+    // here and absent from `selectSession` and `deleteSession`, which move the
+    // same id for the same viewer-visible effect. Do not re-add a local copy:
+    // a second copy is how the two drift.
     depsRef.current.track('session_create');
   }, [settings.model, sessions, persist]);
 
@@ -338,6 +418,27 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       ? 'consent'
       : null;
 
+  /**
+   * The gate as of the LAST RENDER, for readers that must not use the value
+   * their closure was created with.
+   *
+   * 🔴 A CLOSURE'S `sendGate` IS THE GATE AT THE MOMENT THE HANDLER WAS
+   * CREATED, WHICH IS NOT THE GATE WHEN AN `await` RESUMES.
+   * `handlePickMention` spans two of them — the host's modal, then the resolve —
+   * and the gate is DERIVED from `viewer` and the token's scopes, both of which
+   * the host can change underneath a handler that is parked (a re-mint that
+   * drops `ai:write:budgeted`, or a sign-out in another tab). Writing the check
+   * against the captured value would compile, read as a guard, and be a
+   * statement about the past.
+   *
+   * Assigned during render, in the same style as `depsRef` above, so it is
+   * current for anything that resumes after this render commits. Synchronous
+   * callers get the identical value, which is why BOTH of that handler's checks
+   * read it: one source, so the two cannot drift.
+   */
+  const sendGateRef = useRef(sendGate);
+  sendGateRef.current = sendGate;
+
   // Ask the host for whatever is missing. Safe to call repeatedly — it is the
   // banner's button as well as the send path, and the host treats each message
   // independently.
@@ -356,6 +457,198 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     depsRef.current.track('consent_requested');
   }, [viewer, requestConsent, requestSignIn]);
 
+  /**
+   * `raiseGate` as of the LAST RENDER, for the same readers and the same reason
+   * as `sendGateRef` above.
+   *
+   * 🔴 ROUTING THE GATE **VALUE** THROUGH A REF IS ONLY HALF THE FIX, BECAUSE
+   * `raiseGate` BRANCHES ON `viewer` ITSELF. It is a `useCallback` over
+   * `[viewer, …]`, so the closure a parked handler holds decides sign-in versus
+   * consent using the `viewer` that existed when the handler was built. Reading
+   * `sendGateRef` correctly and then calling the CAPTURED `raiseGate` gives the
+   * two answers different vintages: measured, a sign-out during the host modal
+   * left `sendGateRef.current === 'signin'` while the stale callback took the
+   * consent branch — `requestConsent({ scopes: […] })` for an ANONYMOUS session,
+   * plus a `consent_requested` event for what was a sign-out. The banner was
+   * right (it renders from the live `sendGate`) and the request was wrong.
+   *
+   * Assigned during render like `depsRef` and `sendGateRef`, so the gate value
+   * and the action taken on it are read at the same instant.
+   */
+  const raiseGateRef = useRef(raiseGate);
+  raiseGateRef.current = raiseGate;
+
+  // ── MENTIONS: pick in HOST chrome, resolve through the clamped endpoint ─────
+  //
+  // 🔴 THE ITERATION BOUNDARY DOES NOT MOVE, AND THIS HANDLER IS WHERE IT WOULD
+  // MOVE IF ANYTHING EVER MOVED IT. `openResourcePicker` asks the HOST to open
+  // its OWN modal; the viewer searches there, in host chrome, and the host posts
+  // back exactly ONE chosen resource. This iframe never receives a list, the
+  // search API, or the catalog. Nothing below widens that: the only outbound
+  // request is an ID-keyed resolve.
+  //
+  // 🔴 RESOLVED AT PICK TIME, NOT AT SEND TIME, AND THAT IS THE SAFER ORDER.
+  // `GET /api/v1/blocks/generation-resources` is the authoritative maturity
+  // clamp and it DROPS a resource that exceeds the token's ceiling or fails
+  // `hasAccess`. Resolving here means the chip the viewer sees is built from
+  // clamp-RELEASED data rather than from the picker's own projection, and a
+  // dropped resource is refused visibly now instead of vanishing silently from
+  // a message that has already been paid for. It also keeps the billed send
+  // path synchronous in this respect: by then there is nothing left to resolve
+  // and nothing left to fail.
+  const handlePickMention = useCallback(
+    async (resourceType: MentionPickerType) => {
+      // 🔴 GATE 1 OF 2 — DEFENCE IN DEPTH, MIRRORING `handleSend`.
+      //
+      // ⚠️ AND UNREACHABLE TODAY, WHICH IS RECORDED RATHER THAN DRESSED UP AS
+      // COVERAGE. `ChatArea`'s `onPick` reads `sendGate` from a live prop and
+      // refuses first, so through the only caller that exists this branch
+      // cannot execute and NO test can turn it red. It is here because
+      // `handleSend` keeps its own copy for exactly this reason — a second
+      // caller that does not happen to sit behind a presentational gate — and
+      // because a handler that issues an authenticated request should not
+      // depend on its sole caller staying the sole caller. Do not count it as
+      // tested; the branch below is the one that is.
+      //
+      // Reads the same two refs as gate 2 — not because this entry-time check
+      // needs the freshness (nothing has awaited yet), but so the two gates
+      // cannot drift into disagreeing about where they read from. No coverage
+      // is claimed for this line either way; it remains unreachable.
+      if (sendGateRef.current) {
+        raiseGateRef.current();
+        return;
+      }
+      setMentionError(null);
+      let picked: { versionId: number } | null = null;
+      try {
+        // 🔴 THE CAST IS THE SDK'S TYPE LAGGING THE HOST, AND IT IS DELIBERATE
+        // RATHER THAN A TYPE HOLE. `@civitai/app-sdk` declares
+        // `BlockResourcePickerType = 'Checkpoint' | 'LORA'`
+        // (`dist/blocks/types.d.ts`), while the host's
+        // `PAGE_RESOURCE_PICKER_TYPES` was widened to the LoRA family
+        // (`+ LoCon, DoRA`) by civitai#4494 — merged to `main` as `bedcccc42b`.
+        //
+        // 🔴 ARGUED FROM THE PACKAGE ACTUALLY IN THE PATH, which an earlier
+        // version of this comment was not. It reasoned that `@civitai/app-sdk`'s
+        // `types.js` "ships NO runtime that sends `OPEN_RESOURCE_PICKER`" — true
+        // of that module, and beside the point, because the call above does not
+        // go through it. It goes through `@civitai/blocks-react`'s
+        // `useResourcePicker`, which DOES send the message. Naming the wrong
+        // package made the argument unfalsifiable by reading the code it names.
+        //
+        // The conclusion holds on the right package, verified against the
+        // installed dist (`blocks-react/dist/hooks/useResourcePicker.js`): `open`
+        // builds `{ type: 'OPEN_RESOURCE_PICKER', payload: { resourceType:
+        // opts.resourceType, … } }` — the value is forwarded VERBATIM, with no
+        // allowlist, no normalisation and no membership check — and
+        // `sendTypedRequest` (`internal/transport.js`) is a pass-through that
+        // validates nothing outbound. The union is imported from the SDK purely
+        // to TYPE the parameter, so it bounds AUTHORING only; what decides
+        // whether the modal opens is the HOST's `resolveResourcePickerRequest`,
+        // which now accepts all four. Measured on that PR: a raw untyped
+        // `{resourceType:'LoCon'}` opens the modal.
+        //
+        // Remove the cast when the SDK release widens the union; do NOT narrow
+        // `MENTION_PICKER_TYPES` to satisfy it, which would ship a control for
+        // two types while the host offers four.
+        picked = await openResourcePicker({
+          resourceType: resourceType as 'Checkpoint' | 'LORA',
+        });
+      } catch (e) {
+        setMentionError(
+          `Couldn't open the model picker — ${e instanceof Error && e.message ? e.message : 'the host did not respond'}.`,
+        );
+        return;
+      }
+      // Dismissed without picking. Not an error, and nothing to say about it.
+      if (!picked) return;
+
+      // 🔴 GATE 2 OF 2 — THE ONE THAT ACTUALLY FIRES, AND THE HALF-OPEN WINDOW
+      // IT CLOSES. Everything above this line ran under the gate as it was when
+      // the viewer opened the menu; the host modal then stood open for as long
+      // as they browsed. A re-mint without `ai:write:budgeted`, or a sign-out in
+      // another tab, lands inside that window and the pick comes back against a
+      // gate that has since closed.
+      //
+      // Re-read HERE, before the resolve, because the resolve is the first
+      // irreversible thing this handler does: an authenticated, rate-limited
+      // request for a resource the viewer can no longer use, whose chip would
+      // then sit on a composer that cannot send. Checking after it would only
+      // hide the chip, having already spent the request.
+      //
+      // 🔴 BOTH HALVES COME FROM REFS, AND THE SECOND HALF IS THE ONE THAT WAS
+      // WRONG. `sendGateRef`, not the captured `sendGate`, decides WHETHER to
+      // stop — see that ref's own note. `raiseGateRef`, not the captured
+      // `raiseGate`, decides WHAT TO ASK FOR, because `raiseGate` closes over
+      // `viewer` and branches on it: a captured one answers with the viewer
+      // this handler was built under, which is exactly the value the sign-out
+      // trigger changes. Routing only the gate value and then calling the
+      // stale callback made the block correct and the request wrong — it asked
+      // an anonymous session to grant scopes. See `raiseGateRef`'s note.
+      //
+      // Asking at all — rather than returning silently — is the same reason
+      // Send does: surface what is missing, which is the 0.1.0–0.1.3 defect
+      // class. Both arms are exercised: `composer-session-scope.e2e.test.tsx`
+      // drops `ai:write:budgeted` mid-pick (consent) and signs the viewer out
+      // mid-pick (sign-in).
+      if (sendGateRef.current) {
+        raiseGateRef.current();
+        return;
+      }
+
+      try {
+        const [resolved] = await mentionsLib.resolveMentions([picked.versionId], {
+          token: token_.raw,
+        });
+        if (!resolved) {
+          // The endpoint returned nothing for this id — it is out of reach for
+          // this viewer at this browsing ceiling. Say so; never synthesise a
+          // card from the picker's own copy of the name, which is exactly the
+          // unclamped value the clamp exists to withhold.
+          setMentionError('That model is not available here, so it was not attached.');
+          return;
+        }
+        // ⚠️ THIS UPDATER IS NOT PURE, AND THAT IS RECORDED RATHER THAN
+        // DEFENDED. `setMentionError` is a side effect inside a `setState`
+        // updater, which React may invoke more than once for one update —
+        // StrictMode does so deliberately in development. It is idempotent
+        // TODAY (the same message, set twice, is one banner), so it has no
+        // observable consequence, and it is left alone because the pure
+        // rewrites available are worse: hoisting the decision needs either a
+        // mirror ref of `pendingMentions` (a second source of truth for the
+        // thing this cell IS) or a closure variable written from inside the
+        // updater, which is the same impurity with more moving parts.
+        //
+        // What would make it unsafe is any future side effect here that is NOT
+        // idempotent — an analytics `track`, a counter, a request. Do not add
+        // one. This note exists because "it is fine" was the only thing anyone
+        // could have concluded from silence.
+        setPendingMentions((prev) => {
+          const next = mentionsLib.addPendingMention(prev, resolved);
+          if (next === prev && !prev.some((p) => p.versionId === resolved.versionId)) {
+            setMentionError(
+              `You can attach up to ${mentionsLib.MAX_MENTIONS} models to one message.`,
+            );
+          }
+          return next;
+        });
+        depsRef.current.track('mention_added', { modelType: resolved.modelType });
+      } catch (e) {
+        setMentionError(
+          `Couldn't look that model up — ${e instanceof Error && e.message ? e.message : 'the catalog is unavailable'}.`,
+        );
+      }
+    },
+    // `raiseGate` is deliberately absent: both gates reach it through
+    // `raiseGateRef`, so listing it would be a dependency the body never reads
+    // — and re-adding it would re-introduce the capture this fix removes.
+    [openResourcePicker, token_.raw],
+  );
+
+  const handleRemoveMention = useCallback((versionId: number) => {
+    setPendingMentions((prev) => prev.filter((r) => r.versionId !== versionId));
+  }, []);
+
   const selectSession = useCallback(async (id: string) => {
     // The `[activeSessionId]` effect above loads the messages; doing it here too
     // was a second concurrent read of the same key for no benefit. Setting the id
@@ -363,7 +656,26 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setActiveSessionId(id);
   }, []);
 
-  const handleSend = useCallback(async (content: string) => {
+  /**
+   * Send `content` as a new user turn.
+   *
+   * `groundedWith` overrides where the attachments come from. Absent (the
+   * composer path) means "take the composer's pending chips and consume them";
+   * PRESENT means "ground this turn with exactly these, and leave the composer
+   * alone" — which is what `handleRegenerate` needs, because the attachments it
+   * must replay live on the STORED message, while the composer may hold chips
+   * for a message the viewer has not sent yet. An empty array is therefore a
+   * meaningful value, distinct from `undefined`: "this turn had no grounding,
+   * and that is not an invitation to borrow the composer's".
+   *
+   * 🔴 NEVER PASS THIS FUNCTION BY REFERENCE TO `.map`/`.forEach`. A callback
+   * with an optional second parameter has `Array.prototype.map`'s shape, and
+   * this repo has been bitten by that class before. Here the parameter's type
+   * (`ResolvedResource[]`) makes `arr.map(handleSend)` a compile error rather
+   * than a silent index-as-argument — an optional NUMBER would not — but the
+   * rule is about the shape, so keep every call site explicit.
+   */
+  const handleSend = useCallback(async (content: string, groundedWith?: ResolvedResource[]) => {
     if (!activeSessionId || isStreaming) return;
 
     // The gate is checked before the dedup here for the same reason as in
@@ -411,11 +723,27 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // instead. Nothing to lose, misroute, duplicate, or promise.
     //
     // The gate itself is checked at the top of this function, above the dedup.
+    // 🔴 CAPTURED ONCE, HERE, AND CONSUMED. Read after the refusals above so a
+    // gated or deduped send leaves the composer's attachments exactly where they
+    // were — the same reasoning that keeps the viewer's TEXT in the box. From
+    // this point the turn owns them, and clearing the state cannot take them
+    // away from the request being built.
+    //
+    // 🔴 ONLY THE COMPOSER PATH CONSUMES THE COMPOSER. When `groundedWith` was
+    // supplied the attachments came from somewhere else (a stored message being
+    // regenerated), so clearing here would delete chips the viewer attached to a
+    // message they have not sent — the same loss the refusals above are ordered
+    // to avoid, arriving through a different door.
+    const fromComposer = groundedWith === undefined;
+    const attachedMentions = groundedWith ?? pendingMentions;
+    if (fromComposer) setPendingMentions([]);
+
     const userMsg: Message = {
       id: generateMessageId(),
       role: 'user',
       content,
       timestamp: Date.now(),
+      ...(attachedMentions.length > 0 ? { mentions: attachedMentions } : {}),
     };
 
     const updatedMessages = [...messages, userMsg];
@@ -615,6 +943,29 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         toolsAvailable ? settings.systemPrompt : settings.systemPrompt + NO_TOOLS_NOTICE,
       );
 
+      // ── THE PRE-FILLED GROUNDING (clawgate #434). ────────────────────────────
+      //
+      // 🔴 APPENDED AFTER THE MAPPED HISTORY, WHICH PUTS IT DIRECTLY AFTER THIS
+      // TURN'S USER MESSAGE — `userMsg` is the last element of
+      // `updatedMessages`, and `withSystemPrompt` only hoists the system turn.
+      // The order is the contract: the host builds its `declaredCallIds` set in
+      // ITERATION ORDER, so the assistant `tool_calls` turn must PHYSICALLY
+      // precede the result it correlates to. `buildMentionExchange` returns both
+      // in that order, together, so the pair cannot be split or reversed here.
+      //
+      // 🔴 ONLY THIS TURN'S MENTIONS, NEVER THE CONVERSATION'S. The map above
+      // takes `role` and `content` only, so an older turn's attachment does not
+      // come back as a second tool message. That is deliberate: the host's cap
+      // is PER PAYLOAD and counts `role:'tool'` messages with no provenance
+      // test, so replaying history's mentions would spend a slot per mentioned
+      // turn — silencing tool calling on the third and BAD_REQUESTing the
+      // fourth. One turn, one slot, two real rounds left.
+      const mentionExchange = mentionsLib.buildMentionExchange(attachedMentions);
+      if (mentionExchange.length > 0) {
+        apiMessages = [...apiMessages, ...mentionExchange];
+        depsRef.current.track('mention_grounding_sent', { count: attachedMentions.length });
+      }
+
       const onChunk = (chunk: string) => {
         if (!streamingRef.current) return;
         // 🔴 ACCUMULATED BEFORE THE RENDER UPDATE, NOT DERIVED FROM IT. The
@@ -652,7 +1003,31 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // `.superRefine` actually counts. One round answering N parallel calls
       // contributes N. Counting rounds here let a single 5-call round exceed a
       // mirrored cap of 3 on the first iteration.
-      let toolMessages = 0;
+      //
+      // 🔴 SEEDED FROM THE PAYLOAD, NOT FROM ZERO, AND THAT IS WHAT MAKES THE
+      // PRE-FILLED MENTION SAFE. A mention exchange has ALREADY put one
+      // `role:'tool'` message into `apiMessages`, and the host's cap is on the
+      // payload, not on this loop — starting at 0 would let three real rounds
+      // stack on top of it for FOUR tool messages and a `BAD_REQUEST` on the
+      // last submit, after the viewer had paid for the rounds that got there.
+      //
+      // 🔴 COUNTED ON `toStepMessages(apiMessages)`, NOT ON `apiMessages`, AND
+      // THAT DIFFERENCE IS THE WHOLE CORRECTNESS OF THE SEED. The host counts
+      // the array it RECEIVES; `apiMessages` is the array before the transform
+      // that decides what it receives. `toStepMessages` drops a `role:'tool'`
+      // message that carries no `tool_call_id` — precisely the shape the mapped
+      // history above produces, since `.map(m => ({ role, content }))` discards
+      // the id — and it also drops empty content and trims to `MAX_MESSAGES`.
+      // Counting before the transform therefore counts messages the host never
+      // sees, and every one of them steals a real round from the viewer with
+      // "That needed more lookups at once than I am allowed to make".
+      //
+      // The previous comment here claimed to seed "with the same predicate the
+      // host uses". The PREDICATE was the same; the ARRAY was not, and it is the
+      // array that decides the number. Calling the same transform the wire is
+      // built from is what actually makes the two agree, rather than each
+      // injector remembering to add itself.
+      let toolMessages = toStepMessages(apiMessages).filter((m) => m.role === 'tool').length;
       let hitRoundCap = false;
 
       for (;;) {
@@ -692,18 +1067,12 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // query, so a round of parallel calls has no single label to display.
         // Taking the first is honest about that; joining them would invent a
         // query the model never wrote.
-        setSearchResults(null);
-        const firstQuery = toolsLib.readQueryArgument(calls[0]);
-        if (firstQuery) {
-          // The tool result is not wired in as panel items deliberately: its
-          // projected shape (name/tags/creator/downloads/baseModel) is not
-          // `ModelSearchItem`, and mapping it here would be a second definition
-          // of the host's projection that can drift from the real one. So the
-          // panel shows the model's own query over nothing, which is honest.
-          setSearchQuery(firstQuery);
-        }
+        // Show the model's OWN query while the lookup runs. `calls[0]` is
+        // deliberate and not an oversight: one line shows ONE query, so a round
+        // of parallel calls has no single label — taking the first is honest,
+        // joining them would invent a query the model never wrote.
+        setLookupQuery(toolsLib.readQueryArgument(calls[0]));
 
-        setIsSearching(true);
         let results: string[];
         try {
           results = await Promise.all(
@@ -715,7 +1084,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             ),
           );
         } finally {
-          setIsSearching(false);
+          setLookupQuery(null);
         }
 
         // A Stop landing while the tool POSTs were in flight must not be spent
@@ -914,6 +1283,22 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     sendGate,
     raiseGate,
     persist,
+    // 🔴 OMITTING THIS MADE THE WHOLE MENTION FEATURE INERT, AND EVERY TEST
+    // STILL PASSED. `handleSend` reads `pendingMentions` to build the synthetic
+    // tool exchange; without it here the callback closes over the array as it
+    // was when the callback was last built — i.e. EMPTY — so the attachment the
+    // viewer just made never reaches the wire and never reaches storage.
+    //
+    // 🔴 WHY THE SUITE COULD NOT SEE IT, because that is the reusable half.
+    // Every mock in this repo returned a FRESH object from `useBlockContext`
+    // (`viewer: { id: 1 }`) and a fresh `vi.fn()` from `useRequestConsent` on
+    // every render. `raiseGate` depends on both identities, and `handleSend`
+    // depends on `raiseGate` — so the callback was rebuilt on every render and
+    // the missing dep was silently repaired by the fixture. The real SDK's
+    // callbacks are stable, so production would have had the stale array.
+    // `mention-grounding.e2e.test.tsx` now hoists those to module constants and
+    // goes RED (7 cases) with this line removed. Measured, not reasoned.
+    pendingMentions,
   ]);
 
   const handleStopStream = useCallback(() => {
@@ -997,29 +1382,30 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     if (lastUserMsg) {
       // Remove the assistant message and resend
       setMessages((prev) => prev.slice(0, msgIdx));
-      await handleSend(lastUserMsg.content);
+      // 🔴 RE-ATTACH WHAT THAT MESSAGE WAS GROUNDED IN. Re-sending the CONTENT
+      // alone drops the `mentions` stored on the turn, so the model either
+      // answers ungrounded or spends a REAL charged round looking up what it had
+      // already been handed — the exact cost this feature exists to remove, and
+      // it makes the manifest's "answers in one round without spending a lookup"
+      // false on this path.
+      //
+      // 🔴 `?? []` RATHER THAN OMITTING THE ARGUMENT, and the difference is
+      // load-bearing: omitting it means "take the composer's chips", which would
+      // ground a REGENERATED turn with attachments belonging to a message the
+      // viewer is still writing — and consume them. An ungrounded message
+      // regenerates ungrounded.
+      await handleSend(lastUserMsg.content, lastUserMsg.mentions ?? []);
     }
   }, [messages, handleSend, sendGate, raiseGate, activeSessionId, isStreaming]);
 
-  const handleResearchSearch = useCallback(async (query: string) => {
-    setIsSearching(true);
-    try {
-      const results = await researchLib.searchModels(query, { token: token_.raw });
-      setSearchResults(results);
-      // A panel search is shown VERBATIM — nothing rewrites it.
-      setSearchQuery(query);
-    } catch {
-      setSearchResults(null);
-    } finally {
-      setIsSearching(false);
-    }
-  }, [token_.raw]);
-
-  const handleInsertResearch = useCallback((text: string) => {
-    // Append the model name to the chat input area (handled by ChatArea internally)
-    // For now, just send it as a message
-    handleSend(`Tell me more about ${text}`);
-  }, [handleSend]);
+  // 🔴 `handleResearchSearch` AND `handleInsertResearch` ARE DELETED, NOT
+  // DISABLED (clawgate #434). The first ran `searchModels` from inside the
+  // iframe and rendered the catalog into it; the second synthesised
+  // `Tell me more about <name>` and SENT it — a spend path that never touched
+  // the composer, which is why it needed its own copy of the capability gate.
+  // Both are gone: the viewer picks in host chrome and the pick grounds the
+  // question they actually wrote, so there is no second send path and no
+  // in-iframe catalog render left to keep in step.
 
   const handleSettingsChange = useCallback((patch: Partial<AppSettings>) => {
     setSettings((prev) => {
@@ -1089,16 +1475,17 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             </Stack>
           </Group>
           {/*
-            🔴 BOTH HEADER CONTROLS ARE SIBLINGS IN THIS FLEX ROW, AND THAT IS
-            LOAD-BEARING. The Research toggle used to be rendered by
-            `ResearchPanel` as `position: absolute; right: 8; top: 8`, which put
-            it on top of ⚙️ — `elementFromPoint` at the centre of
+            🔴 EVERY HEADER CONTROL IS A SIBLING IN THIS FLEX ROW, AND THAT IS
+            STILL LOAD-BEARING WITH ONLY ONE LEFT. The Research toggle used to be
+            rendered by `ResearchPanel` as `position: absolute; right: 8; top: 8`,
+            which put it on top of ⚙️ — `elementFromPoint` at the centre of
             `settings-button` returned `open-research`, so Settings could not be
-            opened at all. Laid out by flex, neither is out of flow and they
-            cannot overlap at any width. Do not absolutely position either.
+            opened at all. That toggle is gone with the panel (clawgate #434),
+            which removes the instance but NOT the class: anything added here
+            must be laid out by flex, in normal flow. Do not absolutely position
+            a header control.
           */}
           <Group gap={8}>
-            <ResearchToggle isOpen={researchOpen} onToggle={() => setResearchOpen(!researchOpen)} />
             <Button
               variant="subtle"
               size="sm"
@@ -1245,7 +1632,86 @@ export function App({ deps: depsOverride }: AppProps = {}) {
                     </Button>
                   </div>
                 )}
+                {mentionError && (
+                  <div
+                    data-testid="mention-error"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      padding: '10px 16px',
+                      borderBottom: `1px solid ${token.border}`,
+                      background: token.primaryLight,
+                      fontSize: 13,
+                      flexShrink: 0,
+                    }}
+                  >
+                    <span>{mentionError}</span>
+                    <Button
+                      size="sm"
+                      variant="light"
+                      data-testid="mention-error-dismiss"
+                      onClick={() => setMentionError(null)}
+                    >
+                      Dismiss
+                    </Button>
+                  </div>
+                )}
                 <ChatArea
+                  // 🔴 THE COMPOSER IS PER-CONVERSATION, AND `ChatArea` OWNS
+                  // HALF OF IT. The `[activeSessionId]` effect above clears the
+                  // three cells App owns; `input` and `menuOpen` are `useState`
+                  // INSIDE this component, which no effect up here can reach.
+                  // Without this key the switch produced the worst of both
+                  // behaviours rather than either whole one: the sentence the
+                  // viewer typed stayed on screen exactly as written while its
+                  // grounding was silently removed — and `mentionError`, the one
+                  // channel that could have said so, was cleared by that same
+                  // effect. The next Send then buys an ungrounded answer or a
+                  // second CHARGED `search_models` round, which is the precise
+                  // cost this feature exists to remove.
+                  //
+                  // 🔴 WHY `key=` RATHER THAN LIFTING `input` INTO App — the two
+                  // candidates, and the choice is deliberate.
+                  //
+                  // Lifting closes exactly the cell you remember to lift.
+                  // `menuOpen` would stay behind, so an attach menu opened on
+                  // the composer you just left stands open on the one you
+                  // arrived at, and every `useState` a future edit adds to this
+                  // component starts out uncleared and silently wrong. That is
+                  // the per-call-site shape the effect's own comment rejects,
+                  // reappearing one level down. It also puts every keystroke in
+                  // App's state: nothing in `components/` is memoised, so each
+                  // character would re-render `SessionList`, every
+                  // `MessageBubble` and `SettingsBar`.
+                  //
+                  // `key=` binds ALL of this component's local state to the
+                  // conversation's identity — the cells that exist today and the
+                  // ones nobody has written yet — in one declaration that cannot
+                  // be forgotten per-cell.
+                  //
+                  // WHAT REMOUNTING DISCARDS, checked rather than assumed:
+                  //  - `input`, `menuOpen` — both INTENDED; that is the fix.
+                  //  - `sendingRef` → false. A sub-tick dedup guard reset by an
+                  //    action that cannot occur within a tick of a send.
+                  //  - textarea focus. Already lost: the only thing that moves
+                  //    `activeSessionId` from the composer is a click on the
+                  //    sidebar or "+ New", which took focus first. Nothing here
+                  //    auto-focuses, so this is unchanged, not a regression.
+                  //  - the message list's scroll offset. Reset, then driven
+                  //    straight back to the bottom by this component's own
+                  //    `[messages, isStreaming]` scroll effect — which already
+                  //    fired on every switch, because `messages` is replaced
+                  //    wholesale by the loader effect above.
+                  //
+                  // COST: none on a re-render — `activeSessionId` changes ONLY
+                  // when the conversation does, never while typing or
+                  // streaming. On the switch itself the message children are
+                  // keyed by `msg.id` and the whole array is being replaced by
+                  // a different session's, so React was discarding those DOM
+                  // nodes regardless.
+                  key={activeSessionId}
                   messages={messages}
                   isStreaming={isStreaming}
                   onSend={handleSend}
@@ -1253,7 +1719,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
                   onGatedSend={raiseGate}
                   onStopStream={handleStopStream}
                   onRegenerate={handleRegenerate}
-                  onInsertResearch={handleInsertResearch}
+                  pendingMentions={pendingMentions}
+                  onPickMention={handlePickMention}
+                  onRemoveMention={handleRemoveMention}
+                  lookupQuery={lookupQuery}
                 />
               </>
             ) : (
@@ -1276,17 +1745,6 @@ export function App({ deps: depsOverride }: AppProps = {}) {
               </div>
             )}
           </div>
-
-          {/* Research panel — the toggle for it lives in the header. */}
-          <ResearchPanel
-            isOpen={researchOpen}
-            onToggle={() => setResearchOpen(!researchOpen)}
-            searchResults={searchResults}
-            lastQuery={searchQuery}
-            isSearching={isSearching}
-            onSearch={handleResearchSearch}
-            onInsert={handleInsertResearch}
-          />
         </div>
 
         {/* Settings bar */}
