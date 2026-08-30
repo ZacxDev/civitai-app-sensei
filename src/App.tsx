@@ -40,6 +40,41 @@ export interface AppProps {
   deps?: Partial<AppDeps>;
 }
 
+/**
+ * The turn currently in flight, as the turn itself sees it. (clawgate #427.)
+ *
+ * 🔴 THIS EXISTS BECAUSE `handleStopStream` HAD NO WAY TO ASK THE TURN ANYTHING.
+ * It read `activeSessionId` and `messagesRef` — both of which describe the
+ * session the viewer is LOOKING AT, not the session the in-flight turn belongs
+ * to. `isStreaming` is instance-wide and nothing disables the session switcher
+ * mid-stream, so the two diverge the moment a viewer switches sessions with a
+ * turn in flight, and Stop then wrote one conversation's transcript under
+ * another conversation's key.
+ *
+ * Both halves have to travel together. Fixing only the key would make Stop write
+ * the VIEWED session's array (already reset to `[]` by the switch) under the
+ * STREAMING session's key — which is not a smaller bug than the original, it is
+ * a larger one: it would delete the transcript instead of misfiling it. So the
+ * turn carries the id it was sent in AND the array it is entitled to persist.
+ *
+ * A ref is the transport, not the source: every field is written from inside
+ * `handleSend`'s own closure at the moment the turn starts, and nothing reads a
+ * viewer-facing cell at Stop time.
+ */
+interface StreamingTurn {
+  /** The session this turn was sent in. Captured at send; never re-read. */
+  readonly sessionId: string;
+  /**
+   * What this turn is entitled to persist, as of now — the user turn it was
+   * built with plus whatever of the reply has streamed so far.
+   *
+   * A function rather than an array because the reply grows: Stop must persist
+   * the prose the viewer has already been CHARGED for, not the empty shell the
+   * turn started with.
+   */
+  transcript: () => Message[];
+}
+
 export function App({ deps: depsOverride }: AppProps = {}) {
   const { ready, viewer, theme } = useBlockContext();
   const token_ = useBlockToken();
@@ -99,13 +134,15 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const [gateRaised, setGateRaised] = useState(false);
 
   const streamingRef = useRef(false);
-  /**
-   * The live message array, for the one caller that must read it OUTSIDE React's
-   * render flow: {@link handleStopStream}. A functional `setMessages` updater
-   * could read the same value, but side-effecting inside an updater double-fires
-   * under StrictMode and this effect WRITES TO STORAGE.
-   */
-  const messagesRef = useRef<Message[]>([]);
+  // 🔴 THERE IS NO `messagesRef` ANY MORE, AND ITS ABSENCE IS LOAD-BEARING.
+  // It mirrored the RENDERED message array — i.e. whatever session the viewer
+  // was looking at — and existed for exactly one reader, `handleStopStream`.
+  // That is the wrong array for that reader: a viewer who switches sessions
+  // mid-stream leaves it holding the NEW session's messages while the turn
+  // being stopped belongs to the old one (clawgate #427). The turn now carries
+  // its own transcript (see {@link StreamingTurn}), so re-adding a mirror of
+  // rendered state would only give a future Stop-like caller the wrong answer
+  // again.
   const abortControllerRef = useRef<AbortController | null>(null);
   /**
    * Monotonic turn number. A turn increments it on entry and keeps the value;
@@ -125,6 +162,17 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    * different axis and gets its own cell.
    */
   const turnSeqRef = useRef(0);
+  /**
+   * The turn in flight right now, or `null`. See {@link StreamingTurn}.
+   *
+   * 🔴 IT HOLDS THE CURRENT TURN, DELIBERATELY, AND THAT PAIRS IT WITH
+   * `abortControllerRef`. Stop aborts whichever turn is in flight now; it must
+   * persist THAT turn's transcript, under THAT turn's session. A superseded turn
+   * leaves this cell alone for the same reason it leaves `isStreaming` alone —
+   * the check is object identity, which is `turnSeqRef`'s question asked about
+   * this cell rather than a second counter to keep in step.
+   */
+  const streamingTurnRef = useRef<StreamingTurn | null>(null);
   const { estimate, submit, poll, cancel } = useBuzzWorkflow();
   const orchestrator = useMemo(
     () => createOrchestrator({ estimate, submit, poll, cancel }),
@@ -179,14 +227,6 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     },
     [],
   );
-
-  // Mirror the message array into a ref so `handleStopStream` can persist the
-  // partial reply without depending on React's render cycle. Cheap, and the
-  // alternative (reading state inside a setState updater) writes to storage
-  // twice under StrictMode.
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
 
   // ---- Load sessions on mount ----
   useEffect(() => {
@@ -489,6 +529,26 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     };
     setMessages([...updatedMessages, assistantMsg]);
 
+    // 🔴 THE TURN PUBLISHES ITS OWN SESSION AND ITS OWN TRANSCRIPT, so Stop can
+    // ask the turn instead of asking the screen. (clawgate #427.)
+    //
+    // `activeSessionId` here is THIS TURN'S session — the value the closure was
+    // built with, the same one `claimMessageWrite` and both deferred writes
+    // already use. Reading it at Stop time instead is what produced the defect:
+    // by then it means "whatever the viewer switched to".
+    //
+    // `streamedText` accumulates in `onChunk` below. It is a second copy of text
+    // that also goes into React state, and that is deliberate: state belongs to
+    // the session being VIEWED and is emptied by a switch, while this belongs to
+    // the turn and survives one. What the viewer was charged for does not stop
+    // being owed to them because they clicked away.
+    let streamedText = '';
+    const turn: StreamingTurn = {
+      sessionId: activeSessionId,
+      transcript: () => [...updatedMessages, { ...assistantMsg, content: streamedText }],
+    };
+    streamingTurnRef.current = turn;
+
     try {
       // ── TOOL CALLING: the model forms its own query; one submit per round ──
       //
@@ -557,6 +617,13 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
       const onChunk = (chunk: string) => {
         if (!streamingRef.current) return;
+        // 🔴 ACCUMULATED BEFORE THE RENDER UPDATE, NOT DERIVED FROM IT. The
+        // update below is CONDITIONAL — it drops the chunk unless the message
+        // being looked at is still this turn's — so a transcript derived from
+        // rendered state loses exactly the prose a viewer who switched sessions
+        // was charged for. Behind the same `streamingRef` guard, so a stopped
+        // turn stops accumulating at the same instant it stops rendering.
+        streamedText += chunk;
         setMessages((prev) => {
           const last = prev[prev.length - 1];
           if (last.id === assistantMsg.id) {
@@ -832,6 +899,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         setIsStreaming(false);
         streamingRef.current = false;
       }
+      // 🔴 SAME OWNERSHIP QUESTION, ASKED BY IDENTITY. A superseded turn must
+      // not clear the cell out from under the turn that owns it now — that
+      // would leave Stop with nothing to persist for a live, billed turn.
+      if (streamingTurnRef.current === turn) streamingTurnRef.current = null;
     }
   }, [
     activeSessionId,
@@ -864,38 +935,41 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // the partial reply means the viewer paid and has nothing, and no record of
     // why — the same reasoning the withhold path already applies one branch
     // over, which was applied to withholds and missed here.
-    const current = messagesRef.current;
-    if (activeSessionId && current.length > 0) {
-      // 🔴 STOP DELIBERATELY DOES NOT CLAIM. A claim here looks like prudent
-      // defence-in-depth; it cannot change an outcome, and it was removed when a
-      // mutation deleting it survived all 278 tests.
-      //
-      // The reason is what this write CONTAINS, not who claimed last. It writes
-      // `messagesRef.current`, which for a given session is either the array
-      // just loaded from storage — a subset of anything a stranded turn would
-      // write — or one some live claim already covers. There is no state in
-      // which bumping the ticket first changes what ends up stored.
-      //
-      // ⚠️ AN EARLIER VERSION OF THIS COMMENT ARGUED IT FROM A FALSE PREMISE,
-      // and the premise is worth naming because it is tempting: "Stop only
-      // exists while `isStreaming`, so this instance's own send already claimed
-      // a newer ticket." `isStreaming` is instance-wide, not per session, and
-      // nothing disables the session switcher mid-stream — so the session
-      // active at Stop is NOT necessarily the session the in-flight turn
-      // claimed. The conclusion survives; that route to it does not.
-      //
-      // 🔴 That same gap is a REAL pre-existing defect, tracked on clawgate
-      // #427 and deliberately not fixed here: this write targets
-      // `activeSessionId` rather than the streaming turn's session, so
-      // switching sessions mid-stream and pressing Stop writes one
-      // conversation's transcript under another's key. It predates this change
-      // and is out of scope for #425 — but do not read the paragraph above as
-      // saying the write always targets the right key. It does not.
+    // 🔴 THE TURN, NOT THE SCREEN. (clawgate #427 — this used to read
+    // `activeSessionId` and `messagesRef.current`, and BOTH describe the
+    // session the viewer is looking at.) `isStreaming` is instance-wide and
+    // nothing disables the session switcher mid-stream, so send in S1, click
+    // "+ New", press Stop, and the write went to S2: S1 — the conversation the
+    // viewer was charged for — got nothing, and a brand-new empty chat silently
+    // acquired another conversation's question.
+    //
+    // Measured at `462b7a2`, the outcome was the first harm alone: the switch
+    // resets `messagesRef.current` to `[]`, so the length guard refused and
+    // Stop wrote NOTHING AT ALL. Pinned in `App.stop-session-key.e2e.test.tsx`,
+    // which asserts both sides — S1 written AND S2 untouched — because a fix
+    // that captured only the key would write the emptied array over S1's real
+    // transcript and pass a one-sided test.
+    //
+    // 🔴 STOP DELIBERATELY DOES NOT CLAIM a write ticket. A claim here looks
+    // like prudent defence-in-depth; it cannot change an outcome, and it was
+    // removed when a mutation deleting it survived all 278 tests. The reason is
+    // what this write CONTAINS, not who claimed last: the turn's own transcript
+    // is the user message it was sent with plus the prose it has itself
+    // streamed, which is a subset of anything a live claimant on that session
+    // would write. There is no state in which bumping the ticket first changes
+    // what ends up stored.
+    const turn = streamingTurnRef.current;
+    if (!turn) return;
+    const current = turn.transcript();
+    if (current.length > 0) {
       void persist('save the stopped reply', () =>
-        sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, current),
+        sessionsLib.saveMessages(depsRef.current.appStorage, turn.sessionId, current),
       );
     }
-  }, [orchestrator, persist, activeSessionId]);
+    // 🔴 `activeSessionId` IS NO LONGER A DEPENDENCY, and that is the structural
+    // half of this fix rather than tidying: Stop cannot key its write on the
+    // viewed session because it can no longer see it.
+  }, [orchestrator, persist]);
 
   const handleRegenerate = useCallback(async (messageId: string) => {
     // 🔴 GATE BEFORE THE DESTRUCTIVE SLICE. The slice below removes the
@@ -1067,6 +1141,54 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         {/* Main content */}
         <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
           {/* Session sidebar */}
+          {/*
+            🔴 THE SWITCHER STAYS ENABLED MID-STREAM — A DECISION, NOT AN
+            OVERSIGHT. (clawgate #427, criterion 4.) Do not add an
+            `isStreaming`/`disabled` prop here without reading this first.
+
+            The obvious reaction to #427 is to forbid the interaction that
+            exposed it: grey the sidebar out while a turn is in flight. It was
+            rejected for three reasons, in order of weight.
+
+            1. IT DOES NOT CLOSE THE CLASS. The hazard is a WRITE keyed on the
+               VIEWED session, and "+ New"/select is only one of the paths that
+               move `activeSessionId`. `deleteSession` moves it too (to
+               `next[0]`), and it is not a switcher click — a disabled sidebar
+               would leave that route open, with the identical harm and no test
+               able to tell the difference. Fixing it at the write closes every
+               route at once; disabling the control closes one and makes the
+               rest look impossible.
+
+            2. IT COSTS THE VIEWER SOMETHING REAL. `isStreaming` is
+               instance-wide, so ONE turn would lock the viewer out of EVERY
+               other conversation. A turn parked on a slow or wedged workflow
+               polls to its deadline, and the only escape would be Stop — i.e.
+               abandoning a reply already paid for in order to read something
+               else. That is a worse trade than the one it buys.
+
+            3. IT IS A UI-SHAPED FIX FOR A STATE-OWNERSHIP BUG. The turn not
+               knowing which session it belongs to is the defect; the switcher
+               merely made it observable. With the turn carrying its own session
+               and its own transcript, switching mid-stream is harmless — Stop
+               files the transcript under the session that earned it, and
+               reopening that session loads it from storage.
+
+            The switch-mid-stream path is exercised by
+            `App.stop-session-key.e2e.test.tsx`, which asserts a second session
+            can still be created while a turn is in flight and fails with "the
+            switcher may now be disabled" if that ever stops being true. So this
+            decision cannot be reversed silently.
+
+            KNOWN, SEPARATE, NOT FIXED HERE: if chunks are already REPLAYING
+            when the switch happens, `onChunk`'s updater reads
+            `prev[prev.length - 1].id` against the new session's empty array and
+            throws `TypeError: Cannot read properties of undefined (reading
+            'id')`. Measured at `462b7a2` — pre-existing, unchanged by this
+            commit, and a different defect (a render crash, not a misfiled
+            write). It is not folded in here for the same reason #427 was not
+            folded into #425: it would mix a second red/green matrix into this
+            one.
+          */}
           <SessionList
             sessions={sessions}
             activeSessionId={activeSessionId}
