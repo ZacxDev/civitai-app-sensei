@@ -3,6 +3,7 @@ import { Group } from '@civitai/blocks-react/ui';
 import type { Message } from '../types.js';
 import { formatRoleLabel } from '../lib/chat.js';
 import { MarkdownText } from './MarkdownText.js';
+import { ResourceMentionCard } from './ResourceMention.js';
 import { token, radius } from '../theme.js';
 
 export interface MessageBubbleProps {
@@ -105,6 +106,23 @@ export function MessageBubble({ message, onRegenerate, onCopy }: MessageBubblePr
             : <MarkdownText text={message.content} />
           : '…'}
       </div>
+      {/*
+        🔴 THE MESSAGE ENHANCEMENT. Rendered BESIDE the viewer's text, never
+        spliced into it: what they typed stays what they typed, and what the
+        model was handed is shown as its own resolved card. Every field on it
+        came back from the maturity-clamped resolve endpoint — see
+        `ResourceMentionCard`.
+      */}
+      {message.mentions && message.mentions.length > 0 && (
+        <div
+          data-testid="message-mentions"
+          style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}
+        >
+          {message.mentions.map((r) => (
+            <ResourceMentionCard key={r.versionId} resource={r} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

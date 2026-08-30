@@ -1,3 +1,5 @@
+import type { ResolvedResource } from './lib/mentions.js';
+
 export interface Message {
   id: string;
   /**
@@ -17,6 +19,24 @@ export interface Message {
    * rather than as an assistant turn.
    */
   withheld?: boolean;
+  /**
+   * Catalog resources the viewer ATTACHED to this turn, already resolved through
+   * `GET /api/v1/blocks/generation-resources`. Set only on a `'user'` message.
+   *
+   * 🔴 A MESSAGE ENHANCEMENT, NOT PART OF `content`. The viewer's typed text is
+   * never rewritten to mention the pick — a composer that edits what you wrote
+   * is its own defect — so the attachment travels beside the text and is
+   * rendered as its own card by `MessageBubble`.
+   *
+   * 🔴 STORED, BUT NOT REPLAYED ON THE WIRE FOR AN OLDER TURN. `handleSend`
+   * builds the synthetic tool exchange from the CURRENT turn's mentions only, so
+   * exactly one `role:'tool'` slot is consumed per submit and 2 of the host's 3
+   * remain for real tool rounds. Replaying every historical turn's mentions
+   * would exhaust the cap on the third mentioned message of a conversation and
+   * `BAD_REQUEST` on the fourth — a permanent tax for grounding the model
+   * already has in its own transcript.
+   */
+  mentions?: ResolvedResource[];
 }
 
 export interface Session {

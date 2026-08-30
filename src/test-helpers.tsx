@@ -242,8 +242,59 @@ export const BLOCK_TOOLS_RESPONSE = {
   ],
 };
 
+/**
+ * One item from `GET /api/v1/blocks/generation-resources`.
+ *
+ * 🔴 COPIED FROM `projectSafeGenerationResource`, NOT FROM WHAT THIS APP WANTS.
+ * Source at civitai `origin/main`:
+ * `src/server/schema/blocks/generation-resource-projection.ts`. That ONE
+ * function builds both this endpoint's `items[]` and the host's
+ * `RESOURCE_PICKER_RESULT.selected`, which is why the app models a picked and a
+ * resolved resource with a single type. The field set is exact: inventing a
+ * `downloadCount` or a `description` here would be the `stats.downloads` defect
+ * again — a fixture agreeing with an app that agrees with nothing real.
+ */
+export const BLOCK_GENERATION_RESOURCE = {
+  versionId: 5678,
+  modelId: 1234,
+  modelName: 'Test Model',
+  versionName: 'v1.0',
+  baseModel: 'SDXL 1.0',
+  modelType: 'Checkpoint',
+  strength: 1,
+  minStrength: -1,
+  maxStrength: 2,
+  trainedWords: ['testword'],
+  clipSkip: null,
+};
+
+/** A second, LoRA-family resource — the types criterion 2 widened the picker to. */
+export const BLOCK_GENERATION_RESOURCE_LOCON = {
+  versionId: 8765,
+  modelId: 4321,
+  modelName: 'Private Stats Model',
+  versionName: 'v2',
+  baseModel: 'Illustrious',
+  modelType: 'LoCon',
+  strength: 0.8,
+  minStrength: -1,
+  maxStrength: 2,
+  trainedWords: [],
+  clipSkip: 2,
+};
+
+export const BLOCK_GENERATION_RESOURCES_RESPONSE = {
+  items: [BLOCK_GENERATION_RESOURCE],
+  maturity: { browsingLevel: 1, sfwOnly: true },
+};
+
 export function fakeBlockCatalogApi(
-  overrides: { models?: () => Response; images?: () => Response; tools?: () => Response } = {},
+  overrides: {
+    models?: () => Response;
+    images?: () => Response;
+    tools?: () => Response;
+    generationResources?: (url: string) => Response;
+  } = {},
 ) {
   const calls: CatalogCall[] = [];
   const originalFetch = globalThis.fetch;
@@ -252,6 +303,21 @@ export function fakeBlockCatalogApi(
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const headers = new Headers(init?.headers);
     calls.push({ url, authorization: headers.get('authorization') });
+
+    // 🔴 MATCHED BEFORE `/blocks/models`, and the order is load-bearing rather
+    // than incidental: `includes('/api/v1/blocks/models')` is a SUBSTRING test
+    // and this path does not contain it — but the reverse mistake (a future
+    // `/blocks/models/…` route) is the shape that silently mis-routes, so the
+    // more specific path is matched first as a matter of course.
+    if (url.includes('/api/v1/blocks/generation-resources')) {
+      return (
+        overrides.generationResources?.(url) ??
+        new Response(JSON.stringify(BLOCK_GENERATION_RESOURCES_RESPONSE), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+    }
 
     if (url.includes('/api/v1/blocks/models')) {
       return (

@@ -1,7 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Button, Textarea } from '@civitai/blocks-react/ui';
 import type { Message } from '../types.js';
+import type { ResolvedResource } from '../lib/mentions.js';
 import { MessageBubble } from './MessageBubble.js';
+import {
+  MentionPickerButton,
+  ResourceMentionCard,
+  type MentionPickerType,
+} from './ResourceMention.js';
 import { token, mutedText } from '../theme.js';
 
 export interface ChatAreaProps {
@@ -10,7 +16,28 @@ export interface ChatAreaProps {
   onSend: (content: string) => void;
   onStopStream?: () => void;
   onRegenerate?: (messageId: string) => void;
-  onInsertResearch?: (text: string) => void;
+  /**
+   * Resources the viewer has attached to the message they are composing. Owned
+   * by the parent, not by this component: they survive a re-render of the
+   * composer and are consumed by `handleSend`, which is where the wire is built.
+   */
+  pendingMentions: ResolvedResource[];
+  /** Ask the HOST to open its own native picker for this type. */
+  onPickMention: (type: MentionPickerType) => void;
+  onRemoveMention: (versionId: number) => void;
+  /**
+   * The query the MODEL wrote when it called a catalog tool, shown while that
+   * lookup is in flight.
+   *
+   * 🔴 THIS IS WHAT SURVIVES OF THE RESEARCH PANEL, AND IT IS THE HALF WORTH
+   * KEEPING. The panel did two things: it let the viewer search inside the
+   * iframe, and it showed the query the model actually sent. The search moved to
+   * the host's own picker (better: the catalog never enters this iframe). The
+   * transparency did not have anywhere else to go, and dropping it would make a
+   * bad query invisible again — which is precisely how the DreamShaper case went
+   * unnoticed.
+   */
+  lookupQuery?: string | null;
   /**
    * Non-null when the app currently CANNOT send — the viewer is anonymous, or
    * the block token is missing the consent-gated spend scope. Supplied by the
@@ -35,8 +62,13 @@ export function ChatArea({
   onRegenerate,
   sendGate,
   onGatedSend,
+  pendingMentions,
+  onPickMention,
+  onRemoveMention,
+  lookupQuery,
 }: ChatAreaProps) {
   const [input, setInput] = useState('');
+  const [menuOpen, setMenuOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sendingRef = useRef(false);
@@ -137,6 +169,11 @@ export function ChatArea({
         {isStreaming && (
           <div style={{ ...mutedText, padding: '0 12px' }}>
             <span data-testid="streaming-indicator">Thinking…</span>
+            {lookupQuery ? (
+              <span data-testid="lookup-query" style={{ marginLeft: 8 }}>
+                Looking up: <strong>{lookupQuery}</strong>
+              </span>
+            ) : null}
           </div>
         )}
         <div ref={messagesEndRef} />
@@ -150,7 +187,42 @@ export function ChatArea({
           background: token.surface,
         }}
       >
+        {/*
+          The resources attached to the message being composed. Above the input
+          row rather than inside it: a chip row that grows must not squeeze the
+          textarea, and each chip is removable before sending.
+        */}
+        {pendingMentions.length > 0 && (
+          <div
+            data-testid="pending-mentions"
+            style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}
+          >
+            {pendingMentions.map((r) => (
+              <ResourceMentionCard
+                key={r.versionId}
+                resource={r}
+                onRemove={() => onRemoveMention(r.versionId)}
+              />
+            ))}
+          </div>
+        )}
+        {/*
+          🔴 THE PICKER BUTTON IS THE FIRST CHILD OF THIS ROW, AND THAT ORDER IS
+          THE REQUIREMENT, NOT A PREFERENCE. `flexDirection` is the row default,
+          so DOM order IS visual order here — a test can therefore read the
+          layout off the DOM rather than off a `getBoundingClientRect` jsdom
+          cannot compute. Do not give this row `row-reverse` or the button an
+          `order`, and do not move it after the textarea.
+        */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+          <MentionPickerButton
+            open={menuOpen}
+            onOpenChange={setMenuOpen}
+            onPick={(t) => {
+              setMenuOpen(false);
+              onPickMention(t);
+            }}
+          />
           <Textarea
             ref={textareaRef}
             value={input}

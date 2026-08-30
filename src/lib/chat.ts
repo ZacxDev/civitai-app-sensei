@@ -1,4 +1,5 @@
 import type { ToolCall } from './tools.js';
+import type { ResolvedResource } from './mentions.js';
 import type { Message } from '../types.js';
 
 const ROLE_LABELS: Record<string, string> = {
@@ -63,6 +64,12 @@ export interface StoredMessage {
   content: string;
   timestamp: number;
   withheld?: boolean;
+  /**
+   * The resources attached to a user turn. Persisted so reopening a conversation
+   * shows what the answer was grounded in — an attachment that vanishes on
+   * reload makes the transcript a partial record of what the viewer paid for.
+   */
+  mentions?: ResolvedResource[];
 }
 
 /**
@@ -75,6 +82,9 @@ export function serializeMessages(messages: Message[]): StoredMessage[] {
     content: m.content,
     timestamp: m.timestamp,
     ...(m.withheld ? { withheld: true } : {}),
+    // Only when there is something to store — an empty array on every message
+    // would grow the stored payload for nothing.
+    ...(m.mentions && m.mentions.length > 0 ? { mentions: m.mentions } : {}),
   }));
 }
 
@@ -94,6 +104,10 @@ export function deserializeMessages(stored: StoredMessage[]): Message[] {
     content: m.content,
     timestamp: m.timestamp,
     ...(m.withheld ? { withheld: true } : {}),
+    // 🔴 TOTAL, like the `withheld` clause beside it: a session written by a
+    // build that predates mentions simply has no key here, and one written by a
+    // future build carrying an unknown extra field still deserializes.
+    ...(Array.isArray(m.mentions) && m.mentions.length > 0 ? { mentions: m.mentions } : {}),
   }));
 }
 

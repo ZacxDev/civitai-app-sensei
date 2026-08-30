@@ -8,6 +8,7 @@ import {
   useBuzzWorkflow,
   useRequestConsent,
   useRequestSignIn,
+  useResourcePicker,
 } from '@civitai/blocks-react';
 import type { UseAppStorage } from '@civitai/blocks-react';
 import { Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
@@ -19,15 +20,16 @@ import { AI_WRITE_BUDGETED, BUZZ_READ_SELF, hasGenerateScope } from './scopes.js
 import { createOrchestrator } from './lib/orchestrator.js';
 import { TextOutputWithheldError } from './lib/orchestrator-bridge.js';
 import * as sessionsLib from './lib/sessions.js';
-import * as researchLib from './lib/research.js';
 import * as toolsLib from './lib/tools.js';
+import * as mentionsLib from './lib/mentions.js';
+import type { ResolvedResource } from './lib/mentions.js';
 import { generateMessageId, withSystemPrompt } from './lib/chat.js';
 import { generateTitle } from './lib/sessions.js';
 import { claimMessageWrite, ownsMessageWrite } from './lib/write-ownership.js';
 
 import { ChatArea } from './components/ChatArea.js';
+import type { MentionPickerType } from './components/ResourceMention.js';
 import { SessionList } from './components/SessionList.js';
-import { ResearchPanel, ResearchToggle } from './components/ResearchPanel.js';
 import { SettingsBar } from './components/SettingsBar.js';
 import { SettingsModal } from './components/SettingsModal.js';
 
@@ -114,10 +116,14 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [researchOpen, setResearchOpen] = useState(false);
-  const [searchResults, setSearchResults] = useState<researchLib.ModelSearchResult | null>(null);
-  const [searchQuery, setSearchQuery] = useState<string | null>(null);
-  const [isSearching, setIsSearching] = useState(false);
+  // 🔴 THE RESEARCH PANEL IS GONE, NOT HIDDEN. `researchOpen`, `searchResults`
+  // and the in-iframe search that fed them were removed with it (clawgate #434).
+  // The viewer now searches in the HOST's own picker chrome, so this iframe
+  // never receives a catalog list at all — a strictly narrower surface than the
+  // panel had. What survives is the model's own query, shown inline while a
+  // lookup is in flight; see `ChatArea`'s `lookupQuery`.
+  const [lookupQuery, setLookupQuery] = useState<string | null>(null);
+  const [pendingMentions, setPendingMentions] = useState<ResolvedResource[]>([]);
   const [loading, setLoading] = useState(true);
   // 🔴 A REJECTED STORAGE CALL MUST NOT BE INDISTINGUISHABLE FROM SUCCESS. Every
   // storage call in this app used to be either unguarded (`createSession`, whose
@@ -127,6 +133,12 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   // 0.1.4 consent bug and takes a session of measurement to tell apart. Now every
   // one of them goes through `persist` and lands here.
   const [storageError, setStorageError] = useState<string | null>(null);
+  // Attaching a model can fail for reasons that are NOT storage and NOT the
+  // send: the host declined to open the picker, the resolve 429'd, or the clamp
+  // withheld the resource. Given its own cell so the sentence can be accurate —
+  // "Couldn't save…" for a failed attach would be a second lie on top of the
+  // first, which is the defect `storageError` itself exists to prevent.
+  const [mentionError, setMentionError] = useState<string | null>(null);
   // Whether the viewer has actually run into the capability gate. The gate
   // ITSELF is derived (below), never stored — storing it is what let an earlier
   // draft show a stale "sign in" banner to a viewer who had since signed in but
@@ -173,6 +185,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    * this cell rather than a second counter to keep in step.
    */
   const streamingTurnRef = useRef<StreamingTurn | null>(null);
+  const { open: openResourcePicker } = useResourcePicker();
   const { estimate, submit, poll, cancel } = useBuzzWorkflow();
   const orchestrator = useMemo(
     () => createOrchestrator({ estimate, submit, poll, cancel }),
@@ -298,8 +311,11 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setSessions(next);
     setActiveSessionId(session.id);
     setMessages([]);
-    setSearchResults(null);
-    setSearchQuery(null);
+    // Attachments belong to the message being composed, so a new conversation
+    // starts with none — carrying them across would silently ground a question
+    // the viewer has not asked yet.
+    setPendingMentions([]);
+    setLookupQuery(null);
     depsRef.current.track('session_create');
   }, [settings.model, sessions, persist]);
 
@@ -356,6 +372,89 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     depsRef.current.track('consent_requested');
   }, [viewer, requestConsent, requestSignIn]);
 
+  // ── MENTIONS: pick in HOST chrome, resolve through the clamped endpoint ─────
+  //
+  // 🔴 THE ITERATION BOUNDARY DOES NOT MOVE, AND THIS HANDLER IS WHERE IT WOULD
+  // MOVE IF ANYTHING EVER MOVED IT. `openResourcePicker` asks the HOST to open
+  // its OWN modal; the viewer searches there, in host chrome, and the host posts
+  // back exactly ONE chosen resource. This iframe never receives a list, the
+  // search API, or the catalog. Nothing below widens that: the only outbound
+  // request is an ID-keyed resolve.
+  //
+  // 🔴 RESOLVED AT PICK TIME, NOT AT SEND TIME, AND THAT IS THE SAFER ORDER.
+  // `GET /api/v1/blocks/generation-resources` is the authoritative maturity
+  // clamp and it DROPS a resource that exceeds the token's ceiling or fails
+  // `hasAccess`. Resolving here means the chip the viewer sees is built from
+  // clamp-RELEASED data rather than from the picker's own projection, and a
+  // dropped resource is refused visibly now instead of vanishing silently from
+  // a message that has already been paid for. It also keeps the billed send
+  // path synchronous in this respect: by then there is nothing left to resolve
+  // and nothing left to fail.
+  const handlePickMention = useCallback(
+    async (resourceType: MentionPickerType) => {
+      setMentionError(null);
+      let picked: { versionId: number } | null = null;
+      try {
+        // 🔴 THE CAST IS THE SDK LAGGING THE HOST, AND IT IS DELIBERATE RATHER
+        // THAN A TYPE HOLE. `@civitai/app-sdk` still declares
+        // `BlockResourcePickerType = 'Checkpoint' | 'LORA'`, while the host's
+        // `PAGE_RESOURCE_PICKER_TYPES` was widened to the LoRA family
+        // (`+ LoCon, DoRA`) by civitai#4494 — merged to `main` as `bedcccc42b`.
+        // The SDK's `types.js` is literally `export {}`: it ships NO runtime that
+        // sends `OPEN_RESOURCE_PICKER`, so the declaration bounds authoring
+        // only, and the message this block posts is validated by the HOST's
+        // `resolveResourcePickerRequest` — which now accepts all four. Measured
+        // on that PR: a raw untyped `{resourceType:'LoCon'}` opens the modal.
+        // Remove the cast when the SDK release lands; do NOT narrow
+        // `MENTION_PICKER_TYPES` to satisfy it, which would ship a control for
+        // two types while the host offers four.
+        picked = await openResourcePicker({
+          resourceType: resourceType as 'Checkpoint' | 'LORA',
+        });
+      } catch (e) {
+        setMentionError(
+          `Couldn't open the model picker — ${e instanceof Error && e.message ? e.message : 'the host did not respond'}.`,
+        );
+        return;
+      }
+      // Dismissed without picking. Not an error, and nothing to say about it.
+      if (!picked) return;
+
+      try {
+        const [resolved] = await mentionsLib.resolveMentions([picked.versionId], {
+          token: token_.raw,
+        });
+        if (!resolved) {
+          // The endpoint returned nothing for this id — it is out of reach for
+          // this viewer at this browsing ceiling. Say so; never synthesise a
+          // card from the picker's own copy of the name, which is exactly the
+          // unclamped value the clamp exists to withhold.
+          setMentionError('That model is not available here, so it was not attached.');
+          return;
+        }
+        setPendingMentions((prev) => {
+          const next = mentionsLib.addPendingMention(prev, resolved);
+          if (next === prev && !prev.some((p) => p.versionId === resolved.versionId)) {
+            setMentionError(
+              `You can attach up to ${mentionsLib.MAX_MENTIONS} models to one message.`,
+            );
+          }
+          return next;
+        });
+        depsRef.current.track('mention_added', { modelType: resolved.modelType });
+      } catch (e) {
+        setMentionError(
+          `Couldn't look that model up — ${e instanceof Error && e.message ? e.message : 'the catalog is unavailable'}.`,
+        );
+      }
+    },
+    [openResourcePicker, token_.raw],
+  );
+
+  const handleRemoveMention = useCallback((versionId: number) => {
+    setPendingMentions((prev) => prev.filter((r) => r.versionId !== versionId));
+  }, []);
+
   const selectSession = useCallback(async (id: string) => {
     // The `[activeSessionId]` effect above loads the messages; doing it here too
     // was a second concurrent read of the same key for no benefit. Setting the id
@@ -411,11 +510,20 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // instead. Nothing to lose, misroute, duplicate, or promise.
     //
     // The gate itself is checked at the top of this function, above the dedup.
+    // 🔴 CAPTURED ONCE, HERE, AND CONSUMED. Read after the refusals above so a
+    // gated or deduped send leaves the composer's attachments exactly where they
+    // were — the same reasoning that keeps the viewer's TEXT in the box. From
+    // this point the turn owns them, and clearing the state cannot take them
+    // away from the request being built.
+    const attachedMentions = pendingMentions;
+    setPendingMentions([]);
+
     const userMsg: Message = {
       id: generateMessageId(),
       role: 'user',
       content,
       timestamp: Date.now(),
+      ...(attachedMentions.length > 0 ? { mentions: attachedMentions } : {}),
     };
 
     const updatedMessages = [...messages, userMsg];
@@ -615,6 +723,29 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         toolsAvailable ? settings.systemPrompt : settings.systemPrompt + NO_TOOLS_NOTICE,
       );
 
+      // ── THE PRE-FILLED GROUNDING (clawgate #434). ────────────────────────────
+      //
+      // 🔴 APPENDED AFTER THE MAPPED HISTORY, WHICH PUTS IT DIRECTLY AFTER THIS
+      // TURN'S USER MESSAGE — `userMsg` is the last element of
+      // `updatedMessages`, and `withSystemPrompt` only hoists the system turn.
+      // The order is the contract: the host builds its `declaredCallIds` set in
+      // ITERATION ORDER, so the assistant `tool_calls` turn must PHYSICALLY
+      // precede the result it correlates to. `buildMentionExchange` returns both
+      // in that order, together, so the pair cannot be split or reversed here.
+      //
+      // 🔴 ONLY THIS TURN'S MENTIONS, NEVER THE CONVERSATION'S. The map above
+      // takes `role` and `content` only, so an older turn's attachment does not
+      // come back as a second tool message. That is deliberate: the host's cap
+      // is PER PAYLOAD and counts `role:'tool'` messages with no provenance
+      // test, so replaying history's mentions would spend a slot per mentioned
+      // turn — silencing tool calling on the third and BAD_REQUESTing the
+      // fourth. One turn, one slot, two real rounds left.
+      const mentionExchange = mentionsLib.buildMentionExchange(attachedMentions);
+      if (mentionExchange.length > 0) {
+        apiMessages = [...apiMessages, ...mentionExchange];
+        depsRef.current.track('mention_grounding_sent', { count: attachedMentions.length });
+      }
+
       const onChunk = (chunk: string) => {
         if (!streamingRef.current) return;
         // 🔴 ACCUMULATED BEFORE THE RENDER UPDATE, NOT DERIVED FROM IT. The
@@ -652,7 +783,17 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // `.superRefine` actually counts. One round answering N parallel calls
       // contributes N. Counting rounds here let a single 5-call round exceed a
       // mirrored cap of 3 on the first iteration.
-      let toolMessages = 0;
+      //
+      // 🔴 SEEDED FROM THE PAYLOAD, NOT FROM ZERO, AND THAT IS WHAT MAKES THE
+      // PRE-FILLED MENTION SAFE. A mention exchange has ALREADY put one
+      // `role:'tool'` message into `apiMessages`, and the host's cap is on the
+      // payload, not on this loop — starting at 0 would let three real rounds
+      // stack on top of it for FOUR tool messages and a `BAD_REQUEST` on the
+      // last submit, after the viewer had paid for the rounds that got there.
+      // Seeding with the same predicate the host uses — a bare
+      // `filter(role === 'tool')` — means anything else that ever injects one is
+      // counted too, rather than each injector remembering to add itself.
+      let toolMessages = apiMessages.filter((m) => m.role === 'tool').length;
       let hitRoundCap = false;
 
       for (;;) {
@@ -692,18 +833,12 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // query, so a round of parallel calls has no single label to display.
         // Taking the first is honest about that; joining them would invent a
         // query the model never wrote.
-        setSearchResults(null);
-        const firstQuery = toolsLib.readQueryArgument(calls[0]);
-        if (firstQuery) {
-          // The tool result is not wired in as panel items deliberately: its
-          // projected shape (name/tags/creator/downloads/baseModel) is not
-          // `ModelSearchItem`, and mapping it here would be a second definition
-          // of the host's projection that can drift from the real one. So the
-          // panel shows the model's own query over nothing, which is honest.
-          setSearchQuery(firstQuery);
-        }
+        // Show the model's OWN query while the lookup runs. `calls[0]` is
+        // deliberate and not an oversight: one line shows ONE query, so a round
+        // of parallel calls has no single label — taking the first is honest,
+        // joining them would invent a query the model never wrote.
+        setLookupQuery(toolsLib.readQueryArgument(calls[0]));
 
-        setIsSearching(true);
         let results: string[];
         try {
           results = await Promise.all(
@@ -715,7 +850,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             ),
           );
         } finally {
-          setIsSearching(false);
+          setLookupQuery(null);
         }
 
         // A Stop landing while the tool POSTs were in flight must not be spent
@@ -914,6 +1049,22 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     sendGate,
     raiseGate,
     persist,
+    // 🔴 OMITTING THIS MADE THE WHOLE MENTION FEATURE INERT, AND EVERY TEST
+    // STILL PASSED. `handleSend` reads `pendingMentions` to build the synthetic
+    // tool exchange; without it here the callback closes over the array as it
+    // was when the callback was last built — i.e. EMPTY — so the attachment the
+    // viewer just made never reaches the wire and never reaches storage.
+    //
+    // 🔴 WHY THE SUITE COULD NOT SEE IT, because that is the reusable half.
+    // Every mock in this repo returned a FRESH object from `useBlockContext`
+    // (`viewer: { id: 1 }`) and a fresh `vi.fn()` from `useRequestConsent` on
+    // every render. `raiseGate` depends on both identities, and `handleSend`
+    // depends on `raiseGate` — so the callback was rebuilt on every render and
+    // the missing dep was silently repaired by the fixture. The real SDK's
+    // callbacks are stable, so production would have had the stale array.
+    // `mention-grounding.e2e.test.tsx` now hoists those to module constants and
+    // goes RED (7 cases) with this line removed. Measured, not reasoned.
+    pendingMentions,
   ]);
 
   const handleStopStream = useCallback(() => {
@@ -1001,25 +1152,14 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     }
   }, [messages, handleSend, sendGate, raiseGate, activeSessionId, isStreaming]);
 
-  const handleResearchSearch = useCallback(async (query: string) => {
-    setIsSearching(true);
-    try {
-      const results = await researchLib.searchModels(query, { token: token_.raw });
-      setSearchResults(results);
-      // A panel search is shown VERBATIM — nothing rewrites it.
-      setSearchQuery(query);
-    } catch {
-      setSearchResults(null);
-    } finally {
-      setIsSearching(false);
-    }
-  }, [token_.raw]);
-
-  const handleInsertResearch = useCallback((text: string) => {
-    // Append the model name to the chat input area (handled by ChatArea internally)
-    // For now, just send it as a message
-    handleSend(`Tell me more about ${text}`);
-  }, [handleSend]);
+  // 🔴 `handleResearchSearch` AND `handleInsertResearch` ARE DELETED, NOT
+  // DISABLED (clawgate #434). The first ran `searchModels` from inside the
+  // iframe and rendered the catalog into it; the second synthesised
+  // `Tell me more about <name>` and SENT it — a spend path that never touched
+  // the composer, which is why it needed its own copy of the capability gate.
+  // Both are gone: the viewer picks in host chrome and the pick grounds the
+  // question they actually wrote, so there is no second send path and no
+  // in-iframe catalog render left to keep in step.
 
   const handleSettingsChange = useCallback((patch: Partial<AppSettings>) => {
     setSettings((prev) => {
@@ -1089,16 +1229,17 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             </Stack>
           </Group>
           {/*
-            🔴 BOTH HEADER CONTROLS ARE SIBLINGS IN THIS FLEX ROW, AND THAT IS
-            LOAD-BEARING. The Research toggle used to be rendered by
-            `ResearchPanel` as `position: absolute; right: 8; top: 8`, which put
-            it on top of ⚙️ — `elementFromPoint` at the centre of
+            🔴 EVERY HEADER CONTROL IS A SIBLING IN THIS FLEX ROW, AND THAT IS
+            STILL LOAD-BEARING WITH ONLY ONE LEFT. The Research toggle used to be
+            rendered by `ResearchPanel` as `position: absolute; right: 8; top: 8`,
+            which put it on top of ⚙️ — `elementFromPoint` at the centre of
             `settings-button` returned `open-research`, so Settings could not be
-            opened at all. Laid out by flex, neither is out of flow and they
-            cannot overlap at any width. Do not absolutely position either.
+            opened at all. That toggle is gone with the panel (clawgate #434),
+            which removes the instance but NOT the class: anything added here
+            must be laid out by flex, in normal flow. Do not absolutely position
+            a header control.
           */}
           <Group gap={8}>
-            <ResearchToggle isOpen={researchOpen} onToggle={() => setResearchOpen(!researchOpen)} />
             <Button
               variant="subtle"
               size="sm"
@@ -1245,6 +1386,32 @@ export function App({ deps: depsOverride }: AppProps = {}) {
                     </Button>
                   </div>
                 )}
+                {mentionError && (
+                  <div
+                    data-testid="mention-error"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      padding: '10px 16px',
+                      borderBottom: `1px solid ${token.border}`,
+                      background: token.primaryLight,
+                      fontSize: 13,
+                      flexShrink: 0,
+                    }}
+                  >
+                    <span>{mentionError}</span>
+                    <Button
+                      size="sm"
+                      variant="light"
+                      data-testid="mention-error-dismiss"
+                      onClick={() => setMentionError(null)}
+                    >
+                      Dismiss
+                    </Button>
+                  </div>
+                )}
                 <ChatArea
                   messages={messages}
                   isStreaming={isStreaming}
@@ -1253,7 +1420,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
                   onGatedSend={raiseGate}
                   onStopStream={handleStopStream}
                   onRegenerate={handleRegenerate}
-                  onInsertResearch={handleInsertResearch}
+                  pendingMentions={pendingMentions}
+                  onPickMention={handlePickMention}
+                  onRemoveMention={handleRemoveMention}
+                  lookupQuery={lookupQuery}
                 />
               </>
             ) : (
@@ -1276,17 +1446,6 @@ export function App({ deps: depsOverride }: AppProps = {}) {
               </div>
             )}
           </div>
-
-          {/* Research panel — the toggle for it lives in the header. */}
-          <ResearchPanel
-            isOpen={researchOpen}
-            onToggle={() => setResearchOpen(!researchOpen)}
-            searchResults={searchResults}
-            lastQuery={searchQuery}
-            isSearching={isSearching}
-            onSearch={handleResearchSearch}
-            onInsert={handleInsertResearch}
-          />
         </div>
 
         {/* Settings bar */}

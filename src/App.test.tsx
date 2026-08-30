@@ -10,6 +10,10 @@ vi.mock('@civitai/blocks-react', () => ({
   useBlockResize: () => {},
   useRequestConsent: () => ({ requestConsent: vi.fn() }),
   useRequestSignIn: () => ({ requestSignIn: vi.fn() }),
+  // The host's native resource picker. A no-op stub (the viewer dismisses without
+  // picking) for every suite that is not ABOUT mentions — see
+  // `mention-grounding.e2e.test.tsx` for the driven one.
+  useResourcePicker: () => ({ open: vi.fn().mockResolvedValue(null) }),
   useBlockToken: () => ({ raw: 'block-jwt-test', scopes: ['ai:write:budgeted', 'buzz:read:self'] }),
   useBuzzBalance: () => ({ balance: { blue: 100, green: 0, yellow: 200 } }),
   useBuzzWorkflow: () => ({
