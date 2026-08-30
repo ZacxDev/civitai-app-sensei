@@ -802,5 +802,22 @@ describe('a stopped turn must stop RENDERING, not just stop billing', () => {
     // 🔴 ISOLATING: no chunk that arrived after Stop reached the transcript.
     expect(bubble()).toContain('word0');
     expect(bubble(), 'a stopped turn kept rendering its chunks').not.toContain('word59');
-  });
+    // 🔴 THE BUDGET IS EXPLICIT BECAUSE THIS TEST'S OWN SLEEPS EAT HALF THE
+    // DEFAULT, AND THE SHORTFALL IS SILENT. vitest's default is 5 s; the waits
+    // above are a fixed 100 ms + 60 × 20 × 2 = 2,400 ms, so ~2.5 s is spent
+    // before boot, session creation and the replay reaching `word0` get any of
+    // it. Measured in CI: 2,544 ms on the run that passed, 5,009 ms on the run
+    // that did NOT — one test doubling while its siblings moved ~4%, which is
+    // the signature of a thin budget rather than a loaded runner.
+    //
+    // 🔴 AND THE `{ timeout: 5000 }` ON THE `word0` waitFor ABOVE WAS
+    // STRUCTURALLY UNREACHABLE: the per-test budget was also 5 s, so the test
+    // died before that waitFor could ever spend its own allowance. Raising the
+    // per-test budget is what makes that inner timeout mean anything.
+    //
+    // Deliberately NOT fixed by shortening the 2,400 ms wait: the comment above
+    // derives it from the fixture (60 words × 20 ms, doubled for jsdom slop),
+    // and a shorter wait is exactly the version that let the mutant survive.
+    // Nothing here is weakened — only the clock is widened.
+  }, 30_000);
 });
