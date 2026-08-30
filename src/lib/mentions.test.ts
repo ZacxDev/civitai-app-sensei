@@ -166,7 +166,7 @@ describe('buildMentionExchange — the wire shape the host accepts, and only tha
     expect(buildMentionExchange([])).toEqual([]);
   });
 
-  it('🔴 NEUTRALISES `urn:air:` in the tool result — every field, and the keys', () => {
+  it('🔴 NEUTRALISES `urn:air:` in every serialized VALUE of the tool result', () => {
     // The host throws FORBIDDEN when `containsAirReference(built.input)` — a
     // case-insensitive substring scan over every string, array element, object
     // value AND object key — and it throws BEFORE the Buzz quote, so ONE
@@ -178,6 +178,17 @@ describe('buildMentionExchange — the wire shape the host accepts, and only tha
     // The sibling path already does this — `tools.ts`'s `callTool` returns
     // `stripAirReferences(boundToolResponse(body))` — and this one is the same
     // class of content with a strictly less trustworthy origin.
+    //
+    // ⚠️ SCOPE, NARROWED TO THE CALL SITE. Stripping the serialized string
+    // covers object KEYS too, but that is a property of the MECHANISM and this
+    // test does not exercise it — nor could any test here: every key in this
+    // payload is a fixed `ResolvedResource` field name plus `items` and
+    // `truncated`, the shape admits no dynamic keys, and the five plants below
+    // are all VALUES. Key coverage is load-bearing one path over, at
+    // `tools.ts`'s `callTool`, where the same strip is applied to an arbitrary
+    // HOST payload (`body: unknown`) whose keys the app does not choose. This
+    // title used to claim "and the keys"; it was true of the strip and untrue
+    // of the fixture, which is how a guard gets read as wider than it is.
     const planted = buildMentionExchange([
       {
         ...A,

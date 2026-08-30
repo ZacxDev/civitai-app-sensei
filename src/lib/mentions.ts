@@ -188,10 +188,21 @@ export async function resolveMentions(
  * than the mention. Every field serialised into this message is
  * CATALOG-AUTHOR-CONTROLLED (`modelName`, `versionName`, `trainedWords[]`,
  * `baseModel`, `modelType`), which makes this the LESS trustworthy of the two
- * paths, not the more. Applied to the SERIALIZED string, after bounding, so it
- * covers keys as well as values and so the replacement's own length is inside
- * the cap it was measured against (`urn-air-` is the same 8 chars as
- * `urn:air:`, so the bound cannot be pushed over by the substitution).
+ * paths, not the more. Applied to the SERIALIZED string, after bounding, so the
+ * replacement's own length is inside the cap it was measured against
+ * (`urn-air-` is the same 8 chars as `urn:air:`, so the bound cannot be pushed
+ * over by the substitution).
+ *
+ * 🔴 WHAT THIS CALL SITE ACTUALLY EXERCISES: VALUES. Operating on the
+ * serialized string does cover object KEYS as well — that is a property of the
+ * mechanism — but it is not a property anything here can reach. Every key in
+ * this payload is a fixed `ResolvedResource` field name plus `items` and
+ * `truncated`; the shape has no dynamic keys, so no author can plant a literal
+ * in one and no fixture can either. The key half is load-bearing at
+ * `tools.ts`'s `callTool`, which applies the same strip to an arbitrary HOST
+ * payload (`body: unknown`) whose keys the app does not choose. Claim the value
+ * coverage here and the key coverage there — a guard whose description is wider
+ * than its call site reads as protection nobody re-checks.
  */
 export function buildMentionExchange(resolved: ResolvedResource[]): MentionExchange[] {
   if (resolved.length === 0) return [];

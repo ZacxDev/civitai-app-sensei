@@ -310,6 +310,22 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   // state, and a failed `deleteSession` sets it on exactly the route that then
   // moves the id — clearing it here would hide the failure it just reported.
   //
+  // 🔴 THIS EFFECT IS ONLY HALF THE COMPOSER, AND THE OTHER HALF IS NOT HERE.
+  // `input` and `menuOpen` are `useState` inside `ChatArea`, so no effect in
+  // this component can reach them; they are bound to the conversation by
+  // `key={activeSessionId}` on the `<ChatArea>` element below, where the choice
+  // between that and lifting them up here is argued in full. The rule is one
+  // rule — "composer state belongs to one conversation" — declared once per
+  // OWNER, because there are two owners and neither can write the other's
+  // state. If you add a cell to either side, put it under the matching
+  // mechanism; do not add a third.
+  //
+  // Each of the three clears below has its own test in
+  // `composer-session-scope.e2e.test.tsx`, and each of those tests was watched
+  // to fail with only its own line removed. Before that file existed a mutant
+  // reduced to `setPendingMentions([])` alone passed all 351 tests — this
+  // comment argued three clears while the suite pinned one.
+  //
   // ⚠️ WHAT THIS DOES **NOT** CLOSE, so nobody reads it as the whole class: an
   // IN-FLIGHT pick. `handlePickMention` awaits the host modal and then the
   // resolve, and writes `pendingMentions` when they land — if the session
@@ -402,6 +418,27 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       ? 'consent'
       : null;
 
+  /**
+   * The gate as of the LAST RENDER, for readers that must not use the value
+   * their closure was created with.
+   *
+   * 🔴 A CLOSURE'S `sendGate` IS THE GATE AT THE MOMENT THE HANDLER WAS
+   * CREATED, WHICH IS NOT THE GATE WHEN AN `await` RESUMES.
+   * `handlePickMention` spans two of them — the host's modal, then the resolve —
+   * and the gate is DERIVED from `viewer` and the token's scopes, both of which
+   * the host can change underneath a handler that is parked (a re-mint that
+   * drops `ai:write:budgeted`, or a sign-out in another tab). Writing the check
+   * against the captured value would compile, read as a guard, and be a
+   * statement about the past.
+   *
+   * Assigned during render, in the same style as `depsRef` above, so it is
+   * current for anything that resumes after this render commits. Synchronous
+   * callers get the identical value, which is why BOTH of that handler's checks
+   * read it: one source, so the two cannot drift.
+   */
+  const sendGateRef = useRef(sendGate);
+  sendGateRef.current = sendGate;
+
   // Ask the host for whatever is missing. Safe to call repeatedly — it is the
   // banner's button as well as the send path, and the host treats each message
   // independently.
@@ -440,6 +477,21 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   // and nothing left to fail.
   const handlePickMention = useCallback(
     async (resourceType: MentionPickerType) => {
+      // 🔴 GATE 1 OF 2 — DEFENCE IN DEPTH, MIRRORING `handleSend`.
+      //
+      // ⚠️ AND UNREACHABLE TODAY, WHICH IS RECORDED RATHER THAN DRESSED UP AS
+      // COVERAGE. `ChatArea`'s `onPick` reads `sendGate` from a live prop and
+      // refuses first, so through the only caller that exists this branch
+      // cannot execute and NO test can turn it red. It is here because
+      // `handleSend` keeps its own copy for exactly this reason — a second
+      // caller that does not happen to sit behind a presentational gate — and
+      // because a handler that issues an authenticated request should not
+      // depend on its sole caller staying the sole caller. Do not count it as
+      // tested; the branch below is the one that is.
+      if (sendGateRef.current) {
+        raiseGate();
+        return;
+      }
       setMentionError(null);
       let picked: { versionId: number } | null = null;
       try {
@@ -485,6 +537,27 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // Dismissed without picking. Not an error, and nothing to say about it.
       if (!picked) return;
 
+      // 🔴 GATE 2 OF 2 — THE ONE THAT ACTUALLY FIRES, AND THE HALF-OPEN WINDOW
+      // IT CLOSES. Everything above this line ran under the gate as it was when
+      // the viewer opened the menu; the host modal then stood open for as long
+      // as they browsed. A re-mint without `ai:write:budgeted`, or a sign-out in
+      // another tab, lands inside that window and the pick comes back against a
+      // gate that has since closed.
+      //
+      // Re-read HERE, before the resolve, because the resolve is the first
+      // irreversible thing this handler does: an authenticated, rate-limited
+      // request for a resource the viewer can no longer use, whose chip would
+      // then sit on a composer that cannot send. Checking after it would only
+      // hide the chip, having already spent the request.
+      //
+      // `sendGateRef`, not the captured `sendGate` — see that ref's own note.
+      // `raiseGate` for the same reason Send uses it: ask for what is missing
+      // rather than fail silently, which is the 0.1.0–0.1.3 defect class.
+      if (sendGateRef.current) {
+        raiseGate();
+        return;
+      }
+
       try {
         const [resolved] = await mentionsLib.resolveMentions([picked.versionId], {
           token: token_.raw,
@@ -528,7 +601,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         );
       }
     },
-    [openResourcePicker, token_.raw],
+    [openResourcePicker, token_.raw, raiseGate],
   );
 
   const handleRemoveMention = useCallback((versionId: number) => {
@@ -1545,6 +1618,59 @@ export function App({ deps: depsOverride }: AppProps = {}) {
                   </div>
                 )}
                 <ChatArea
+                  // 🔴 THE COMPOSER IS PER-CONVERSATION, AND `ChatArea` OWNS
+                  // HALF OF IT. The `[activeSessionId]` effect above clears the
+                  // three cells App owns; `input` and `menuOpen` are `useState`
+                  // INSIDE this component, which no effect up here can reach.
+                  // Without this key the switch produced the worst of both
+                  // behaviours rather than either whole one: the sentence the
+                  // viewer typed stayed on screen exactly as written while its
+                  // grounding was silently removed — and `mentionError`, the one
+                  // channel that could have said so, was cleared by that same
+                  // effect. The next Send then buys an ungrounded answer or a
+                  // second CHARGED `search_models` round, which is the precise
+                  // cost this feature exists to remove.
+                  //
+                  // 🔴 WHY `key=` RATHER THAN LIFTING `input` INTO App — the two
+                  // candidates, and the choice is deliberate.
+                  //
+                  // Lifting closes exactly the cell you remember to lift.
+                  // `menuOpen` would stay behind, so an attach menu opened on
+                  // the composer you just left stands open on the one you
+                  // arrived at, and every `useState` a future edit adds to this
+                  // component starts out uncleared and silently wrong. That is
+                  // the per-call-site shape the effect's own comment rejects,
+                  // reappearing one level down. It also puts every keystroke in
+                  // App's state: nothing in `components/` is memoised, so each
+                  // character would re-render `SessionList`, every
+                  // `MessageBubble` and `SettingsBar`.
+                  //
+                  // `key=` binds ALL of this component's local state to the
+                  // conversation's identity — the cells that exist today and the
+                  // ones nobody has written yet — in one declaration that cannot
+                  // be forgotten per-cell.
+                  //
+                  // WHAT REMOUNTING DISCARDS, checked rather than assumed:
+                  //  - `input`, `menuOpen` — both INTENDED; that is the fix.
+                  //  - `sendingRef` → false. A sub-tick dedup guard reset by an
+                  //    action that cannot occur within a tick of a send.
+                  //  - textarea focus. Already lost: the only thing that moves
+                  //    `activeSessionId` from the composer is a click on the
+                  //    sidebar or "+ New", which took focus first. Nothing here
+                  //    auto-focuses, so this is unchanged, not a regression.
+                  //  - the message list's scroll offset. Reset, then driven
+                  //    straight back to the bottom by this component's own
+                  //    `[messages, isStreaming]` scroll effect — which already
+                  //    fired on every switch, because `messages` is replaced
+                  //    wholesale by the loader effect above.
+                  //
+                  // COST: none on a re-render — `activeSessionId` changes ONLY
+                  // when the conversation does, never while typing or
+                  // streaming. On the switch itself the message children are
+                  // keyed by `msg.id` and the whole array is being replaced by
+                  // a different session's, so React was discarding those DOM
+                  // nodes regardless.
+                  key={activeSessionId}
                   messages={messages}
                   isStreaming={isStreaming}
                   onSend={handleSend}
