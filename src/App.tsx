@@ -309,6 +309,16 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   // `storageError` is deliberately NOT cleared: it is app-level, not composer
   // state, and a failed `deleteSession` sets it on exactly the route that then
   // moves the id — clearing it here would hide the failure it just reported.
+  //
+  // ⚠️ WHAT THIS DOES **NOT** CLOSE, so nobody reads it as the whole class: an
+  // IN-FLIGHT pick. `handlePickMention` awaits the host modal and then the
+  // resolve, and writes `pendingMentions` when they land — if the session
+  // changed while that resolve was in the air, this effect has already run and
+  // the chip is added to the conversation the viewer switched TO. Narrow (the
+  // host modal is chrome the viewer cannot click past, so the window is the
+  // resolve round trip alone) and not fixed here, because closing it needs the
+  // pick to carry the session it was made in, which is a different change with
+  // its own red/green matrix. Recorded rather than implied.
   useEffect(() => {
     setPendingMentions([]);
     setMentionError(null);
