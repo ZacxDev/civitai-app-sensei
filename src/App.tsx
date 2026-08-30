@@ -457,6 +457,27 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     depsRef.current.track('consent_requested');
   }, [viewer, requestConsent, requestSignIn]);
 
+  /**
+   * `raiseGate` as of the LAST RENDER, for the same readers and the same reason
+   * as `sendGateRef` above.
+   *
+   * 🔴 ROUTING THE GATE **VALUE** THROUGH A REF IS ONLY HALF THE FIX, BECAUSE
+   * `raiseGate` BRANCHES ON `viewer` ITSELF. It is a `useCallback` over
+   * `[viewer, …]`, so the closure a parked handler holds decides sign-in versus
+   * consent using the `viewer` that existed when the handler was built. Reading
+   * `sendGateRef` correctly and then calling the CAPTURED `raiseGate` gives the
+   * two answers different vintages: measured, a sign-out during the host modal
+   * left `sendGateRef.current === 'signin'` while the stale callback took the
+   * consent branch — `requestConsent({ scopes: […] })` for an ANONYMOUS session,
+   * plus a `consent_requested` event for what was a sign-out. The banner was
+   * right (it renders from the live `sendGate`) and the request was wrong.
+   *
+   * Assigned during render like `depsRef` and `sendGateRef`, so the gate value
+   * and the action taken on it are read at the same instant.
+   */
+  const raiseGateRef = useRef(raiseGate);
+  raiseGateRef.current = raiseGate;
+
   // ── MENTIONS: pick in HOST chrome, resolve through the clamped endpoint ─────
   //
   // 🔴 THE ITERATION BOUNDARY DOES NOT MOVE, AND THIS HANDLER IS WHERE IT WOULD
@@ -488,8 +509,13 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // because a handler that issues an authenticated request should not
       // depend on its sole caller staying the sole caller. Do not count it as
       // tested; the branch below is the one that is.
+      //
+      // Reads the same two refs as gate 2 — not because this entry-time check
+      // needs the freshness (nothing has awaited yet), but so the two gates
+      // cannot drift into disagreeing about where they read from. No coverage
+      // is claimed for this line either way; it remains unreachable.
       if (sendGateRef.current) {
-        raiseGate();
+        raiseGateRef.current();
         return;
       }
       setMentionError(null);
@@ -550,11 +576,23 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // then sit on a composer that cannot send. Checking after it would only
       // hide the chip, having already spent the request.
       //
-      // `sendGateRef`, not the captured `sendGate` — see that ref's own note.
-      // `raiseGate` for the same reason Send uses it: ask for what is missing
-      // rather than fail silently, which is the 0.1.0–0.1.3 defect class.
+      // 🔴 BOTH HALVES COME FROM REFS, AND THE SECOND HALF IS THE ONE THAT WAS
+      // WRONG. `sendGateRef`, not the captured `sendGate`, decides WHETHER to
+      // stop — see that ref's own note. `raiseGateRef`, not the captured
+      // `raiseGate`, decides WHAT TO ASK FOR, because `raiseGate` closes over
+      // `viewer` and branches on it: a captured one answers with the viewer
+      // this handler was built under, which is exactly the value the sign-out
+      // trigger changes. Routing only the gate value and then calling the
+      // stale callback made the block correct and the request wrong — it asked
+      // an anonymous session to grant scopes. See `raiseGateRef`'s note.
+      //
+      // Asking at all — rather than returning silently — is the same reason
+      // Send does: surface what is missing, which is the 0.1.0–0.1.3 defect
+      // class. Both arms are exercised: `composer-session-scope.e2e.test.tsx`
+      // drops `ai:write:budgeted` mid-pick (consent) and signs the viewer out
+      // mid-pick (sign-in).
       if (sendGateRef.current) {
-        raiseGate();
+        raiseGateRef.current();
         return;
       }
 
@@ -601,7 +639,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         );
       }
     },
-    [openResourcePicker, token_.raw, raiseGate],
+    // `raiseGate` is deliberately absent: both gates reach it through
+    // `raiseGateRef`, so listing it would be a dependency the body never reads
+    // — and re-adding it would re-introduce the capture this fix removes.
+    [openResourcePicker, token_.raw],
   );
 
   const handleRemoveMention = useCallback((versionId: number) => {

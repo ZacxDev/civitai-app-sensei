@@ -28,12 +28,28 @@ import { clearCache } from './lib/research.js';
 // `useState` here is the other half of the same requirement: a re-mint is
 // observable to this app ONLY as `useBlockToken()` returning different scopes on
 // a LATER RENDER, and a plain mutable module variable changes no render at all.
+//
+// 🔴 `useBlockContext`'s `viewer` IS BACKED BY REAL `useState` FOR THE SAME
+// REASON, AND ITS ABSENCE IS WHY A DEFECT SHIPPED THROUGH THIS FILE. The gate
+// has TWO triggers — the comment at gate 2 names both: "a re-mint that drops
+// `ai:write:budgeted`, or a sign-out in another tab". Until now the fixture
+// varied only the first: scopes moved through `useState`, `viewer` was a hoisted
+// constant that no test could change. That is exactly backwards from what the
+// code needs exercised — the token's scopes reach the handler through
+// `sendGateRef` and are therefore refreshed, while `viewer` was CAPTURED by the
+// parked handler's `raiseGate` and was therefore the stale one. A fixture that
+// holds the captured value constant cannot see a stale-capture bug: the parked
+// handler read `sendGateRef` and correctly said 'signin', then called a
+// `raiseGate` built while `viewer` was still truthy and asked the host for
+// CONSENT SCOPES on an anonymous session. Vary both, or the second arm is prose.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const VIEWER = { id: 1 };
 const FULL_SCOPES = ['ai:write:budgeted', 'buzz:read:self'];
 /** The `useBlockToken` state setter, captured from the last render. */
 let setScopes: ((s: string[]) => void) | null = null;
+/** The `useBlockContext` viewer state setter, captured from the last render. */
+let setViewer: ((v: { id: number } | null) => void) | null = null;
 
 const requestConsentFn = vi.fn();
 const requestSignInFn = vi.fn();
@@ -84,7 +100,14 @@ vi.mock('@civitai/blocks-react', async () => {
   return {
     useAppStorage: () => storage.appStorage,
     useBlockAnalytics: () => ({ track: trackFn }),
-    useBlockContext: () => ({ ready: true, viewer: VIEWER, theme: 'dark' }),
+    // Real state, so a sign-out is a RENDER — see the header. The viewer VALUE
+    // is still the hoisted `VIEWER` identity while signed in, so nothing here
+    // hands the app a fresh identity per render.
+    useBlockContext: () => {
+      const [viewer, set] = useState<{ id: number } | null>(VIEWER);
+      setViewer = set;
+      return { ready: true, viewer, theme: 'dark' };
+    },
     useBlockResize: () => {},
     useRequestConsent: () => ({ requestConsent: requestConsentFn }),
     useRequestSignIn: () => ({ requestSignIn: requestSignInFn }),
@@ -235,6 +258,7 @@ beforeEach(() => {
   pollQueue = [];
   storage = fakeAppStorage();
   setScopes = null;
+  setViewer = null;
   requestConsentFn.mockClear();
   requestSignInFn.mockClear();
   submitFn.mockClear();
@@ -421,8 +445,73 @@ describe('the attach gate is re-read after the host modal, not just before it', 
     expect(screen.queryByTestId(`mention-${A.versionId}`)).toBeNull();
     // …and the viewer is told what is missing rather than being left with a
     // control that silently did nothing — the same treatment Send gives.
-    expect(requestConsentFn).toHaveBeenCalled();
+    //
+    // 🔴 THIS PAIR IS ALSO THE POSITIVE CONTROL FOR THE SIGN-OUT TEST BELOW.
+    // That test asserts `requestConsent` was called ZERO times; a zero is
+    // meaningless unless this same path, driven the same way, can produce a
+    // non-zero. Exactly one call on THIS arm is what makes that zero a fact
+    // about the branch rather than about a deferred picker that never delivers.
+    expect(
+      requestConsentFn,
+      'the consent arm did not ask the host for consent',
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      requestSignInFn,
+      'the consent arm asked for SIGN-IN on a signed-in viewer',
+    ).not.toHaveBeenCalled();
     expect(screen.getByTestId('consent-notice')).toBeTruthy();
+    expect(screen.queryByTestId('signin-notice')).toBeNull();
+  });
+
+  it('🔴 a SIGN-OUT while the picker is open raises SIGN-IN, not consent', async () => {
+    // THE OTHER TRIGGER THE GATE-2 COMMENT NAMES, and the one no test exercised
+    // until the fixture's `viewer` became real state.
+    //
+    // The value the gate is DERIVED from reaches the parked handler through
+    // `sendGateRef`, so the block itself was already right: the resolve is
+    // refused and the banner says "sign in". What was wrong sat one line lower —
+    // the handler called the `raiseGate` it CAPTURED, which closes over `viewer`
+    // and branches on it. Parked across the host modal, that closure still held
+    // the signed-in `viewer`, so it took the consent branch: the app asked the
+    // host to grant `ai:write:budgeted` + `buzz:read:self` FOR AN ANONYMOUS
+    // SESSION and emitted `consent_requested` for what was a sign-out.
+    await boot();
+    await newSession();
+
+    deferPicker = true;
+    await attach(A.versionId);
+    await waitFor(() => expect(releasePicker).not.toBeNull());
+
+    // The viewer signs out in another tab, while the host's modal stands open.
+    await act(async () => {
+      setViewer!(null);
+    });
+
+    // Now the viewer's pick comes back.
+    await act(async () => {
+      releasePicker!();
+    });
+    await settle();
+
+    // The half that already held: nothing authenticated was issued, no chip.
+    expect(resolveCalls, 'a resolve was issued after the viewer signed out mid-pick').toHaveLength(
+      0,
+    );
+    expect(screen.queryByTestId(`mention-${A.versionId}`)).toBeNull();
+
+    // 🔴 THE ASSERTION THAT MATTERS: the host is asked for the thing that is
+    // actually missing. An anonymous session cannot grant a scope, so a consent
+    // request here is both wrong and unactionable.
+    expect(
+      requestSignInFn,
+      'a sign-out mid-pick did not ask the host to sign the viewer in',
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      requestConsentFn,
+      'a sign-out mid-pick asked the host for CONSENT SCOPES on an anonymous session',
+    ).not.toHaveBeenCalled();
+    expect(screen.getByTestId('signin-notice')).toBeTruthy();
+    expect(screen.queryByTestId('consent-notice')).toBeNull();
   });
 
   it('POSITIVE CONTROL: the same deferred pick DOES resolve while the gate stays open', async () => {
