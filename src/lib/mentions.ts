@@ -24,7 +24,7 @@
  *    for the exact shape and why it is the only one the host accepts.
  */
 import { BLOCKS_BASE_URL, type CatalogAuth } from './research.js';
-import { boundToolResponse } from './tools.js';
+import { boundToolResponse, stripAirReferences } from './tools.js';
 
 /**
  * One resolved resource, mirroring the host's `SafeGenerationResource`
@@ -168,6 +168,30 @@ export async function resolveMentions(
  * `truncated`, so what survives is always complete, valid JSON — a record cut
  * mid-field would hand the model a truncated id in the same authoritative frame
  * as the real ones.
+ *
+ * 🔴 NOT COVERED, AND STATED RATHER THAN QUIETLY IMPLIED BY THE PARAGRAPH ABOVE:
+ * the VIEWER is never told when a batch was clamped. A dropped record raises
+ * `truncated` for the MODEL, and the fall-back
+ * `{"error":"the result was too large to include"}` tells the model nothing
+ * survived at all — but `MessageBubble` renders a card for every attachment
+ * either way, so the transcript shows chips for resources the model was not
+ * handed. Whether that is reachable at `MAX_MENTIONS` (8) is UNPROVEN: it needs
+ * eight records whose author-controlled fields together exceed 8,000 chars, and
+ * nobody has measured whether the endpoint's own projection permits that. Left
+ * as-is deliberately; do not read this note as a claim that it is handled.
+ *
+ * 🔴 AND `urn:air:` IS NEUTRALISED HERE, on the same argument `tools.ts` makes
+ * at its `callTool` return. The host throws `FORBIDDEN` when
+ * `containsAirReference(built.input)` — a case-insensitive substring scan over
+ * every string, array element, object value and object KEY — and it throws
+ * BEFORE the Buzz quote, so a single literal refuses the whole submit rather
+ * than the mention. Every field serialised into this message is
+ * CATALOG-AUTHOR-CONTROLLED (`modelName`, `versionName`, `trainedWords[]`,
+ * `baseModel`, `modelType`), which makes this the LESS trustworthy of the two
+ * paths, not the more. Applied to the SERIALIZED string, after bounding, so it
+ * covers keys as well as values and so the replacement's own length is inside
+ * the cap it was measured against (`urn-air-` is the same 8 chars as
+ * `urn:air:`, so the bound cannot be pushed over by the substitution).
  */
 export function buildMentionExchange(resolved: ResolvedResource[]): MentionExchange[] {
   if (resolved.length === 0) return [];
@@ -193,7 +217,11 @@ export function buildMentionExchange(resolved: ResolvedResource[]): MentionExcha
     {
       role: 'tool',
       tool_call_id: MENTION_TOOL_CALL_ID,
-      content: boundToolResponse({ items: resolved, truncated: 0 }),
+      // Same treatment, same order, as `tools.ts`'s `callTool` return:
+      // `stripAirReferences(boundToolResponse(...))`. Bound FIRST so the strip
+      // sees the string that will actually be sent, and called with an explicit
+      // single argument — never handed to `.map` — see the note in `tools.ts`.
+      content: stripAirReferences(boundToolResponse({ items: resolved, truncated: 0 })),
     },
   ];
 }

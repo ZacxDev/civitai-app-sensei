@@ -7,8 +7,15 @@ export interface Message {
    * `role:'tool'` messages for the wire (see `App.tsx`'s loop and
    * `toStepMessages`), but they live only inside one send's `apiMessages` array
    * and are never persisted — what goes to storage is the user turn and the
-   * final assistant reply. The member also lets sessions written by older builds
-   * deserialize; `ChatArea` renders such a message as nothing.
+   * final assistant reply.
+   *
+   * ⚠️ CORRECTED: this used to add "the member also lets sessions written by
+   * older builds deserialize", which asserted that such sessions EXIST. They do
+   * not — no shipped build has ever written a `role:'tool'` message to KV; the
+   * history is worked through in `lib/chat.ts`'s `deserializeMessages`. The
+   * member is kept because `deserializeMessages` CASTS `role` from the stored
+   * row, so the type must admit whatever a row can carry, and because a future
+   * build could persist one. `ChatArea` renders such a message as nothing.
    */
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;

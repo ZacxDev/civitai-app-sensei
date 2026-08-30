@@ -91,11 +91,33 @@ export function serializeMessages(messages: Message[]): StoredMessage[] {
 /**
  * Deserialize messages from KV storage (preserves original IDs).
  *
- * 🔴 STORED SESSIONS PREDATE THE TOOL-LOOP REMOVAL. A session written by an
- * earlier build can still hold `role: 'tool'` messages and `toolCalls` fields.
- * The role stays in `Message`'s union so those deserialize rather than throw;
- * `ChatArea` renders them as nothing and `toStepMessages` drops them off the
- * wire. Any `toolCalls` field is simply not read.
+ * 🔴 TOTAL BY CONSTRUCTION, NOT BECAUSE STORED TOOL MESSAGES ARE KNOWN TO
+ * EXIST. This docstring used to assert that "a session written by an earlier
+ * build can still hold `role: 'tool'` messages and `toolCalls` fields", which
+ * contradicted `types.ts`'s claim that the role is never persisted. Settled
+ * from the history rather than by picking a side: **no shipped build has ever
+ * written one.**
+ *
+ *  - 0.1.0 (`8bd14a8`) is the ONLY build that put a `role:'tool'` message into
+ *    React state (`setMessages(prev => [...prev, toolMsg])`), and it persisted
+ *    through `appendMessage`, which read the array back from STORAGE and
+ *    appended one message — it was called for the user turn and the final
+ *    assistant reply only, never for a tool message. State-only messages
+ *    therefore never reached KV.
+ *  - `fbf3f08` removed that `setMessages` and nothing has re-added it: every
+ *    later build builds tool messages into `apiMessages`, a local array that is
+ *    never written to state and never persisted.
+ *  - The whole-array writes that arrived in 0.1.5 (`518c59d`) persist
+ *    `messages` state — which is why a stored tool message, once present, would
+ *    ROUND-TRIP. There is just no build that could put one there.
+ *
+ * So the totality below, `ChatArea`'s `role === 'tool'` skip, and
+ * `toStepMessages`' drop are defence in depth against a shape nothing is known
+ * to produce — worth keeping (the cast on `role` means a stored row decides the
+ * value, and a future build could persist one) but NOT evidence that such
+ * sessions are out there. `types.ts`'s "never persisted" is the accurate claim;
+ * its "lets sessions written by older builds deserialize" repeated this one's
+ * error and has been corrected too.
  */
 export function deserializeMessages(stored: StoredMessage[]): Message[] {
   return stored.map((m) => ({

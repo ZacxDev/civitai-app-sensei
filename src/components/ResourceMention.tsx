@@ -99,8 +99,26 @@ export function MentionPickerButton({
   open: boolean;
   onOpenChange: (next: boolean) => void;
   onPick: (type: MentionPickerType) => void;
+  /**
+   * Closes the whole affordance — the launcher AND the menu.
+   *
+   * 🔴 THIS PROP EXISTED AND NOTHING PASSED IT, which made it a control that
+   * READ as gated while being fully live. `ChatArea` now wires it to the send
+   * gate; see the note at that call site for which conditions and why.
+   */
   disabled?: boolean;
 }) {
+  // 🔴 THE MENU IS GATED TOO, NOT JUST THE BUTTON. Disabling the launcher alone
+  // is a SPELLED guard: a menu already open when the gate closes keeps four live
+  // buttons that call `onPick` directly, so the hazard survives in a different
+  // shape. Derived rather than pushed into state, so the two cannot drift.
+  //
+  // KNOWN AND ACCEPTED: `open` is the parent's state and is not reset here, so a
+  // menu opened before the gate closed reappears when it reopens. That is a
+  // menu the viewer themselves opened, on a composer that can now attach —
+  // surprising at worst, and strictly better than resetting parent state from a
+  // presentational component.
+  const menuVisible = open && !disabled;
   return (
     <div style={{ position: 'relative', flexShrink: 0 }}>
       <Button
@@ -109,12 +127,12 @@ export function MentionPickerButton({
         onClick={() => onOpenChange(!open)}
         disabled={disabled}
         data-testid="add-mention-button"
-        aria-expanded={open}
+        aria-expanded={menuVisible}
         title="Attach a model from the Civitai catalog"
       >
         ＋ Model
       </Button>
-      {open && (
+      {menuVisible && (
         <div
           data-testid="mention-type-menu"
           style={{

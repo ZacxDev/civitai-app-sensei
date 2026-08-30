@@ -388,7 +388,18 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
   // attachments.
   // ───────────────────────────────────────────────────────────────────────────
   it('a gated send keeps the viewer’s attachments — nothing is consumed or spent', async () => {
-    render(<App />);
+    // 🔴 THE PRECONDITION IS NOW BUILT THE WAY PRODUCTION BUILDS IT, and the
+    // rewrite is the point rather than an accommodation. This test used to
+    // attach WHILE gated — which the composer no longer permits, because a
+    // viewer who cannot send must not be able to drive the host picker and an
+    // authenticated resolve. That route was never the production one anyway:
+    // `sendGate` is DERIVED from the live token, so the reachable path to
+    // "attached AND gated" is the gate CLOSING under a composer that already
+    // holds chips — a re-mint that drops the consent-gated scope, which is the
+    // same mechanism the `grants it and retries` case below exercises in the
+    // other direction.
+    currentScopes = GRANTED_SCOPES;
+    const { rerender } = render(<App />);
     await startSession();
 
     fireEvent.click(screen.getByTestId('add-mention-button'));
@@ -397,6 +408,11 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
       expect(screen.getByTestId(`mention-${BLOCK_GENERATION_RESOURCE.versionId}`)).toBeTruthy();
     });
 
+    // The host re-mints without the spend scope. `sendGate` escalates on its own
+    // — it is derived, never stored.
+    currentScopes = UNGRANTED_SCOPES;
+    rerender(<App />);
+
     fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'What is this?' } });
     fireEvent.click(screen.getByTestId('send-button'));
 
@@ -404,12 +420,44 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
       expect(requestConsent).toHaveBeenCalled();
     });
     expect(submitSpy).not.toHaveBeenCalled();
-    // 🔴 THE HALF THAT IS EASY TO GET WRONG. `handleSend` clears
-    // `pendingMentions` as it captures them — if that clear ran ABOVE the gate,
-    // a refused send would drop the viewer's attachment with no signal, which is
-    // the same class of defect as the composer-clearing-before-refusal bug this
-    // whole file exists for.
+    // The end-to-end property: a refused send leaves the viewer's attachment
+    // exactly where it was.
     expect(screen.getByTestId(`mention-${BLOCK_GENERATION_RESOURCE.versionId}`)).toBeTruthy();
+    // ⚠️ WHAT THIS DOES **NOT** COVER, MEASURED RATHER THAN ASSUMED. Its
+    // original comment claimed to pin `App.handleSend`'s clear-vs-gate ORDERING
+    // — "if that clear ran ABOVE the gate, a refused send would drop the
+    // viewer's attachment". It does not, and never did: `ChatArea.handleSend`
+    // checks `sendGate` and returns BEFORE calling `onSend`, so `App.handleSend`
+    // is never entered on this path at all. Moving `setPendingMentions([])`
+    // above `App.handleSend`'s own gate SURVIVES this test — verified at HEAD
+    // (`f6920fe`) against the ORIGINAL test as well as this one, so it is a
+    // pre-existing gap and not something the rewrite introduced.
+    //
+    // No UI route reaches `App.handleSend` while gated: `ChatArea` gates before
+    // `onSend`, `handleRegenerate` gates before calling it, and
+    // `handleInsertResearch` — the third caller its comment names — was deleted
+    // with the Research panel. That gate is defence in depth, and defence in
+    // depth is not reachable by construction. Killing this mutant would need a
+    // COMPOUND one (ChatArea's ordering AND App's), which is a different and
+    // weaker claim; it is recorded here rather than dressed up as coverage.
+  });
+
+  it('🔴 a gated viewer cannot drive the HOST picker at all', async () => {
+    // The other side of the rewrite above, pinned so the composer's gate cannot
+    // be quietly dropped: attaching is grounding for a send this viewer cannot
+    // make, and it costs a rate-limited, authenticated resolve to find that out.
+    // They are ASKED for the missing scope instead — the picker is not
+    // `disabled`, because `'consent'` is the DEFAULT state of a first-time
+    // viewer and a dead control on first run is the defect this file is about.
+    render(<App />);
+    await startSession();
+
+    const launcher = screen.getByTestId('add-mention-button');
+    expect(launcher.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(launcher);
+
+    expect(screen.queryByTestId('mention-type-menu')).toBeNull();
+    expect(requestConsent).toHaveBeenCalled();
   });
 
   it('asks even when the last stored message is the same text (dedup must not win)', async () => {

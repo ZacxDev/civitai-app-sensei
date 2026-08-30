@@ -151,10 +151,14 @@ export function ChatArea({
           </div>
         )}
         {messages.map((msg) => {
-          // 🔴 LEGACY ONLY. Nothing writes a `'tool'` message any more, but
-          // sessions saved by the tool-loop build still hold them in KV storage.
-          // Rendering a raw JSON tool payload as a chat bubble would be worse
-          // than dropping it.
+          // 🔴 DEFENCE IN DEPTH, NOT A KNOWN LEGACY POPULATION. Nothing writes
+          // a `'tool'` message, and — corrected from what this comment used to
+          // claim — no shipped build ever did (the history is in `lib/chat.ts`'s
+          // `deserializeMessages`). `deserializeMessages` casts `role` straight
+          // off the stored row, so a row that carried one would render, and
+          // rendering a raw JSON tool payload as a chat bubble would be worse
+          // than dropping it. Kept for that reason, not because such sessions
+          // are out there.
           if (msg.role === 'tool') return null;
           return (
             <div key={msg.id}>
@@ -215,11 +219,56 @@ export function ChatArea({
           `order`, and do not move it after the textarea.
         */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+          {/*
+            🔴 GATED ON THE SAME CONDITIONS AS THE SEND, because attaching only
+            has meaning as grounding for the NEXT send. `disabled` existed on
+            this component and was passed by NOBODY, which is worse than not
+            having it: it reads as a gate on review and is inert at runtime.
+
+            🔴 THE TWO CONDITIONS GET THE TWO TREATMENTS THE SEND BUTTON GIVES
+            THEM, WHICH ARE NOT THE SAME TREATMENT. Disabling on both was tried
+            and is wrong: `sendGate === 'consent'` is the DEFAULT state of a
+            first-time viewer — `ai:write:budgeted` is consent-gated and simply
+            opening the app does not grant it — so `disabled` there ships a dead
+            `＋ Model` button to every new viewer with nothing to explain it.
+            That is the 0.1.4 defect class this file's own comments are about.
+
+            `isStreaming` → DISABLED, because Send itself is replaced by Stop for
+            the duration. A chip attached now cannot travel with the message it
+            was attached to; it would sit in the composer and silently ground the
+            NEXT question — the same leak as carrying attachments across a
+            session switch.
+
+            `sendGate` → ASK FOR WHAT IS MISSING, because that is exactly what
+            Send does (`onGatedSend()`, never `disabled`). The host picker is not
+            opened and no resolve is issued, so the hazard is closed; the viewer
+            gets the banner that tells them how to fix it instead of a control
+            that does nothing.
+
+            🔴 INTERCEPTED AT BOTH DOORS. Gating only the launcher is a SPELLED
+            guard: a menu already open when the gate closes keeps four live type
+            buttons that reach `onPickMention` directly. So the pick is gated
+            too, and it is the pick that actually opens host chrome.
+
+            NOT gated: removing a chip already attached. Gating what ADDS
+            grounding must not trap what is already there.
+          */}
           <MentionPickerButton
             open={menuOpen}
-            onOpenChange={setMenuOpen}
+            disabled={isStreaming}
+            onOpenChange={(next) => {
+              if (next && sendGate) {
+                onGatedSend();
+                return;
+              }
+              setMenuOpen(next);
+            }}
             onPick={(t) => {
               setMenuOpen(false);
+              if (sendGate) {
+                onGatedSend();
+                return;
+              }
               onPickMention(t);
             }}
           />

@@ -166,6 +166,43 @@ describe('buildMentionExchange — the wire shape the host accepts, and only tha
     expect(buildMentionExchange([])).toEqual([]);
   });
 
+  it('🔴 NEUTRALISES `urn:air:` in the tool result — every field, and the keys', () => {
+    // The host throws FORBIDDEN when `containsAirReference(built.input)` — a
+    // case-insensitive substring scan over every string, array element, object
+    // value AND object key — and it throws BEFORE the Buzz quote, so ONE
+    // literal anywhere refuses the whole submit rather than the mention. Every
+    // field serialised here is CATALOG-AUTHOR-CONTROLLED (`modelName`,
+    // `versionName`, `trainedWords[]`, `baseModel`, `modelType`), so a hostile
+    // or merely unlucky author can plant one and kill the conversation.
+    //
+    // The sibling path already does this — `tools.ts`'s `callTool` returns
+    // `stripAirReferences(boundToolResponse(body))` — and this one is the same
+    // class of content with a strictly less trustworthy origin.
+    const planted = buildMentionExchange([
+      {
+        ...A,
+        modelName: 'urn:air:sd1:model:civitai:1234@5678',
+        versionName: 'URN:AIR:upper',
+        baseModel: 'x urn:AiR: y',
+        modelType: 'Urn:Air:LORA',
+        trainedWords: ['harmless', 'urn:air:sdxl:lora:civitai:9@9'],
+      },
+    ]);
+
+    const content = planted[1].content;
+    // The scan is case-insensitive, so the assertion has to be too. Asserted on
+    // the RAW string rather than on parsed fields: the host scans the serialized
+    // input, and a key would never surface as a parsed value.
+    expect(content.toLowerCase()).not.toContain('urn:air:');
+    // POSITIVE CONTROL — the literals really were in this payload, so the
+    // absence above is a fact about the strip and not about a fixture that
+    // never carried one. Five plants, five replacements.
+    expect(content.match(/urn-air-/gi)).toHaveLength(5);
+    // …and it is still valid JSON the model can read.
+    const parsed = JSON.parse(content) as { items: Array<{ modelName: string }> };
+    expect(parsed.items[0].modelName).toBe('urn-air-sd1:model:civitai:1234@5678');
+  });
+
   it('🔴 stays inside MAX_MESSAGE_CHARS (8,000) and stays parseable when it must drop', () => {
     // Bounded by the MESSAGE cap, not by the host tool registry's own
     // MAX_TOOL_RESULT_CHARS (6,000), which does not bind an app-synthesised

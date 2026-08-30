@@ -195,4 +195,118 @@ describe('the mention affordance in the composer (clawgate #434, criterion 3)', 
     renderChat({ isStreaming: false, lookupQuery: 'painterly sketch lora' });
     expect(screen.queryAllByTestId('lookup-query')).toHaveLength(1);
   });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // The picker declared a `disabled` prop and NOTHING PASSED IT — a control that
+  // reads as gated and is not. The gate has to be the send button's, and the
+  // send button gives its two conditions DIFFERENT treatments: `isStreaming`
+  // disables it, `sendGate` makes it ASK for what is missing.
+  it('🔴 an anonymous viewer cannot drive the HOST picker', () => {
+    // `sendGate === 'signin'` means the send is refused and the host is asked to
+    // sign the viewer in. Leaving the picker live lets that viewer open host
+    // chrome and drive an authenticated resolve from a block that cannot send.
+    const onPickMention = vi.fn();
+    const onGatedSend = vi.fn();
+    renderChat({ sendGate: 'signin', onPickMention, onGatedSend });
+    fireEvent.click(screen.getByTestId('add-mention-button'));
+
+    expect(screen.queryByTestId('mention-type-menu')).toBeNull();
+    expect(onPickMention).not.toHaveBeenCalled();
+    // …and they are told how to fix it, exactly as Send does. NOT `disabled`:
+    // `'consent'` is the default state of a first-time viewer, so a disabled
+    // launcher would be a dead control on first run for everyone.
+    expect(onGatedSend).toHaveBeenCalled();
+  });
+
+  it('🔴 a viewer without the spend scope cannot drive the HOST picker either', () => {
+    const onPickMention = vi.fn();
+    const onGatedSend = vi.fn();
+    renderChat({ sendGate: 'consent', onPickMention, onGatedSend });
+    fireEvent.click(screen.getByTestId('add-mention-button'));
+
+    expect(screen.queryByTestId('mention-type-menu')).toBeNull();
+    expect(onPickMention).not.toHaveBeenCalled();
+    expect(onGatedSend).toHaveBeenCalled();
+  });
+
+  it('🔴 attaching is closed MID-STREAM — those chips belong to the next message', () => {
+    // While a turn streams the composer's Send is replaced by Stop, so anything
+    // attached now cannot be sent with the message it was attached to. It would
+    // silently ground the NEXT question instead. Here `disabled` IS right: the
+    // condition clears by itself in seconds and there is nothing for the viewer
+    // to grant.
+    renderChat({ isStreaming: true });
+    expect(screen.getByTestId('add-mention-button').hasAttribute('disabled')).toBe(true);
+  });
+
+  it('🔴 the PICK is gated too, not just the launcher', () => {
+    // Gating the launcher alone is a SPELLED guard: a menu already open when the
+    // gate closes keeps four live buttons that reach `onPickMention` directly,
+    // and it is the PICK that opens host chrome. Asserted by opening the menu
+    // while ungated and closing the gate underneath it.
+    const onPickMention = vi.fn();
+    const onGatedSend = vi.fn();
+    const props = {
+      onGatedSend,
+      messages: [] as Message[],
+      isStreaming: false,
+      onSend: vi.fn(),
+      pendingMentions: [] as ResolvedResource[],
+      onPickMention,
+      onRemoveMention: vi.fn(),
+    };
+    const { rerender } = render(<ChatArea sendGate={null} {...props} />);
+    fireEvent.click(screen.getByTestId('add-mention-button'));
+    // POSITIVE CONTROL: the menu really was open before the gate closed, so the
+    // refusal below is a fact about the gate and not about a menu that never
+    // rendered.
+    expect(screen.getByTestId('mention-type-menu')).toBeTruthy();
+
+    rerender(<ChatArea sendGate={'signin'} {...props} />);
+    fireEvent.click(screen.getByTestId('mention-type-Checkpoint'));
+    expect(onPickMention).not.toHaveBeenCalled();
+    expect(onGatedSend).toHaveBeenCalled();
+  });
+
+  it('🔴 a menu open when a STREAM starts is closed with it', () => {
+    const props = {
+      sendGate: null,
+      onGatedSend: vi.fn(),
+      messages: [] as Message[],
+      onSend: vi.fn(),
+      pendingMentions: [] as ResolvedResource[],
+      onPickMention: vi.fn(),
+      onRemoveMention: vi.fn(),
+    };
+    const { rerender } = render(<ChatArea isStreaming={false} {...props} />);
+    fireEvent.click(screen.getByTestId('add-mention-button'));
+    expect(screen.getByTestId('mention-type-menu')).toBeTruthy();
+
+    rerender(<ChatArea isStreaming={true} {...props} />);
+    expect(screen.queryByTestId('mention-type-menu')).toBeNull();
+  });
+
+  it('the picker stays live when the send is live — negative control', () => {
+    // Without this, every assertion above is satisfied by a picker that is
+    // always closed.
+    const onPickMention = vi.fn();
+    const onGatedSend = vi.fn();
+    renderChat({ sendGate: null, isStreaming: false, onPickMention, onGatedSend });
+    expect(screen.getByTestId('add-mention-button').hasAttribute('disabled')).toBe(false);
+    fireEvent.click(screen.getByTestId('add-mention-button'));
+    expect(screen.getByTestId('mention-type-menu')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('mention-type-Checkpoint'));
+    expect(onPickMention).toHaveBeenCalledWith('Checkpoint');
+    expect(onGatedSend).not.toHaveBeenCalled();
+  });
+
+  it('a chip already attached stays REMOVABLE while the picker is gated', () => {
+    // Gating what ADDS grounding must not trap what is already attached — the
+    // viewer would otherwise be unable to take back a chip they can no longer
+    // send.
+    const onRemoveMention = vi.fn();
+    renderChat({ sendGate: 'consent', pendingMentions: [A], onRemoveMention });
+    fireEvent.click(screen.getByTestId(`remove-mention-${A.versionId}`));
+    expect(onRemoveMention).toHaveBeenCalledWith(A.versionId);
+  });
 });

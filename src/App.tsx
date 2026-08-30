@@ -18,7 +18,7 @@ import type { AppSettings, Message, Session } from './types.js';
 import { DEFAULT_SETTINGS, migrateSettings, NO_TOOLS_NOTICE } from './types.js';
 import { AI_WRITE_BUDGETED, BUZZ_READ_SELF, hasGenerateScope } from './scopes.js';
 import { createOrchestrator } from './lib/orchestrator.js';
-import { TextOutputWithheldError } from './lib/orchestrator-bridge.js';
+import { TextOutputWithheldError, toStepMessages } from './lib/orchestrator-bridge.js';
 import * as sessionsLib from './lib/sessions.js';
 import * as toolsLib from './lib/tools.js';
 import * as mentionsLib from './lib/mentions.js';
@@ -277,6 +277,44 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     return () => { cancelled = true; };
   }, [ready]);
 
+  // ---- Composer state belongs to ONE conversation ----
+  //
+  // 🔴 ONE PLACE, KEYED ON THE ID ITSELF, RATHER THAN A CLEAR AT EACH CALLER.
+  // `createSession` used to be the only route that cleared this, with the right
+  // reason attached to it — "Attachments belong to the message being composed…
+  // carrying them across would silently ground a question the viewer has not
+  // asked yet" — and that reason is about the CONVERSATION CHANGING, not about
+  // the "+ New" button. Three routes move `activeSessionId`: `createSession`,
+  // `selectSession`, and `deleteSession` (to `next[0]`, without ever being a
+  // switcher click, which is exactly the one a per-call-site fix forgets). This
+  // is the #427 class in the composer axis — state keyed on the VIEWED session
+  // written by something that does not check which session it is in — and the
+  // lesson from #427 is that it closes at the state, not at the control.
+  //
+  // WHAT IS CLEARED AND WHY EACH ONE:
+  //  - `pendingMentions`: the attachments that would ground the next question.
+  //    Carrying them across attaches another conversation's resources — and
+  //    they are BILLED grounding, not decoration.
+  //  - `mentionError`: describes a failed attach on the composer just left. A
+  //    banner about a conversation you are no longer in is the "say only what is
+  //    true on every path" defect one banner over.
+  //  - `lookupQuery`: the model's own query for a lookup in flight. `ChatArea`
+  //    renders it whenever `isStreaming` is true, and `isStreaming` is
+  //    INSTANCE-wide, so after a switch it would label the new conversation with
+  //    the old one's query. Clearing under-reports (the label stays blank until
+  //    the next round sets it, and switching back does not restore it), and an
+  //    under-report about a conversation you are in beats an accurate report
+  //    about one you are not.
+  //
+  // `storageError` is deliberately NOT cleared: it is app-level, not composer
+  // state, and a failed `deleteSession` sets it on exactly the route that then
+  // moves the id — clearing it here would hide the failure it just reported.
+  useEffect(() => {
+    setPendingMentions([]);
+    setMentionError(null);
+    setLookupQuery(null);
+  }, [activeSessionId]);
+
   // ---- Load messages when session changes ----
   useEffect(() => {
     if (!activeSessionId) { setMessages([]); return; }
@@ -311,11 +349,11 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setSessions(next);
     setActiveSessionId(session.id);
     setMessages([]);
-    // Attachments belong to the message being composed, so a new conversation
-    // starts with none — carrying them across would silently ground a question
-    // the viewer has not asked yet.
-    setPendingMentions([]);
-    setLookupQuery(null);
+    // 🔴 THE COMPOSER CLEAR USED TO LIVE HERE AND HAS MOVED to the
+    // `[activeSessionId]` effect above — one rule, one place. It was correct
+    // here and absent from `selectSession` and `deleteSession`, which move the
+    // same id for the same viewer-visible effect. Do not re-add a local copy:
+    // a second copy is how the two drift.
     depsRef.current.track('session_create');
   }, [settings.model, sessions, persist]);
 
@@ -395,17 +433,34 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       setMentionError(null);
       let picked: { versionId: number } | null = null;
       try {
-        // 🔴 THE CAST IS THE SDK LAGGING THE HOST, AND IT IS DELIBERATE RATHER
-        // THAN A TYPE HOLE. `@civitai/app-sdk` still declares
-        // `BlockResourcePickerType = 'Checkpoint' | 'LORA'`, while the host's
+        // 🔴 THE CAST IS THE SDK'S TYPE LAGGING THE HOST, AND IT IS DELIBERATE
+        // RATHER THAN A TYPE HOLE. `@civitai/app-sdk` declares
+        // `BlockResourcePickerType = 'Checkpoint' | 'LORA'`
+        // (`dist/blocks/types.d.ts`), while the host's
         // `PAGE_RESOURCE_PICKER_TYPES` was widened to the LoRA family
         // (`+ LoCon, DoRA`) by civitai#4494 — merged to `main` as `bedcccc42b`.
-        // The SDK's `types.js` is literally `export {}`: it ships NO runtime that
-        // sends `OPEN_RESOURCE_PICKER`, so the declaration bounds authoring
-        // only, and the message this block posts is validated by the HOST's
-        // `resolveResourcePickerRequest` — which now accepts all four. Measured
-        // on that PR: a raw untyped `{resourceType:'LoCon'}` opens the modal.
-        // Remove the cast when the SDK release lands; do NOT narrow
+        //
+        // 🔴 ARGUED FROM THE PACKAGE ACTUALLY IN THE PATH, which an earlier
+        // version of this comment was not. It reasoned that `@civitai/app-sdk`'s
+        // `types.js` "ships NO runtime that sends `OPEN_RESOURCE_PICKER`" — true
+        // of that module, and beside the point, because the call above does not
+        // go through it. It goes through `@civitai/blocks-react`'s
+        // `useResourcePicker`, which DOES send the message. Naming the wrong
+        // package made the argument unfalsifiable by reading the code it names.
+        //
+        // The conclusion holds on the right package, verified against the
+        // installed dist (`blocks-react/dist/hooks/useResourcePicker.js`): `open`
+        // builds `{ type: 'OPEN_RESOURCE_PICKER', payload: { resourceType:
+        // opts.resourceType, … } }` — the value is forwarded VERBATIM, with no
+        // allowlist, no normalisation and no membership check — and
+        // `sendTypedRequest` (`internal/transport.js`) is a pass-through that
+        // validates nothing outbound. The union is imported from the SDK purely
+        // to TYPE the parameter, so it bounds AUTHORING only; what decides
+        // whether the modal opens is the HOST's `resolveResourcePickerRequest`,
+        // which now accepts all four. Measured on that PR: a raw untyped
+        // `{resourceType:'LoCon'}` opens the modal.
+        //
+        // Remove the cast when the SDK release widens the union; do NOT narrow
         // `MENTION_PICKER_TYPES` to satisfy it, which would ship a control for
         // two types while the host offers four.
         picked = await openResourcePicker({
@@ -432,6 +487,21 @@ export function App({ deps: depsOverride }: AppProps = {}) {
           setMentionError('That model is not available here, so it was not attached.');
           return;
         }
+        // ⚠️ THIS UPDATER IS NOT PURE, AND THAT IS RECORDED RATHER THAN
+        // DEFENDED. `setMentionError` is a side effect inside a `setState`
+        // updater, which React may invoke more than once for one update —
+        // StrictMode does so deliberately in development. It is idempotent
+        // TODAY (the same message, set twice, is one banner), so it has no
+        // observable consequence, and it is left alone because the pure
+        // rewrites available are worse: hoisting the decision needs either a
+        // mirror ref of `pendingMentions` (a second source of truth for the
+        // thing this cell IS) or a closure variable written from inside the
+        // updater, which is the same impurity with more moving parts.
+        //
+        // What would make it unsafe is any future side effect here that is NOT
+        // idempotent — an analytics `track`, a counter, a request. Do not add
+        // one. This note exists because "it is fine" was the only thing anyone
+        // could have concluded from silence.
         setPendingMentions((prev) => {
           const next = mentionsLib.addPendingMention(prev, resolved);
           if (next === prev && !prev.some((p) => p.versionId === resolved.versionId)) {
@@ -462,7 +532,26 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setActiveSessionId(id);
   }, []);
 
-  const handleSend = useCallback(async (content: string) => {
+  /**
+   * Send `content` as a new user turn.
+   *
+   * `groundedWith` overrides where the attachments come from. Absent (the
+   * composer path) means "take the composer's pending chips and consume them";
+   * PRESENT means "ground this turn with exactly these, and leave the composer
+   * alone" — which is what `handleRegenerate` needs, because the attachments it
+   * must replay live on the STORED message, while the composer may hold chips
+   * for a message the viewer has not sent yet. An empty array is therefore a
+   * meaningful value, distinct from `undefined`: "this turn had no grounding,
+   * and that is not an invitation to borrow the composer's".
+   *
+   * 🔴 NEVER PASS THIS FUNCTION BY REFERENCE TO `.map`/`.forEach`. A callback
+   * with an optional second parameter has `Array.prototype.map`'s shape, and
+   * this repo has been bitten by that class before. Here the parameter's type
+   * (`ResolvedResource[]`) makes `arr.map(handleSend)` a compile error rather
+   * than a silent index-as-argument — an optional NUMBER would not — but the
+   * rule is about the shape, so keep every call site explicit.
+   */
+  const handleSend = useCallback(async (content: string, groundedWith?: ResolvedResource[]) => {
     if (!activeSessionId || isStreaming) return;
 
     // The gate is checked before the dedup here for the same reason as in
@@ -515,8 +604,15 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // were — the same reasoning that keeps the viewer's TEXT in the box. From
     // this point the turn owns them, and clearing the state cannot take them
     // away from the request being built.
-    const attachedMentions = pendingMentions;
-    setPendingMentions([]);
+    //
+    // 🔴 ONLY THE COMPOSER PATH CONSUMES THE COMPOSER. When `groundedWith` was
+    // supplied the attachments came from somewhere else (a stored message being
+    // regenerated), so clearing here would delete chips the viewer attached to a
+    // message they have not sent — the same loss the refusals above are ordered
+    // to avoid, arriving through a different door.
+    const fromComposer = groundedWith === undefined;
+    const attachedMentions = groundedWith ?? pendingMentions;
+    if (fromComposer) setPendingMentions([]);
 
     const userMsg: Message = {
       id: generateMessageId(),
@@ -790,10 +886,24 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // payload, not on this loop — starting at 0 would let three real rounds
       // stack on top of it for FOUR tool messages and a `BAD_REQUEST` on the
       // last submit, after the viewer had paid for the rounds that got there.
-      // Seeding with the same predicate the host uses — a bare
-      // `filter(role === 'tool')` — means anything else that ever injects one is
-      // counted too, rather than each injector remembering to add itself.
-      let toolMessages = apiMessages.filter((m) => m.role === 'tool').length;
+      //
+      // 🔴 COUNTED ON `toStepMessages(apiMessages)`, NOT ON `apiMessages`, AND
+      // THAT DIFFERENCE IS THE WHOLE CORRECTNESS OF THE SEED. The host counts
+      // the array it RECEIVES; `apiMessages` is the array before the transform
+      // that decides what it receives. `toStepMessages` drops a `role:'tool'`
+      // message that carries no `tool_call_id` — precisely the shape the mapped
+      // history above produces, since `.map(m => ({ role, content }))` discards
+      // the id — and it also drops empty content and trims to `MAX_MESSAGES`.
+      // Counting before the transform therefore counts messages the host never
+      // sees, and every one of them steals a real round from the viewer with
+      // "That needed more lookups at once than I am allowed to make".
+      //
+      // The previous comment here claimed to seed "with the same predicate the
+      // host uses". The PREDICATE was the same; the ARRAY was not, and it is the
+      // array that decides the number. Calling the same transform the wire is
+      // built from is what actually makes the two agree, rather than each
+      // injector remembering to add itself.
+      let toolMessages = toStepMessages(apiMessages).filter((m) => m.role === 'tool').length;
       let hitRoundCap = false;
 
       for (;;) {
@@ -1148,7 +1258,19 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     if (lastUserMsg) {
       // Remove the assistant message and resend
       setMessages((prev) => prev.slice(0, msgIdx));
-      await handleSend(lastUserMsg.content);
+      // 🔴 RE-ATTACH WHAT THAT MESSAGE WAS GROUNDED IN. Re-sending the CONTENT
+      // alone drops the `mentions` stored on the turn, so the model either
+      // answers ungrounded or spends a REAL charged round looking up what it had
+      // already been handed — the exact cost this feature exists to remove, and
+      // it makes the manifest's "answers in one round without spending a lookup"
+      // false on this path.
+      //
+      // 🔴 `?? []` RATHER THAN OMITTING THE ARGUMENT, and the difference is
+      // load-bearing: omitting it means "take the composer's chips", which would
+      // ground a REGENERATED turn with attachments belonging to a message the
+      // viewer is still writing — and consume them. An ungrounded message
+      // regenerates ungrounded.
+      await handleSend(lastUserMsg.content, lastUserMsg.mentions ?? []);
     }
   }, [messages, handleSend, sendGate, raiseGate, activeSessionId, isStreaming]);
 

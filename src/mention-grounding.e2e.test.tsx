@@ -430,6 +430,128 @@ describe('the wire — a pre-filled tool result, batched, correlated and ordered
     // ran before the cap stopped it.
     expect(toolPosts).toHaveLength(2);
   });
+
+  it('🔴 seeds the round counter from what REACHES THE WIRE, not from the app-side array', async () => {
+    // The host counts `role:'tool'` messages in the array it RECEIVES. The app
+    // counted them in `apiMessages`, which is the array BEFORE `toStepMessages`
+    // — and `toStepMessages` drops any `role:'tool'` message with no
+    // `tool_call_id`, which is exactly the shape `handleSend` produces when it
+    // maps stored history (`.map(m => ({ role, content }))` discards the id).
+    // So the app could count messages the wire never carried and refuse a real
+    // tool call that the host would have accepted, telling the viewer they had
+    // asked for too many lookups when the payload carried none.
+    //
+    // ⚠️ SCOPE, STATED PLAINLY: this is a SEED-CONTRACT guard, not a proven
+    // production regression. No shipped build of this app has ever PERSISTED a
+    // `role:'tool'` message — 0.1.0 put them in React state only, and its
+    // `appendMessage` read from storage rather than from state — so the input
+    // below is a state the code defends against (`deserializeMessages` casts it
+    // through, `ChatArea` renders it as nothing, `toStepMessages` drops it) but
+    // that nothing is known to produce. It is written this way because it is
+    // the only input that can distinguish the two counts.
+    const sessionId = 'sess-with-stored-tool-messages';
+    storage = fakeAppStorage({
+      'sensei:sessions': {
+        sessions: [
+          {
+            id: sessionId,
+            title: 'Legacy chat',
+            model: 'deepseek/deepseek-chat',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      },
+      [`sensei:messages:${sessionId}`]: [
+        { id: 'm1', role: 'user', content: 'an earlier question', timestamp: 1 },
+        // Three of them — enough to exhaust MAX_TOOL_RESULT_MESSAGES (3) on its
+        // own. None carries a `tool_call_id`, so none reaches the host.
+        { id: 'm2', role: 'tool', content: '{"items":[]}', timestamp: 2 },
+        { id: 'm3', role: 'tool', content: '{"items":[]}', timestamp: 3 },
+        { id: 'm4', role: 'tool', content: '{"items":[]}', timestamp: 4 },
+        { id: 'm5', role: 'assistant', content: 'an earlier answer', timestamp: 5 },
+      ],
+    });
+
+    render(<App />);
+    await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+
+    pollQueue = [toolCallSnapshot('call_1', 'first'), textSnapshot('Answered.')];
+    await send('What is this?');
+    // The turn settles either way — the pre-fix path refuses immediately with
+    // the cap notice — so wait for the composer rather than for an outcome.
+    await waitFor(() => expect(screen.getByTestId('send-button')).toBeTruthy(), { timeout: 8000 });
+
+    // POSITIVE CONTROL, and the whole point: the FIRST submit carried ZERO
+    // `role:'tool'` messages, because `toStepMessages` dropped all three. A
+    // counter seeded from the wire therefore starts at 0 and the round is free.
+    expect(submitted[0].messages.filter((m) => m.role === 'tool')).toHaveLength(0);
+    // …so the one real round actually ran.
+    expect(toolPosts).toHaveLength(1);
+    // …and the viewer was never told they had asked for too many lookups.
+    expect(screen.queryByText(/needed more lookups at once/i)).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe('composer state belongs to ONE conversation — every route that moves activeSessionId', () => {
+  // The #427 class in the composer axis: state that belongs to the conversation
+  // being composed, leaking across a switch. `createSession` already cleared it
+  // and said why ("carrying them across would silently ground a question the
+  // viewer has not asked yet") — and that reasoning applies verbatim to the two
+  // OTHER routes that move `activeSessionId`. Fixed at the ONE place the id
+  // moves rather than at each caller, because `deleteSession` is exactly the
+  // route a per-call-site fix forgets.
+
+  async function twoSessions() {
+    render(<App />);
+    await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+    fireEvent.click(screen.getByTestId('new-session-button'));
+    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+    // A second, so there is something to switch TO.
+    fireEvent.click(screen.getByTestId('new-session-button'));
+    await waitFor(() => expect(screen.getAllByTestId(/^session-item/).length).toBe(2));
+  }
+
+  it('🔴 SELECTING another session drops the attachments', async () => {
+    await twoSessions();
+    await attach('Checkpoint', A.versionId);
+    await screen.findByTestId(`mention-${A.versionId}`);
+
+    // Switch to the OTHER session (the newest is active, so pick the older one).
+    const items = screen.getAllByTestId(/^session-item/);
+    fireEvent.click(items[1]);
+
+    await waitFor(() => expect(screen.queryByTestId('pending-mentions')).toBeNull());
+    expect(screen.queryByTestId(`mention-${A.versionId}`)).toBeNull();
+  });
+
+  it('🔴 DELETING the active session drops the attachments', async () => {
+    // The route a per-call-site fix forgets: it moves `activeSessionId` to
+    // `next[0]` without ever being a switcher click.
+    await twoSessions();
+    await attach('Checkpoint', A.versionId);
+    await screen.findByTestId(`mention-${A.versionId}`);
+
+    const del = screen.getAllByTestId(/^delete-session/)[0];
+    fireEvent.click(del);
+
+    await waitFor(() => expect(screen.getAllByTestId(/^session-item/).length).toBe(1));
+    await waitFor(() => expect(screen.queryByTestId('pending-mentions')).toBeNull());
+  });
+
+  it('the attachments SURVIVE while the conversation does not change — negative control', async () => {
+    // Without this, "the chips are gone" is satisfied by a fix that clears them
+    // on every render.
+    await twoSessions();
+    await attach('Checkpoint', A.versionId);
+    await screen.findByTestId(`mention-${A.versionId}`);
+
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'still typing' } });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByTestId(`mention-${A.versionId}`)).toBeTruthy();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -460,6 +582,76 @@ describe('the message enhancement — what the viewer sees, and what survives a 
     pollQueue = [textSnapshot('Grounded answer.')];
     await send('What is this?');
     await waitFor(() => expect(screen.queryByTestId('pending-mentions')).toBeNull());
+  });
+
+  it('🔴 REGENERATE re-attaches the stored mentions — it does not re-ask ungrounded', async () => {
+    // Regenerate re-sends `lastUserMsg.content` only. Without its stored
+    // `mentions`, the re-send carries NO tool message, so the model either
+    // answers ungrounded or spends a REAL charged round looking up what it had
+    // been handed — the exact cost this feature exists to remove, and it makes
+    // the manifest's "answers in one round without spending a lookup" false on
+    // this path.
+    await startSession();
+    await attach('Checkpoint', A.versionId);
+    await screen.findByTestId(`mention-${A.versionId}`);
+
+    pollQueue = [textSnapshot('First answer.')];
+    await send('What is this?');
+    await waitFor(() => expect(screen.getByText('First answer.')).toBeTruthy());
+    // POSITIVE CONTROL: the first submit really did carry the grounding, so a
+    // zero on the second is a fact about regenerate and not about the fixture.
+    expect(submitted[0].messages.filter((m) => m.role === 'tool')).toHaveLength(1);
+
+    pollQueue = [textSnapshot('Second answer.')];
+    // Composer idle first: `isStreaming` is still true for a beat after the
+    // reply text renders, and `handleRegenerate` refuses silently while it is.
+    await waitFor(() => expect(screen.getByTestId('send-button')).toBeTruthy(), { timeout: 8000 });
+    fireEvent.click(screen.getByTestId('regenerate-button'));
+    await waitFor(() => expect(submitted.length).toBeGreaterThanOrEqual(2), { timeout: 8000 });
+
+    const second = submitted[1].messages;
+    const toolMsgs = second.filter((m) => m.role === 'tool');
+    expect(toolMsgs).toHaveLength(1);
+    const payload = JSON.parse(toolMsgs[0].content!) as { items: Array<{ versionId: number }> };
+    expect(payload.items.map((r) => r.versionId)).toEqual([A.versionId]);
+    // Correlated the same way as an ordinary attach — the pair, not a lone
+    // orphan the host would reject.
+    const askIdx = second.findIndex((m) =>
+      m.tool_calls?.some((c) => c.id === MENTION_TOOL_CALL_ID),
+    );
+    expect(askIdx).toBeGreaterThanOrEqual(0);
+    expect(askIdx).toBeLessThan(second.findIndex((m) => m.role === 'tool'));
+    // And it did NOT spend a real lookup to recover what it already had.
+    expect(toolPosts).toHaveLength(0);
+  });
+
+  it('🔴 REGENERATE does not consume the chips sitting in the composer', async () => {
+    // The mentions it re-attaches come from the STORED message, so the
+    // composer's own pending attachments belong to the message the viewer is
+    // still writing and must survive untouched — the same reasoning that keeps
+    // their TEXT in the box when a send is refused.
+    await startSession();
+    pollQueue = [textSnapshot('Plain answer.')];
+    await send('Just a question.');
+    await waitFor(() => expect(screen.getByText('Plain answer.')).toBeTruthy());
+    // Composer idle before attaching: the picker is closed MID-STREAM by design,
+    // and `isStreaming` is still true for a beat after the reply text renders.
+    await waitFor(() => expect(screen.getByTestId('send-button')).toBeTruthy(), { timeout: 8000 });
+
+    await attach('Checkpoint', A.versionId);
+    await screen.findByTestId(`mention-${A.versionId}`);
+
+    pollQueue = [textSnapshot('Second answer.')];
+    // Composer idle first: `isStreaming` is still true for a beat after the
+    // reply text renders, and `handleRegenerate` refuses silently while it is.
+    await waitFor(() => expect(screen.getByTestId('send-button')).toBeTruthy(), { timeout: 8000 });
+    fireEvent.click(screen.getByTestId('regenerate-button'));
+    await waitFor(() => expect(submitted.length).toBeGreaterThanOrEqual(2), { timeout: 8000 });
+
+    // The regenerated turn is ungrounded, because the ORIGINAL message was.
+    expect(submitted[1].messages.filter((m) => m.role === 'tool')).toHaveLength(0);
+    // …and the composer still holds what the viewer attached.
+    expect(screen.getByTestId(`mention-${A.versionId}`)).toBeTruthy();
   });
 
   it('🔴 the attachment survives a reload', async () => {
