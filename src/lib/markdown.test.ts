@@ -76,6 +76,57 @@ describe('🔴 linkHref — the allowlist is the security boundary', () => {
     }
   });
 
+  // 🔴 REGRESSION COVERAGE. Every case here was ALLOWED before the userinfo
+  // check was added — watched red on `a1311bf`, where the first two came back
+  // as their own input string rather than null. Do not fold these into the
+  // invariant block below; that block never went red.
+  it('🔴 REFUSES userinfo even when the HOST is genuinely civitai', () => {
+    for (const bad of [
+      'https://evil.com@civitai.com/x',
+      'https://user:pw@civitai.com/x',
+      'https://civitai.com:pw@civit.ai/x',
+      // 🔴 EMPTY username WITH a password — the only shape that kills the
+      // `u.password !== ''` half on its own. Without it that clause is
+      // redundant: every other case above has a non-empty username, so the
+      // mutant that drops the password check still dies to the username check
+      // and the sweep reads green for the wrong reason.
+      'https://:pw@civitai.com/x',
+    ]) {
+      expect(linkHref(bad), `${bad} must be refused`).toBeNull();
+    }
+  });
+
+  // 🔴 INVARIANT GUARDS, NOT REGRESSION COVERAGE — labelled so nobody reads
+  // them as evidence a bug was fixed here. Measured 2026-08-30: the shipped
+  // code already refused all of these, because `new URL` normalises the host
+  // BEFORE the allowlist compares it. They are pinned because the property is
+  // load-bearing and invisible: it lives in the URL parser, not in this file,
+  // so a future refactor that hand-rolls host extraction would silently lose it
+  // and nothing else would notice.
+  it('the host allowlist is compared AFTER URL normalisation', () => {
+    for (const bad of [
+      'https://civitaі.com/x', // Cyrillic U+0456 -> xn--civita-uvf.com
+      'https://xn--civita-a0f.com/x', // explicit punycode lookalike
+      'https://evil.com\\.civitai.com', // backslash is a `/` in special schemes
+      'https://evil.com\\/civitai.com',
+      'https:/\\civitai.com/x', // not an absolute https:// prefix
+    ]) {
+      expect(linkHref(bad), `${bad} must be refused`).toBeNull();
+    }
+  });
+
+  // 🔴 THE OTHER HALF OF THE SAME PROPERTY, and it is the half that makes the
+  // block above meaningful: normalisation must not over-refuse a link that
+  // really is civitai. Without these, `linkHref = () => null` would satisfy
+  // every refusal assertion in this file.
+  it('still accepts a civitai URL that only NORMALISES to the allowlist', () => {
+    // Fullwidth 'ｃ' IDNA-maps to ASCII 'c', so this genuinely IS civitai.com.
+    expect(linkHref('https://ｃivitai.com/x')).toBe('https://civitai.com/x');
+    expect(linkHref('https://CIVITAI.COM/x')).toBe('https://civitai.com/x');
+    // A backslash after the host is a path separator, not an authority break.
+    expect(linkHref('https://civitai.com\\@evil.com')).toBe('https://civitai.com/@evil.com');
+  });
+
   it('🔴 a refused link keeps its TEXT and never shows the url', () => {
     // 🔴 ASSERTS THE PROPERTY, NOT AN EXACT SPAN LIST. An earlier version of
     // this test used `[click me](javascript:alert(1))` and demanded exact
