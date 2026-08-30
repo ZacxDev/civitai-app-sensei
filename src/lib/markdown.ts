@@ -23,7 +23,10 @@
  * the viewer sees today.
  *
  * 🔴 LINK TARGETS ARE ALLOWLISTED, NOT SANITISED. `linkHref` returns null for
- * anything that is not an absolute https URL on a civitai host. A model that
+ * anything that is not an absolute https URL on a civitai host **carrying no
+ * userinfo** — the `user:pw@` form is refused even when the host itself passes,
+ * because `URL.toString()` would otherwise hand back an href that still reads
+ * `https://evil.com@civitai.com/…`. A model that
  * hallucinates `javascript:` , `data:`, or an off-site tracker produces plain
  * text, not a link. The app's own system prompt tells the model to link
  * `https://civitai.com/models/<id>`, so this allowlist is the same claim
@@ -59,6 +62,19 @@ export function linkHref(raw: string): string | null {
   try {
     const u = new URL(trimmed);
     if (u.protocol !== 'https:') return null;
+    // 🔴 USERINFO IS REFUSED, and the case that motivates it is the one that
+    // PASSES the host check rather than the one that fails it. `new URL` puts
+    // everything before the `@` into `username`/`password`, so the classic
+    // `https://civitai.com@evil.com/x` already refuses on `hostname` =
+    // `evil.com`. The one that got through is the MIRROR of it —
+    // `https://evil.com@civitai.com/x` — whose hostname genuinely IS civitai
+    // and which `u.toString()` then hands back WITH the `evil.com@` still in
+    // it. The navigation target was never wrong, so this is not an open
+    // redirect; what it leaks is a link whose visible href (status bar,
+    // right-click → copy link) reads as though it points at the attacker,
+    // authored by a language model out of third-party catalog rows. A real
+    // civitai link never carries userinfo, so refusing it costs nothing.
+    if (u.username !== '' || u.password !== '') return null;
     return ALLOWED_HOSTS.has(u.hostname.toLowerCase()) ? u.toString() : null;
   } catch {
     return null;
