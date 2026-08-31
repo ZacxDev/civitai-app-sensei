@@ -83,14 +83,14 @@ function snapshotOf(resp) {
   return d && typeof d === 'object' && 'snapshot' in d ? d.snapshot : d;
 }
 
-async function submitAndPoll(blockToken, messages, declarations) {
+async function submitAndPoll(blockToken, messages, declarations, maxTokens) {
   const body = {
     kind: 'step',
     step: 'chat-completion',
     params: {
       model: SET.model,
       messages,
-      maxTokens: SET.maxTokens,
+      maxTokens,
       temperature: SET.temperature,
       ...(declarations.length ? { tools: declarations, toolChoice: 'auto' } : {}),
     },
@@ -126,7 +126,28 @@ async function submitAndPoll(blockToken, messages, declarations) {
  * and feed the results back. Bounded by SET.maxToolRounds so a loop cannot
  * spend without limit.
  */
-async function runTurn(blockToken, declarations, question) {
+async function runTurn(blockToken, declarations, question, repeat) {
+  /**
+   * 🔴 THE CACHE-BUSTER, AND WITHOUT IT `repeats` MEASURES NOTHING.
+   *
+   * An identical step input is REPLAYED from a server-side cache — measured:
+   * two submits of the same body returned the SAME provider-generated
+   * `tool_call` id (`call_dkitt…`), across different workflowIds, hours apart.
+   * A provider mints those ids randomly, so an identical id cannot be a
+   * re-sample. 🔴 AND THE REPLAY IS STILL CHARGED 4 BUZZ — a cached arm costs
+   * full price and returns one observation wearing three hats, which is worse
+   * than useless because the 3/3 rate reads as agreement.
+   *
+   * `maxTokens` is the one input that is semantically inert here: answers run
+   * ~300 tokens against a 2048 ceiling, so the ceiling is never reached and
+   * moving it by ±2 cannot change a generation — but it DOES change the input
+   * hash. Measured: 2049 produced a different id and different argument
+   * formatting, i.e. a genuinely fresh draw. Cost is unchanged (4 at both).
+   *
+   * The question text, the system prompt and the temperature are all untouched
+   * — perturbing any of those would change what is being measured.
+   */
+  const maxTokens = SET.maxTokens + (repeat - 1);
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: question.text },
@@ -141,7 +162,7 @@ async function runTurn(blockToken, declarations, question) {
 
   for (let round = 0; round <= SET.maxToolRounds; round++) {
     rounds++;
-    const { snap, buzz: b, error } = await submitAndPoll(blockToken, messages, declarations);
+    const { snap, buzz: b, error } = await submitAndPoll(blockToken, messages, declarations, maxTokens);
     buzz += b ?? 0;
     if (error) {
       errors.push(error);
@@ -211,6 +232,7 @@ async function runTurn(blockToken, declarations, question) {
     status: lastStatus,
     buzz,
     rounds,
+    maxTokens,
     toolCalled: toolCallsMade.length > 0,
     toolCalls: toolCallsMade,
     firstToolArgs: firstArgs,
@@ -279,7 +301,7 @@ const flush = () =>
 for (const q of SET.questions) {
   for (let rep = 1; rep <= SET.repeats; rep++) {
     const t0 = Date.now();
-    const r = await runTurn(blockToken, declarations, q);
+    const r = await runTurn(blockToken, declarations, q, rep);
     r.repeat = rep;
     r.seconds = Math.round((Date.now() - t0) / 1000);
     spent += r.buzz;
