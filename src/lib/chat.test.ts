@@ -87,6 +87,83 @@ describe('chat', () => {
       const stored = [{ id: 't', role: 'tool', content: '{"items":[]}', timestamp: 2 }];
       expect(deserializeMessages(stored)[0].role).toBe('tool');
     });
+
+    // ── LAYER 2's CORRECTION RECORD. ───────────────────────────────────────
+    //
+    // 🔴 IT IS STORED SO THE FIRE-RATE CAN BE READ OFF A REAL TRANSCRIPT. The
+    // ~22% estimate that motivated the feature comes from an 18-turn probe; the
+    // whole point of persisting this is to replace an estimate with a count. A
+    // field that silently failed to round-trip would leave the estimate as the
+    // only number anyone ever has, and nothing would say so.
+    it('🔴 round-trips the correction record', () => {
+      const messages: Message[] = [
+        {
+          id: 'c',
+          role: 'assistant',
+          content: 'corrected reply',
+          timestamp: 3,
+          correction: { rounds: 1, resolved: true },
+        },
+      ];
+      const stored = serializeMessages(messages);
+      expect(stored[0].correction).toEqual({ rounds: 1, resolved: true });
+      expect(deserializeMessages(stored)[0].correction).toEqual({ rounds: 1, resolved: true });
+    });
+
+    it('🔴 round-trips a FAILED correction, which is the case that matters most', () => {
+      // `resolved: false` says "we spent the viewer's Buzz and it did not work".
+      // A serializer that only kept truthy records would store every success and
+      // drop every failure — a fire-rate biased in exactly the direction that
+      // makes the feature look good.
+      const messages: Message[] = [
+        {
+          id: 'f',
+          role: 'assistant',
+          content: 'still wrong',
+          timestamp: 4,
+          correction: { rounds: 1, resolved: false },
+        },
+      ];
+      expect(deserializeMessages(serializeMessages(messages))[0].correction).toEqual({
+        rounds: 1,
+        resolved: false,
+      });
+    });
+
+    it('omits the key entirely when no round fired — the common turn is unchanged', () => {
+      const messages: Message[] = [
+        { id: 'p', role: 'assistant', content: 'plain', timestamp: 5 },
+      ];
+      expect(serializeMessages(messages)[0]).toEqual({
+        id: 'p',
+        role: 'assistant',
+        content: 'plain',
+        timestamp: 5,
+      });
+      expect(deserializeMessages(serializeMessages(messages))[0].correction).toBeUndefined();
+    });
+
+    it('🔴 refuses a malformed stored record rather than deserializing a half one', () => {
+      // The row decides the value — `deserializeMessages` casts what storage
+      // hands it. A `{ rounds: 0 }` or a missing `resolved` reaching a consumer
+      // as a present `correction` would read as "a correction happened" on a
+      // turn where none did.
+      const rows = [
+        { id: 'a', role: 'assistant', content: 'x', timestamp: 6, correction: { rounds: 0, resolved: true } },
+        { id: 'b', role: 'assistant', content: 'x', timestamp: 7, correction: { rounds: 1 } },
+        { id: 'c', role: 'assistant', content: 'x', timestamp: 8, correction: {} },
+      ] as unknown as Parameters<typeof deserializeMessages>[0];
+      for (const m of deserializeMessages(rows)) {
+        expect(m.correction, `row ${m.id} must not deserialize a malformed record`).toBeUndefined();
+      }
+      // Positive control: a WELL-FORMED row on the same code path does survive,
+      // so the four `undefined`s above are a fact about the rows and not about a
+      // clause that rejects everything.
+      const good = [
+        { id: 'd', role: 'assistant', content: 'x', timestamp: 9, correction: { rounds: 1, resolved: false } },
+      ];
+      expect(deserializeMessages(good)[0].correction).toEqual({ rounds: 1, resolved: false });
+    });
   });
 
   describe('deserializeMessages', () => {

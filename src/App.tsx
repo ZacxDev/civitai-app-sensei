@@ -14,7 +14,7 @@ import type { UseAppStorage } from '@civitai/blocks-react';
 import { Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
 
 import { palette, pageStyle, token, radius, mutedText } from './theme.js';
-import type { AppSettings, Message, Session } from './types.js';
+import type { AppSettings, CorrectionRecord, Message, Session } from './types.js';
 import { DEFAULT_SETTINGS, migrateSettings, NO_TOOLS_NOTICE } from './types.js';
 import { AI_WRITE_BUDGETED, BUZZ_READ_SELF, hasGenerateScope } from './scopes.js';
 import { createOrchestrator } from './lib/orchestrator.js';
@@ -26,7 +26,11 @@ import type { ResolvedResource } from './lib/mentions.js';
 import { generateMessageId, withSystemPrompt } from './lib/chat.js';
 import { generateTitle } from './lib/sessions.js';
 import { claimMessageWrite, ownsMessageWrite } from './lib/write-ownership.js';
-import { groundedIdsFromToolResult, mergeGroundedIds } from './lib/grounding.js';
+import {
+  groundedIdsFromToolResult,
+  mergeGroundedIds,
+  planCorrectionRound,
+} from './lib/grounding.js';
 
 import { ChatArea } from './components/ChatArea.js';
 import type { MentionPickerType } from './components/ResourceMention.js';
@@ -933,6 +937,40 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // the session being VIEWED and is emptied by a switch, while this belongs to
     // the turn and survives one. What the viewer was charged for does not stop
     // being owed to them because they clicked away.
+    // ── WHAT THIS TURN HAS GROUNDED, AS THE TURN ITSELF SEES IT. ──────────────
+    //
+    // 🔴 LAYER 2 CANNOT ASK REACT. `recordGrounded` is a `setState`, so the ids
+    // a tool round just returned are not readable from `groundedBySession`
+    // until a render has committed — and the correction decision is taken
+    // SYNCHRONOUSLY, microseconds after the round that grounded them. Reading
+    // state there would judge every reply against the set as it was BEFORE this
+    // turn's own lookups, so a turn that correctly looked a model up and cited
+    // it would be scored ungrounded and charged a corrective submit for being
+    // right. That is the exact "an empty grounded set is indistinguishable from
+    // a fabrication" failure this module's header warns about, arriving through
+    // the render clock instead of through a wrong path.
+    //
+    // Seeded from the closure's `groundedBySession` — the value at the render
+    // this turn was built from, i.e. everything EARLIER turns grounded (it is a
+    // declared dependency below, so it is this turn's true starting point) —
+    // and then accumulated in lock-step by `groundHere`.
+    const turnGrounded = new Set<string>(groundedBySession[activeSessionId] ?? []);
+    /**
+     * Record catalog-returned ids in BOTH places, from one call site.
+     *
+     * 🔴 ONE FUNCTION, NOT TWO CALLS AT EACH SITE. There are two consumers of
+     * the same fact — React state (which the renderer reads on the next commit)
+     * and this turn's own set (which Layer 2 reads now) — and a predicate
+     * duplicated across call sites regenerates the same bug at every site. If a
+     * future round forgets one of the two, the symptom is a correction round
+     * charged for a citation the catalog DID return: silent, billed, and
+     * indistinguishable from the model misbehaving.
+     */
+    const groundHere = (ids: readonly string[]) => {
+      for (const id of ids) turnGrounded.add(id);
+      recordGrounded(activeSessionId, ids);
+    };
+
     let streamedText = '';
     const turn: StreamingTurn = {
       sessionId: activeSessionId,
@@ -1037,8 +1075,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // was shown; `buildMentionExchange` serialises it with the same
         // `boundToolResponse({ items, truncated })` call `callTool` uses, which
         // is why one extractor reads both.
-        recordGrounded(
-          activeSessionId,
+        groundHere(
           mentionExchange.flatMap((m) =>
             m.role === 'tool' ? groundedIdsFromToolResult(m.content) : [],
           ),
@@ -1108,6 +1145,17 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // injector remembering to add itself.
       let toolMessages = toStepMessages(apiMessages).filter((m) => m.role === 'tool').length;
       let hitRoundCap = false;
+      // ── LAYER 2 BOOKKEEPING. See the decision block further down. ───────────
+      // Corrective re-submits this turn has spent. `planCorrectionRound` owns
+      // the ceiling; this is only the counter it is asked about, so the bound
+      // cannot be changed by editing this file.
+      let correctionRounds = 0;
+      // 🔴 PESSIMISTIC BY DEFAULT, AND THAT IS THE HONEST DIRECTION. It is set
+      // true only where a plan actually came back clean. Every other way out of
+      // the loop after a correction — the round cap, an abort — leaves it false,
+      // which reads as "we spent a round and cannot claim it worked". A default
+      // of `true` would record success for turns nobody ever re-checked.
+      let correctionResolved = false;
 
       for (;;) {
         // Stop must end the loop, not just the in-flight request. Without this
@@ -1117,7 +1165,96 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         if (aborted()) break;
 
         const calls = response.toolCalls ?? [];
-        if (calls.length === 0) break;
+        // ── THE CORRECTION ROUND (Layer 2). ─────────────────────────────────
+        //
+        // 🔴 THIS IS WHERE THE TURN'S PROSE IS FINAL, and that is why the
+        // decision lives at the `break` rather than after the loop. Reaching
+        // here with no calls means the model has stopped asking for tools and
+        // `response` holds the answer that is about to be rendered and
+        // persisted. Deciding after the loop would mean a corrective submit
+        // could only ever return prose — and the correction's whole instruction
+        // is "look it up", so the reply to it is very often a TOOL CALL. Handled
+        // here, that reply simply re-enters this loop and runs a normal,
+        // already-bounded tool round; handled after it, it would come back with
+        // `content: ''` and the viewer would be charged for a blank answer.
+        //
+        // 🔴 THE CAP IS `planCorrectionRound`'s, NOT THIS LOOP'S. `for(;;)`
+        // cannot be trusted to bound anything — the round cap above is the only
+        // other thing stopping it — so the ceiling is a constant in
+        // `lib/grounding.ts` and this passes it a counter. A second corrective
+        // submit is impossible without changing that module, and
+        // `grounding.test.ts` proves the refusal exhaustively.
+        //
+        // 🔴 IT CANNOT FIRE ON A ROUND-CAPPED TURN, for free rather than by a
+        // second guard: `hitRoundCap` breaks out of the loop above this point.
+        // Correcting there would ask the model to look something up in a payload
+        // that has no tool slot left, spending Buzz on an answer that structurally
+        // cannot be grounded.
+        //
+        // ⚠️ THE VIEWER BRIEFLY SEES BOTH TEXTS. `onChunk` has already streamed
+        // the ungrounded reply, and the corrected one appends to it — the same
+        // concatenation an ordinary tool round with interim prose already
+        // produces. The `setMessages` after this loop REPLACES the bubble with
+        // the final text, so the settled state is correct; Layer 1 gates the
+        // links throughout. Not "fixed" by clearing the bubble mid-turn, because
+        // that would delete prose the viewer has already been charged for.
+        if (calls.length === 0) {
+          const finalText = response.choices[0]?.message?.content ?? '';
+          const plan = planCorrectionRound(finalText, turnGrounded, correctionRounds);
+          if (!plan.correct) {
+            // 🔴 ONLY A PLAN THAT CAME BACK CLEAN COUNTS AS RESOLVED, and only
+            // when a round was actually spent. `cap-reached` is the failure
+            // case; `grounded`/`no-citations` on round 0 is not a success, it is
+            // a turn Layer 2 never touched.
+            if (correctionRounds > 0) correctionResolved = plan.reason !== 'cap-reached';
+            break;
+          }
+          correctionRounds += 1;
+          // Emitted at FIRE time, not at settle time: the submit below is
+          // charged the moment it is made, so an aborted or superseded
+          // correction still cost the viewer 4 Buzz and still has to be
+          // countable. A result event follows only if the turn survives.
+          depsRef.current.track('grounding_correction_round', {
+            ungrounded: plan.ungroundedIds.length,
+          });
+          apiMessages = [
+            ...apiMessages,
+            // 🔴 THE OFFENDING REPLY, VERBATIM, AS AN ASSISTANT TURN. Without it
+            // the corrective user turn below follows the previous USER turn with
+            // nothing between, so the payload claims the model never answered —
+            // and "your previous answer said X" then refers to a message the
+            // model cannot see.
+            { role: 'assistant', content: finalText },
+            // 🔴 `role: 'user'`, AND THE OTHER TWO ROLES ARE BOTH WRONG HERE.
+            //
+            //  - `'tool'` is the intuitive choice and is UNAVAILABLE. The host's
+            //    `chatMessageSchema` is a discriminated union that requires a
+            //    `tool_call_id` on a tool message, correlated against an id some
+            //    PRECEDING assistant turn declared — and `toStepMessages` drops
+            //    a tool message without one rather than letting the host
+            //    BAD_REQUEST the whole payload. In the measured failure the
+            //    model made NO tool call at all, so there is no id in existence
+            //    to correlate to and inventing one is rejected by the host.
+            //  - `'system'` is accepted but wrong twice over: `toStepMessages`
+            //    preserves only the FIRST system message when it trims to
+            //    `MAX_MESSAGES`, so a long conversation would silently drop the
+            //    correction while keeping the assistant turn it refers to, and
+            //    it would put a second instruction channel beside
+            //    `settings.systemPrompt` for the two to drift.
+            //
+            // 🔴 AND IT COSTS NOTHING FROM THE TOOL BUDGET, which is the reason
+            // the choice is also the cheap one. The host counts `role:'tool'`
+            // messages (`MAX_TOOL_RESULT_MESSAGES`, 3) in its `.superRefine`;
+            // this pair adds a `'user'` and an `'assistant'`, so `toolMessages`
+            // is deliberately NOT incremented and the corrected reply still has
+            // every lookup slot the original turn had left. It does consume two
+            // of the 32-message payload bound, which `toStepMessages` trims from
+            // the front while always keeping the system prompt.
+            { role: 'user', content: plan.message ?? '' },
+          ];
+          response = await submit();
+          continue;
+        }
 
         if (toolMessages + calls.length > toolsLib.MAX_TOOL_RESULT_MESSAGES) {
           // A terminal state with a user-visible explanation, not a silent stop
@@ -1177,7 +1314,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // `activeSessionId` is THIS TURN'S session — the closure's value, the
         // same one `claimMessageWrite` and both deferred writes use — never the
         // one the viewer may have switched to.
-        recordGrounded(activeSessionId, results.flatMap((r) => groundedIdsFromToolResult(r)));
+        groundHere(results.flatMap((r) => groundedIdsFromToolResult(r)));
 
         // A Stop landing while the tool POSTs were in flight must not be spent
         // on another submit.
@@ -1244,11 +1381,39 @@ export function App({ deps: depsOverride }: AppProps = {}) {
           : capNotice
         : response.choices[0].message.content;
 
+      // ── WHAT LAYER 2 DID TO THIS TURN, RECORDED ON THE TURN. ────────────────
+      //
+      // 🔴 ABSENT WHEN NO ROUND FIRED, which is the common case, so an ordinary
+      // turn's stored shape is unchanged. Present means Buzz was spent beyond
+      // the turn the viewer asked for, and `resolved` says whether it bought
+      // anything. The estimate that motivated this feature — ~22% of
+      // technique-style turns — comes from an 18-turn probe, so the point of
+      // this field and the events beside it is to replace that estimate with a
+      // measurement instead of re-deriving it from a second guess.
+      const correction: CorrectionRecord | undefined =
+        correctionRounds > 0
+          ? { rounds: correctionRounds, resolved: correctionResolved }
+          : undefined;
+      if (correction) {
+        depsRef.current.track('grounding_correction_result', {
+          rounds: correction.rounds,
+          resolved: correction.resolved,
+        });
+      }
+
       if (replyText) {
         setMessages((prev) => {
           const last = prev[prev.length - 1];
           if (last.id === assistantMsg.id) {
-            return [...prev.slice(0, -1), { ...last, content: replyText }];
+            // 🔴 THE RENDERED MESSAGE CARRIES THE RECORD TOO, not just the
+            // persisted one. They are written from the same `correction` value
+            // here so a reload cannot disagree with the live screen about
+            // whether a round fired — two separately-derived copies of one fact
+            // is how the two drift.
+            return [
+              ...prev.slice(0, -1),
+              { ...last, content: replyText, ...(correction ? { correction } : {}) },
+            ];
           }
           return prev;
         });
@@ -1263,6 +1428,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         role: 'assistant',
         content: replyText ?? '',
         timestamp: assistantMsg.timestamp,
+        ...(correction ? { correction } : {}),
       };
       // 🔴 ONLY IF THIS TURN STILL OWNS THE TRANSCRIPT. `updatedMessages` was
       // built when this turn started; writing it now would drop anything a newer
@@ -1376,6 +1542,14 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     raiseGate,
     persist,
     recordGrounded,
+    // 🔴 READ BY `turnGrounded`'s SEED, so it is a real dependency and not
+    // bookkeeping. Omitting it is the same class as `pendingMentions` below: the
+    // callback would close over the grounded map as it was when it was last
+    // built, so a turn following a lookup could judge its own citations against
+    // a set that predates the lookup — and charge a corrective submit for a
+    // citation the catalog genuinely returned. Cheap to include: the map only
+    // changes when a tool round adds an id nobody had seen.
+    groundedBySession,
     // 🔴 OMITTING THIS MADE THE WHOLE MENTION FEATURE INERT, AND EVERY TEST
     // STILL PASSED. `handleSend` reads `pendingMentions` to build the synthetic
     // tool exchange; without it here the callback closes over the array as it

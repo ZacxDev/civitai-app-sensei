@@ -72,6 +72,28 @@ describe('🔴 eval/run-eval.mjs grades with the SHIPPED predicate', () => {
     expect(code).not.toMatch(/toolResultIds\.has/);
   });
 
+  it("🔴 Layer 2's decision is callable from PLAIN NODE, not just from Vitest", () => {
+    // 🔴 THE MODULE LOADING IS NOT THE SAME CLAIM AS THE FUNCTION WORKING.
+    // The case above proves `run-eval.mjs` resolves the module; it imports three
+    // names and none of them is `planCorrectionRound`, so a Layer 2 export that
+    // used non-erasable syntax IN ITS SIGNATURE — a parameter property, an enum
+    // default — would still let that case pass while being uncallable from the
+    // instrument that has to measure it. Vitest transpiles TypeScript itself, so
+    // importing it from a test proves nothing about `node` either. This spawns
+    // the real runtime and reads the answer back.
+    const probe =
+      "import {planCorrectionRound,MAX_CORRECTION_ROUNDS} from './src/lib/grounding.ts';" +
+      "const p=planCorrectionRound('see https://civitai.com/models/7878 now',new Set(),0);" +
+      "process.stdout.write(JSON.stringify([p.correct,p.reason,p.ungroundedIds,MAX_CORRECTION_ROUNDS]));";
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', probe], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    });
+    expect(run.stderr).not.toMatch(/ERR_MODULE_NOT_FOUND|SyntaxError|ERR_UNSUPPORTED/);
+    expect(run.status).toBe(0);
+    expect(JSON.parse(run.stdout)).toEqual([true, 'ungrounded', ['7878'], 1]);
+  });
+
   it('🔴 `lib/grounding.ts` has NO imports, which is what keeps the runner loadable', () => {
     // Node's type stripping erases annotations; it does not resolve a `.js`
     // specifier that only exists as `.ts` on disk, which is how every other

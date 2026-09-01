@@ -246,3 +246,156 @@ export function mergeGroundedIds(
   }
   return fresh.length === 0 ? base : [...base, ...fresh];
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 2 — THE CORRECTION ROUND'S DECISION, AS A PURE FUNCTION.
+//
+// Layer 1 (`linkHref`) refuses the HREF of an ungrounded citation. It cannot
+// touch the SENTENCE: measured, S6 answered
+//
+//   - **Detail Tweaker LoRA** (https://civitai.com/models/7878) improves facial features.
+//
+// where 7878 is *Emilia (Re:Zero)* and Detail Tweaker LoRA actually lives at
+// 58390. Layer 1 turns that URL into plain text and the false NAME survives
+// verbatim — and in this measured case the URL was a BARE parenthesised URL, so
+// it was never an anchor for Layer 1 to refuse in the first place. The only
+// thing that can fix a false name is asking the model again, with the catalog.
+//
+// 🔴 THE DECISION LIVES HERE, NOT IN `App.tsx`, FOR THE SAME REASON THE
+// PREDICATE DOES. `eval/run-eval.mjs` must be able to score "would Layer 2 have
+// fired on this turn?" with the SHIPPED rule rather than a second copy of it —
+// that is the whole argument of this module's header, one layer up. Everything
+// below is therefore import-free, erasable-syntax-only, and free of React,
+// storage and the wire.
+//
+// 🔴 THE CAP IS PART OF THE DECISION, NOT PART OF THE CALLER. A bound enforced
+// by a `for` loop in `App.tsx` is a bound nobody can unit-test and one refactor
+// can lose. `roundsUsed` is an argument, the ceiling is a constant here, and
+// "may I correct again?" has exactly one answer with one place to read it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * How many corrective re-submits ONE turn may spend. Hard, and deliberately 1.
+ *
+ * 🔴 EACH ROUND COSTS A REAL SUBMIT — 4 Buzz measured at `maxTokens: 2048` —
+ * charged to the viewer, who did not ask for it. One is the whole budget: if the
+ * corrected reply is still ungrounded we accept it and let Layer 1 gate its
+ * links, which is a strictly better position than the one we started in and
+ * cannot cost anything further. Raising this number is a SPEND decision, not a
+ * quality knob, and it must be argued in Buzz.
+ */
+export const MAX_CORRECTION_ROUNDS = 1;
+
+/**
+ * How many ids the corrective message names before it summarises the rest.
+ *
+ * The host caps one message at 8,000 chars and `toStepMessages` truncates
+ * silently at that bound — mid-sentence, which would cut the instruction off
+ * after the id list and leave the model with a complaint and no task. Bounding
+ * the list keeps the instruction intact no matter how many ids an answer
+ * invented.
+ */
+const MAX_LISTED_IDS = 12;
+
+/** Why {@link planCorrectionRound} decided the way it did. */
+export type CorrectionReason =
+  /** The reply cited no model at all. Nothing to correct, nothing to spend. */
+  | 'no-citations'
+  /** Every id it cited came out of this conversation's tool rounds. */
+  | 'grounded'
+  /** Ungrounded ids, and a round left to spend on them. THE ONLY FIRING CASE. */
+  | 'ungrounded'
+  /** Ungrounded ids, but this turn has already spent its correction round. */
+  | 'cap-reached';
+
+export interface CorrectionPlan {
+  /** Whether the caller should spend a corrective re-submit. */
+  readonly correct: boolean;
+  readonly reason: CorrectionReason;
+  /** The ungrounded ids, unique and in first-cited order. May be non-empty
+   *  even when `correct` is false — that is exactly the `cap-reached` case, and
+   *  it is what a caller records to say the correction did NOT succeed. */
+  readonly ungroundedIds: readonly string[];
+  /** The corrective turn's text, or `null` when nothing should be sent. */
+  readonly message: string | null;
+}
+
+/**
+ * The corrective instruction, given the ids that could not be verified.
+ *
+ * 🔴 IT NAMES NO TOOL. Declarations are FETCHED from the host, never authored
+ * by this app (`App.tsx`: "a model must not be shown a contract the route does
+ * not enforce"), so hard-coding `search_models` here would put a tool name in
+ * the model's instructions that the route is free to rename or withdraw. The
+ * model already has the real declarations in the same payload; this only has to
+ * tell it to USE them.
+ *
+ * 🔴 AND IT CONTAINS NO MODEL URL, WHICH IS A GUARD RATHER THAN STYLE. This
+ * string is appended to `apiMessages`, and anything appended there is a
+ * candidate for being read back by {@link citedModelIds} — by this function's
+ * own tests, by the eval, or by a future caller that scans the whole payload.
+ * A message that spelled the ids as `civitai.com/models/<id>` would be
+ * self-citing: the instruction to stop citing them would itself parse as a
+ * citation of them. The ids are listed as bare numbers for that reason.
+ */
+export function correctionMessage(ungroundedIds: readonly string[]): string {
+  const shown = ungroundedIds.slice(0, MAX_LISTED_IDS);
+  const extra = ungroundedIds.length - shown.length;
+  const list = shown.join(', ') + (extra > 0 ? `, and ${extra} more` : '');
+  return (
+    `Your previous answer referred to Civitai model ids that no lookup in this ` +
+    `conversation returned: ${list}. An unverified id is very often a real model ` +
+    `under a completely different name, so the link would send the reader ` +
+    `somewhere unrelated with nothing on screen to warn them.\n\n` +
+    `Look each of those models up with the model-search tool you have been given, ` +
+    `then write the answer again using ONLY ids the tool returned this turn. ` +
+    `If the tool cannot find one, say so plainly and name the model with no link ` +
+    `and no id rather than guessing.`
+  );
+}
+
+/**
+ * Decide whether a finished reply earns a corrective re-submit, and with what.
+ *
+ * `text` is the turn's FINAL assistant text — the thing about to be rendered and
+ * persisted. `grounded` is the conversation's accumulated tool-returned ids,
+ * INCLUDING everything this turn's own rounds added. `roundsUsed` is how many
+ * corrective re-submits this turn has already spent.
+ *
+ * 🔴 THE TWO NO-FIRE CASES ARE DISTINGUISHED, NOT COLLAPSED, AND THE REASON IS
+ * COST. `ungroundedModelIds` returns `[]` both for "cited nothing" and for
+ * "cited only grounded ids", and a caller only needs the boolean — but a guard
+ * that fires on every turn would silently DOUBLE the Buzz cost of the app, and
+ * the only way to notice is to be able to count the two silent cases apart in
+ * the field. They get their own reasons so the fire-rate is measurable rather
+ * than inferred.
+ *
+ * 🔴 THE CAP IS CHECKED AFTER THE GROUNDING TEST, NOT BEFORE. Checking it first
+ * would report `cap-reached` for a corrected reply that came back perfectly
+ * grounded — i.e. it would record the SUCCESS case as the failure case, and the
+ * observability this exists to provide would be exactly inverted.
+ */
+export function planCorrectionRound(
+  text: string,
+  grounded: GroundedModelIds,
+  roundsUsed: number,
+): CorrectionPlan {
+  const ungroundedIds = ungroundedModelIds(text, grounded);
+  if (ungroundedIds.length === 0) {
+    return {
+      correct: false,
+      reason: citedModelIds(text).length === 0 ? 'no-citations' : 'grounded',
+      ungroundedIds,
+      message: null,
+    };
+  }
+  if (roundsUsed >= MAX_CORRECTION_ROUNDS) {
+    return { correct: false, reason: 'cap-reached', ungroundedIds, message: null };
+  }
+  return {
+    correct: true,
+    reason: 'ungrounded',
+    ungroundedIds,
+    message: correctionMessage(ungroundedIds),
+  };
+}
