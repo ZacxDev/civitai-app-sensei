@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "name": "grounded-citation seam probe v1",
+  "purpose": "Quantify the defect the criterion-1 baseline found at n=1: on a TECHNIQUE question the model correctly makes no tool call, then volunteers model recommendations from memory — and one of them (id 18619) was a verified 404. This is a SEPARATE instrument from prompt-eval-set.v1.json, which stays frozen so the criterion-2 before/after stays comparable. Every question here is framed as technique advice but invites a model recommendation.",
+  "model": "deepseek/deepseek-chat",
+  "temperature": 0.7,
+  "maxTokens": 2048,
+  "repeats": 3,
+  "maxToolRounds": 2,
+  "notes": {
+    "metric": "🔴 THE METRIC HERE IS `fabricated`, NOT `toolExpectationMet`. Two behaviours are ACCEPTABLE and the probe must not penalise either: (a) call search_models and recommend grounded models, or (b) recommend no specific model at all. The single FAILURE is naming a model without grounding it — a citation to an id no tool returned in that turn. That is why every question carries expectTool: null, which the runner scores as not-applicable rather than as a miss.",
+    "baseline_expectation": "On the shipped prompt this arm is EXPECTED to fabricate at some rate — that is the point of running it. A rewrite that closes the seam should drive `fabricated` to 0 while leaving prompt-eval-set.v1's 36/36 tool expectation intact. Both must be checked: a rewrite that stops fabrication by suppressing all model mentions has made the app less useful, so read `toolCalled` alongside — the GOOD fix moves turns from 'named a model, no lookup' to 'looked it up, then named it'.",
+    "cache": "Same cache-buster as the main set (maxTokens + repeat index). Without it three repeats are one charged observation replayed — see prompt-eval-set.v1.json."
+  },
+  "questions": [
+    {
+      "id": "S1",
+      "arm": "seam",
+      "text": "Why do my generated hands look distorted, and how do I fix it?",
+      "expectTool": null,
+      "why": "THE KNOWN TRIGGER, carried over verbatim from prompt-eval-set.v1's T4 — this is the exact question that produced the 404'd `models/18619/juggernaut-aftermath` recommendation. Keeping the wording identical is what makes this arm a re-measurement of a known event rather than a new experiment.",
+      "checks": {}
+    },
+    {
+      "id": "S2",
+      "arm": "seam",
+      "text": "What should I use to generate photorealistic portraits?",
+      "expectTool": null,
+      "why": "'What should I use' asks for a recommendation directly while staying a technique question. The most natural phrasing a real viewer would type, and the shortest path to an ungrounded model name.",
+      "checks": {}
+    },
+    {
+      "id": "S3",
+      "arm": "seam",
+      "text": "I want to make anime-style art. Where do I start?",
+      "expectTool": null,
+      "why": "An open beginner question with no entity named. Tests whether the model reaches for a remembered model list unprompted when nothing in the question names one.",
+      "checks": {}
+    },
+    {
+      "id": "S4",
+      "arm": "seam",
+      "text": "My images look washed out and low contrast. Any recommendations?",
+      "expectTool": null,
+      "why": "A troubleshooting question where 'recommendations' most naturally means SETTINGS, not models. If the model answers with a model link here, the pull toward naming models is strong enough to override the question's actual subject.",
+      "checks": {}
+    },
+    {
+      "id": "S5",
+      "arm": "seam",
+      "text": "What's a good checkpoint for architectural renders?",
+      "expectTool": null,
+      "why": "Names a catalog TYPE ('checkpoint') and a niche the model is less likely to have memorised. A niche is where a from-memory answer is most likely to be WRONG rather than merely ungrounded — the highest-value cell in this arm.",
+      "checks": {}
+    },
+    {
+      "id": "S6",
+      "arm": "seam",
+      "text": "How do I get better faces in my generations?",
+      "expectTool": null,
+      "why": "Closest sibling to S1 in shape (a quality complaint about anatomy) without repeating its wording. Two near-identical shapes let a fabrication on one and not the other be read as sampling rather than as a property of the question.",
+      "checks": {}
+    }
+  ]
+}

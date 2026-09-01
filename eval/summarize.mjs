@@ -34,12 +34,18 @@ function summarise(doc) {
       expectTool: rs[0].expectTool,
       n,
       toolCalled: rs.filter((r) => r.toolCalled).length,
-      expectationMet: rs.filter((r) => r.toolExpectationMet).length,
+      // null expectTool (seam probe) => not scored on tool expectation at all
+      expectationMet:
+        rs[0].expectTool === null ? null : rs.filter((r) => r.toolExpectationMet).length,
       argsOk: rs.filter((r) => r.argsIncludeOk !== false && r.argsOmitOk !== false).length,
       mentionsOk: rs[0].answerMentionsOk === null
         ? null
         : rs.filter((r) => r.answerMentionsOk).length,
-      // null = no citations in that turn; only turns that CITED are judged
+      // 🔴 Only turns that actually CITED are judged. A turn with no citations is
+      // null = NOT APPLICABLE, never "ungrounded" — counting it as a miss made the
+      // technique rows read 0/3 as though they had failed, when they had simply
+      // named no model. `cited` is the denominator that makes `grounded` readable.
+      cited: rs.filter((r) => r.groundedCitations !== null).length,
       fabricated: rs.filter((r) => r.groundedCitations === false).length,
       grounded: rs.filter((r) => r.groundedCitations === true).length,
       withheld: n - observed.length,
@@ -57,21 +63,27 @@ for (const f of files) {
   console.log(`model=${doc.model} temp=${doc.temperature} repeats=${doc.repeats} ` +
     `promptChars=${doc.systemPromptChars} buzz=${doc.buzzSpent}`);
   console.log(
-    '\nQ    arm        expectTool  toolCalled  met   argsOk  mentions  grounded  fabricated  withheld'
+    '\nQ    arm        expectTool  toolCalled  met   mentions  cited  grounded  FABRICATED  withheld'
   );
   for (const r of rows) {
     console.log(
       `${r.qid.padEnd(4)} ${r.arm.padEnd(10)} ${String(r.expectTool).padEnd(11)} ` +
-        `${`${r.toolCalled}/${r.n}`.padEnd(11)} ${`${r.expectationMet}/${r.n}`.padEnd(5)} ` +
-        `${`${r.argsOk}/${r.n}`.padEnd(7)} ` +
+        `${`${r.toolCalled}/${r.n}`.padEnd(11)} ` +
+        `${(r.expectationMet === null ? '-' : `${r.expectationMet}/${r.n}`).padEnd(5)} ` +
         `${(r.mentionsOk === null ? '-' : `${r.mentionsOk}/${r.n}`).padEnd(9)} ` +
-        `${`${r.grounded}/${r.n}`.padEnd(9)} ${String(r.fabricated).padEnd(11)} ${r.withheld}`
+        `${String(r.cited).padEnd(6)} ` +
+        `${(r.cited === 0 ? '-' : `${r.grounded}/${r.cited}`).padEnd(9)} ` +
+        `${String(r.fabricated).padEnd(11)} ${r.withheld}`
     );
   }
-  const arms = ['lookup', 'technique', 'identity'];
+  const arms = [...new Set(rows.map((r) => r.arm))];
   console.log('\nper-arm tool-expectation rate:');
   for (const a of arms) {
-    const rs = rows.filter((r) => r.arm === a);
+    const rs = rows.filter((r) => r.arm === a && r.expectationMet !== null);
+    if (!rs.length) {
+      console.log(`  ${a.padEnd(10)} n/a (not scored on tool expectation)`);
+      continue;
+    }
     const met = rs.reduce((s, r) => s + r.expectationMet, 0);
     const tot = rs.reduce((s, r) => s + r.n, 0);
     console.log(`  ${a.padEnd(10)} ${met}/${tot}  (${Math.round((100 * met) / tot)}%)`);

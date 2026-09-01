@@ -237,7 +237,13 @@ async function runTurn(blockToken, declarations, question, repeat) {
     toolCalls: toolCallsMade,
     firstToolArgs: firstArgs,
     expectTool: question.expectTool,
-    toolExpectationMet: toolCallsMade.length > 0 === question.expectTool,
+    // 🔴 `expectTool: null` means BOTH behaviours are acceptable and the question
+    // is not scored on it — the seam probe grades on `groundedCitations` instead,
+    // because there "looked it up first" and "named no model" are both correct and
+    // only "named a model without grounding it" is the defect. Scoring null as a
+    // miss would mark the desired fix as a regression.
+    toolExpectationMet:
+      question.expectTool === null ? null : toolCallsMade.length > 0 === question.expectTool,
     argsIncludeOk: checks.toolArgsMustInclude
       ? checks.toolArgsMustInclude.every((k) => argKeys.includes(k))
       : null,
