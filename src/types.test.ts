@@ -49,6 +49,28 @@ describe('DEFAULT_SYSTEM_PROMPT — must describe the retrieval the app actually
     expect(DEFAULT_SYSTEM_PROMPT).toMatch(/never invent/i);
   });
 
+  it('🔴 is the prompt the eval actually measured — 1831 chars, unedited', () => {
+    // The shipped default is a MEASURED artifact: byte-identical to
+    // `eval/prompt.rewrite.v4.txt` as `eval/run-eval.mjs` sent it (that runner
+    // `.trim()`s the file, and records `systemPromptChars: 1831` in
+    // `eval/results/recommend-rewrite-v4-2026-09-01.json`). The recorded
+    // before/after — 14/24 → 23/24 lookups, 7 → 0 ungrounded citations — is
+    // attributable to THIS text and no other.
+    //
+    // 🔴 This is what makes an in-place edit loud instead of silent. With no
+    // `--prompt-file`, `run-eval.mjs` reads this constant straight out of
+    // `src/types.ts`, so an edited default would be graded against the same
+    // recorded baseline and the comparison would quietly stop meaning anything.
+    // If this assertion fails, do not update the number — re-run the eval.
+    expect(DEFAULT_SYSTEM_PROMPT).toHaveLength(1831);
+
+    // The two clauses v4 added, which are what the measured gains are ascribed
+    // to: recommendation is a lookup (the citation fix), and the assistant
+    // states whose site it is (the identity criterion, 6/6 of released turns).
+    expect(DEFAULT_SYSTEM_PROMPT).toContain('Recommending a model is a catalog question');
+    expect(DEFAULT_SYSTEM_PROMPT).toMatch(/answer as Civitai's own assistant/i);
+  });
+
   it('POSITIVE CONTROL — the legacy prompt this replaces DOES trip both guards', () => {
     // Without this, the two `not.toContain` assertions above would pass on any
     // string that merely omits the phrases — including an empty prompt. This
@@ -82,6 +104,37 @@ describe('DEFAULT_SYSTEM_PROMPT — must describe the retrieval the app actually
     expect(v010, 'the 0.1.0 default must be in the legacy list').toBeDefined();
     expect(v010).not.toMatch(/never invent/i);
     expect(migrateSettings({ ...DEFAULT_SETTINGS, systemPrompt: v010! }).systemPrompt).toBe(
+      DEFAULT_SYSTEM_PROMPT,
+    );
+  });
+
+  it('🔴 the 0.1.6–0.1.11 default is in the legacy list — it is the one most viewers hold', () => {
+    // The prompt this release supersedes. It shipped for six versions and is
+    // the CURRENT stored value for anyone who opened Settings during them, so
+    // omitting it from the list is the whole migration silently doing nothing
+    // for the population it exists to serve.
+    //
+    // Identified by content, not by index — the list is documented "newest
+    // last" and this entry was appended, so `[N-1]` would rot the moment
+    // another default lands. Two predicates are needed because ONE does not
+    // separate it: it is the only legacy entry describing the tool loop
+    // ("tools you have been given" — the two older defaults predate it), and
+    // the negative predicate keeps it distinct from the current default and any
+    // successor built on it, which carry the recommendation clause it lacks.
+    const matches = LEGACY_DEFAULT_SYSTEM_PROMPTS.filter(
+      (p) =>
+        p.includes('tools you have been given') &&
+        !p.includes('Recommending a model is a catalog question'),
+    );
+    // 🔴 Assert the discriminator still resolves to exactly one entry. A `find`
+    // would quietly pick the first of several and keep passing while testing
+    // something else — the failure mode the positive control above was written
+    // for after an index reference drifted.
+    expect(matches, 'the 0.1.6–0.1.11 default must be uniquely identifiable').toHaveLength(1);
+
+    const superseded = matches[0]!;
+    expect(superseded).not.toBe(DEFAULT_SYSTEM_PROMPT);
+    expect(migrateSettings({ ...DEFAULT_SETTINGS, systemPrompt: superseded }).systemPrompt).toBe(
       DEFAULT_SYSTEM_PROMPT,
     );
   });
