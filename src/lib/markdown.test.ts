@@ -150,3 +150,178 @@ describe('🔴 linkHref — the allowlist is the security boundary', () => {
     expect(JSON.stringify(parseInline('[x](https://evil.com/pwn)'))).toContain('"x"');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 THE GROUNDED-CITATION GATE, AT THE PARSER.
+//
+// Every id below is a REAL one from the 18-turn seam probe
+// (`eval/results/seam-baseline-2026-08-31.json`). They are pairwise distinct and
+// distinct from every id the cases above already name (1510946, 4384), so a
+// mutant that hardcodes any single literal cannot survive.
+//
+// 🔴 THE THREE ARGUMENTS ARE THREE DIFFERENT QUESTIONS AND THE SUITE ASSERTS ALL
+// THREE:  `undefined` = "no grounding context, behave exactly as before";
+// `new Set()` = "this conversation grounded nothing, refuse every model link";
+// a populated set = "refuse the ones not in it". Collapsing the first two makes
+// the guard inert in precisely the case it was built for.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const RV = '4201'; // Realistic Vision — real id, correctly named
+const DEAD = '4823'; // 404 — no such model
+const DEAD2 = '18619'; // 404 — no such model
+const EMILIA = '7878'; // real: Emilia (Re:Zero), cited as "Detail Tweaker LoRA"
+const CARDOS = '22220'; // real: CarDos Animated, cited as "Face Slider"
+
+describe('🔴 linkHref — the grounded-citation gate', () => {
+  it('keeps a link whose id a tool round returned', () => {
+    expect(linkHref(`https://civitai.com/models/${RV}`, new Set([RV]))).toBe(
+      `https://civitai.com/models/${RV}`,
+    );
+    // …including through the slug the model actually emitted.
+    expect(
+      linkHref(`https://civitai.com/models/${RV}/realistic-vision-v50`, new Set([RV])),
+    ).toBe(`https://civitai.com/models/${RV}/realistic-vision-v50`);
+  });
+
+  it('🔴 REFUSES an id no tool returned, while the grounded one beside it survives', () => {
+    const grounded = new Set([RV]);
+    expect(linkHref(`https://civitai.com/models/${RV}`, grounded)).toBeTruthy();
+    expect(linkHref(`https://civitai.com/models/${DEAD}`, grounded)).toBeNull();
+    expect(linkHref(`https://civitai.com/models/${DEAD2}`, grounded)).toBeNull();
+  });
+
+  it('🔴 an EMPTY grounded set refuses every model link — the measured no-tool turn', () => {
+    expect(linkHref(`https://civitai.com/models/${EMILIA}`, new Set())).toBeNull();
+    expect(linkHref(`https://civitai.com/models/${RV}`, new Set())).toBeNull();
+  });
+
+  it('🔴 NO grounded set supplied is UNCHANGED legacy behaviour, not an empty set', () => {
+    // Every pre-grounding caller must keep working, or the guard retroactively
+    // refuses links in contexts that have no tool results to judge them against.
+    expect(linkHref(`https://civitai.com/models/${EMILIA}`)).toBe(
+      `https://civitai.com/models/${EMILIA}`,
+    );
+    expect(linkHref(`https://civitai.com/models/${EMILIA}`, undefined)).toBe(
+      `https://civitai.com/models/${EMILIA}`,
+    );
+    expect(linkHref(`https://civitai.com/models/${EMILIA}`, null)).toBe(
+      `https://civitai.com/models/${EMILIA}`,
+    );
+  });
+
+  it('a NON-model civitai link is untouched by grounding, even with an empty set', () => {
+    // The grounded set answers "did the model invent this id". A profile page
+    // has no id to invent, so the host allowlist remains the whole decision.
+    expect(linkHref('https://civitai.com/user/someone', new Set())).toBe(
+      'https://civitai.com/user/someone',
+    );
+    expect(linkHref('https://civitai.com/images/1234567', new Set())).toBe(
+      'https://civitai.com/images/1234567',
+    );
+  });
+
+  it('🔴 an UPPERCASE path cannot walk past the gate', () => {
+    // `new URL` lowercases the HOST and leaves the PATH alone, so a
+    // case-sensitive id pattern would read this as "not a model link".
+    expect(linkHref(`https://civitai.com/MODELS/${DEAD}`, new Set())).toBeNull();
+    expect(linkHref(`https://civitai.com/MODELS/${RV}`, new Set([RV]))).toBeTruthy();
+  });
+
+  it('🔴 grounding NARROWS the host allowlist and can never widen it', () => {
+    // A grounded id does not buy a hostile URL anything: every existing refusal
+    // still refuses with the id in the set.
+    const grounded = new Set([RV]);
+    expect(linkHref(`http://civitai.com/models/${RV}`, grounded)).toBeNull();
+    expect(linkHref(`https://evil.com/models/${RV}`, grounded)).toBeNull();
+    expect(linkHref(`https://evil.com@civitai.com/models/${RV}`, grounded)).toBeNull();
+    expect(linkHref(`javascript:alert(1)//civitai.com/models/${RV}`, grounded)).toBeNull();
+    expect(linkHref(`https://civitai.com.evil.com/models/${RV}`, grounded)).toBeNull();
+  });
+
+  it('malformed and edge hrefs stay refused with a grounded set in hand', () => {
+    expect(linkHref('https://', new Set([RV]))).toBeNull();
+    expect(linkHref('', new Set([RV]))).toBeNull();
+    expect(linkHref('   ', new Set([RV]))).toBeNull();
+    // A model id is digits. `4201abc` is not the same id as `4201`, but the
+    // path still starts with one, so it is gated on `4201` rather than waved
+    // through — refusing is the safe direction for a URL nobody can resolve.
+    expect(linkHref('https://civitai.com/models/4201abc', new Set())).toBeNull();
+    expect(linkHref('https://civitai.com/models/abc', new Set())).toBe(
+      'https://civitai.com/models/abc',
+    );
+  });
+});
+
+describe('🔴 parseMarkdown — the gate reaches every span, not just paragraphs', () => {
+  it('🔴 refuses ONE ungrounded link in a LIST and keeps the grounded ones', () => {
+    // The measured shape is a list. A gate threaded only into the paragraph
+    // path passes its own unit tests while every real answer goes ungated.
+    const src =
+      `1. [Realistic Vision](https://civitai.com/models/${RV})\n` +
+      `2. [Deliberate](https://civitai.com/models/${DEAD})`;
+    const blocks = parseMarkdown(src, new Set([RV]));
+    const items = (blocks[0] as { kind: 'ol'; items: unknown[][] }).items;
+
+    expect(items[0]).toEqual([
+      { kind: 'link', text: 'Realistic Vision', href: `https://civitai.com/models/${RV}` },
+    ]);
+    // 🔴 THE TEXT SURVIVES, THE HREF DOES NOT. The viewer still reads the name
+    // the model wrote; they just cannot be sent to an unrelated model by it.
+    expect(items[1]).toEqual([{ kind: 'text', text: 'Deliberate' }]);
+  });
+
+  it('🔴 the UNORDERED list path is gated too', () => {
+    const blocks = parseMarkdown(`- [Deliberate](https://civitai.com/models/${DEAD})`, new Set([RV]));
+    expect((blocks[0] as { kind: 'ul'; items: unknown[][] }).items[0]).toEqual([
+      { kind: 'text', text: 'Deliberate' },
+    ]);
+  });
+
+  it('🔴 the PARAGRAPH path is gated too', () => {
+    const blocks = parseMarkdown(`Try [Deliberate](https://civitai.com/models/${DEAD}) next.`, new Set([RV]));
+    expect((blocks[0] as { kind: 'para'; spans: unknown[] }).spans).toEqual([
+      { kind: 'text', text: 'Try ' },
+      { kind: 'text', text: 'Deliberate' },
+      { kind: 'text', text: ' next.' },
+    ]);
+  });
+
+  it('🔴 THE COVERAGE BOUNDARY: the measured S6 shape has no LINK to refuse', () => {
+    // Verbatim from the probe. Bare parenthesised URLs are NOT markdown links,
+    // so this renderer never produced an `<a>` for them and the gate has
+    // nothing to refuse — the ids arrive as inert text either way. Recorded as
+    // an assertion rather than left implicit, because "the gate covers the
+    // measured defect" would otherwise read as covering all six ids when it
+    // covers the four that were emitted as links (4201, 4384, 4823, 18619).
+    // Closing the remaining shape means changing what the answer SAYS, which is
+    // a prompt or retry decision, not a render one.
+    const src =
+      `- **Detail Tweaker LoRA** (https://civitai.com/models/${EMILIA}) improves facial features.\n` +
+      `- **Face Slider** (https://civitai.com/models/${CARDOS}) allows fine-tuning facial expressions.`;
+    const gated = parseMarkdown(src, new Set());
+    const ungated = parseMarkdown(src, undefined);
+    expect(gated).toEqual(ungated);
+    // Positive control on that equality: it holds because there is no `link`
+    // span anywhere, not because the gate is inert.
+    const kinds = (gated[0] as { items: Array<Array<{ kind: string }>> }).items.flat().map((s) => s.kind);
+    expect(kinds).not.toContain('link');
+  });
+
+  it('an id in PROSE but not in a link is left exactly as written', () => {
+    const src = `Model ${DEAD2} is often recommended, but I have not looked it up.`;
+    expect(parseMarkdown(src, new Set())).toEqual(parseMarkdown(src, undefined));
+    expect(parseMarkdown(src, new Set())).toEqual([
+      { kind: 'para', spans: [{ kind: 'text', text: src }] },
+    ]);
+  });
+
+  it('positive control: with the id grounded, the SAME list renders a real link', () => {
+    // Without this, every refusal above is satisfied by a parser that never
+    // produced a link in the first place.
+    const src = `1. [Deliberate](https://civitai.com/models/${DEAD})`;
+    const items = (parseMarkdown(src, new Set([DEAD])) as Array<{ items: unknown[][] }>)[0].items;
+    expect(items[0]).toEqual([
+      { kind: 'link', text: 'Deliberate', href: `https://civitai.com/models/${DEAD}` },
+    ]);
+  });
+});

@@ -32,6 +32,12 @@ function renderChat(props: Partial<ChatAreaProps> = {}) {
       pendingMentions={[]}
       onPickMention={vi.fn()}
       onRemoveMention={vi.fn()}
+      // Empty rather than absent, because the prop is REQUIRED and an empty set
+      // is the honest value for a conversation that has grounded nothing. These
+      // cases render no model links, so it changes nothing they assert; the
+      // grounding behaviour itself is pinned in `MessageBubble.test.tsx`,
+      // `lib/markdown.test.ts` and `citation-grounding.e2e.test.tsx`.
+      groundedModelIds={new Set<string>()}
       {...props}
     />,
   );
@@ -254,6 +260,7 @@ describe('the mention affordance in the composer (clawgate #434, criterion 3)', 
       pendingMentions: [] as ResolvedResource[],
       onPickMention,
       onRemoveMention: vi.fn(),
+      groundedModelIds: new Set<string>(),
     };
     const { rerender } = render(<ChatArea sendGate={null} {...props} />);
     fireEvent.click(screen.getByTestId('add-mention-button'));
@@ -277,6 +284,7 @@ describe('the mention affordance in the composer (clawgate #434, criterion 3)', 
       pendingMentions: [] as ResolvedResource[],
       onPickMention: vi.fn(),
       onRemoveMention: vi.fn(),
+      groundedModelIds: new Set<string>(),
     };
     const { rerender } = render(<ChatArea isStreaming={false} {...props} />);
     fireEvent.click(screen.getByTestId('add-mention-button'));

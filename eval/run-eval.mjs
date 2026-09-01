@@ -19,6 +19,29 @@
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+/**
+ * 🔴 THE SHIPPED PREDICATE, IMPORTED — NOT A COPY OF IT.
+ *
+ * This file used to carry its own inline `matchAll(/civitai\.com\/models\/(\d+)/g)`
+ * and its own `cited.every(id => toolResultIds.has(id))`. Two copies of one rule
+ * is the exact seam that lets an eval stay green while the shipped path differs:
+ * the runner would go on measuring ITS rule, the renderer would enforce another,
+ * and nothing in either would disagree out loud. The whole point of this
+ * instrument is to measure the mechanism the app actually runs, so it imports
+ * the module the app actually imports — `src/lib/grounding.ts`, which the
+ * renderer's `linkHref` calls on every link.
+ *
+ * The `.ts` specifier is deliberate and needs no build step: Node has stripped
+ * types on import since 23.6 (this box runs v26), and that module is written in
+ * erasable-syntax-only TypeScript with ZERO imports of its own specifically so
+ * this line works. If you add an import to it, THIS runner is what breaks, and
+ * the app's test suite will not notice.
+ */
+import {
+  citedModelIds,
+  groundedIdsFromToolPayload,
+  ungroundedModelIds,
+} from '../src/lib/grounding.ts';
 
 const BASE = process.env.CIVITAI_BASE ?? 'https://civitai.com';
 const SLUG = process.env.SENSEI_SLUG ?? 'sensei';
@@ -199,9 +222,13 @@ async function runTurn(blockToken, declarations, question, repeat) {
         token: blockToken,
       });
       if (exec.status !== 200) errors.push(`tool ${exec.status}`);
-      for (const item of exec.json?.result?.items ?? []) {
-        if (item?.id != null) toolResultIds.add(String(item.id));
-      }
+      // 🔴 THE SAME EXTRACTOR THE APP FEEDS ITS GROUNDED SET FROM. It walks for
+      // `items[]` rather than reading `result.items` directly, so it answers
+      // identically on the live envelope this runner sees and on the bare
+      // `{ items: [...] }` the app's `callTool` re-serialises — the two callers
+      // see the same data at different depths, and a fixed path would silently
+      // ground NOTHING for one of them while looking perfectly healthy.
+      for (const id of groundedIdsFromToolPayload(exec.json)) toolResultIds.add(id);
       messages.push({
         role: 'tool',
         tool_call_id: c.id,
@@ -223,8 +250,9 @@ async function runTurn(blockToken, declarations, question, repeat) {
   const argKeys = firstArgs ? Object.keys(firstArgs) : [];
 
   // A citation to an id NO tool returned is a fabrication. null = no citations.
-  const cited = [...finalText.matchAll(/civitai\.com\/models\/(\d+)/g)].map((m) => m[1]);
-  const groundedCitations = cited.length === 0 ? null : cited.every((id) => toolResultIds.has(id));
+  const cited = citedModelIds(finalText);
+  const ungrounded = ungroundedModelIds(finalText, toolResultIds);
+  const groundedCitations = cited.length === 0 ? null : ungrounded.length === 0;
 
   return {
     questionId: question.id,
@@ -254,6 +282,11 @@ async function runTurn(blockToken, declarations, question, repeat) {
       ? checks.answerMustMention.every((w) => finalText.toLowerCase().includes(w.toLowerCase()))
       : null,
     citedIds: cited,
+    // The ids to go and look up by hand when an arm regresses. Recording only
+    // the boolean above meant every investigation started by re-deriving this
+    // from the answer text, which is the copy-of-a-predicate problem one layer
+    // down.
+    ungroundedIds: ungrounded,
     groundedCitations,
     // 🔴 A withheld turn is a MISSING OBSERVATION, not a wrong answer. Kept in
     // its own field and excluded from correctness rates downstream.

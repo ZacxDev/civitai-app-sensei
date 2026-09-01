@@ -1,5 +1,6 @@
 import type { Block, Inline } from '../lib/markdown.js';
 import { parseMarkdown } from '../lib/markdown.js';
+import type { GroundedModelIds } from '../lib/grounding.js';
 import { token } from '../theme.js';
 
 /**
@@ -76,8 +77,22 @@ function BlockNode({ block }: { block: Block }) {
   );
 }
 
-export function MarkdownText({ text }: { text: string }) {
-  const blocks = parseMarkdown(text);
+/**
+ * `groundedModelIds` — the model ids THIS conversation's tool rounds returned.
+ *
+ * 🔴 OPTIONAL, AND `undefined` MEANS "DO NOT APPLY THE RULE". It is not a
+ * convenience default: a caller with no tool loop behind it (a fixture, a
+ * viewer's own typed link) has no grounded set to judge against, and defaulting
+ * to an empty one would refuse every model link in the app. See `linkHref`.
+ */
+export function MarkdownText({
+  text,
+  groundedModelIds,
+}: {
+  text: string;
+  groundedModelIds?: GroundedModelIds;
+}) {
+  const blocks = parseMarkdown(text, groundedModelIds);
   return (
     <div data-testid="markdown-text">
       {blocks.map((b, i) => (

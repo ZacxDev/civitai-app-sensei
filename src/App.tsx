@@ -26,6 +26,7 @@ import type { ResolvedResource } from './lib/mentions.js';
 import { generateMessageId, withSystemPrompt } from './lib/chat.js';
 import { generateTitle } from './lib/sessions.js';
 import { claimMessageWrite, ownsMessageWrite } from './lib/write-ownership.js';
+import { groundedIdsFromToolResult, mergeGroundedIds } from './lib/grounding.js';
 
 import { ChatArea } from './components/ChatArea.js';
 import type { MentionPickerType } from './components/ResourceMention.js';
@@ -124,6 +125,35 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   // lookup is in flight; see `ChatArea`'s `lookupQuery`.
   const [lookupQuery, setLookupQuery] = useState<string | null>(null);
   const [pendingMentions, setPendingMentions] = useState<ResolvedResource[]>([]);
+  /**
+   * The model ids the catalog has actually returned, PER CONVERSATION.
+   *
+   * 🔴 KEYED BY SESSION ID, NOT A SINGLE SET, AND THAT IS THE #427 LESSON
+   * APPLIED HERE RATHER THAN REDISCOVERED. A turn accumulates into the session
+   * it was SENT in — the id its closure captured — not into whichever
+   * conversation the viewer happens to be looking at when the tool round lands.
+   * One flat set would let a search in conversation A silently authorise a
+   * citation in conversation B, which is the same "state keyed on the VIEWED
+   * session" shape that misfiled a whole transcript once already.
+   *
+   * 🔴 ACCUMULATED ACROSS TURNS, NEVER RESET PER TURN. An id the catalog
+   * returned on turn 1 stays grounded on turn 5: the model is entitled to refer
+   * back to something this conversation actually looked up, and a per-turn set
+   * would refuse every follow-up question — which is most of what this app is
+   * for.
+   *
+   * ⚠️ IN MEMORY ONLY, AND THE CONSEQUENCE IS DELIBERATE RATHER THAN OVERLOOKED.
+   * Tool results are not persisted (see `types.ts`: `role:'tool'` is a
+   * transcript role, not a stored one), so a RELOADED conversation starts with
+   * an empty set and its stored model links render as plain text. That is the
+   * conservative direction — a link we can no longer prove is refused rather
+   * than trusted — and it is pinned by a test so it cannot change silently. The
+   * fix, if the lost affordance turns out to matter, is to carry the ids on the
+   * stored assistant message (they would ride the write that already happens,
+   * so it costs no extra storage call); it is not done here because it widens a
+   * mechanical guard into a serialization change.
+   */
+  const [groundedBySession, setGroundedBySession] = useState<Record<string, readonly string[]>>({});
   const [loading, setLoading] = useState(true);
   // 🔴 A REJECTED STORAGE CALL MUST NOT BE INDISTINGUISHABLE FROM SUCCESS. Every
   // storage call in this app used to be either unguarded (`createSession`, whose
@@ -649,6 +679,39 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setPendingMentions((prev) => prev.filter((r) => r.versionId !== versionId));
   }, []);
 
+  /**
+   * Record ids the catalog returned, against the session the TURN belongs to.
+   *
+   * Total and idempotent: an empty list, or a list of ids already recorded,
+   * returns the previous state object by reference so React skips the update.
+   * `mergeGroundedIds` does the de-duplication and returns the original array
+   * unchanged when nothing is new — that reference equality is what makes the
+   * short-circuit here correct rather than merely cheap.
+   */
+  const recordGrounded = useCallback((sessionId: string, ids: readonly string[]) => {
+    if (ids.length === 0) return;
+    setGroundedBySession((prev) => {
+      const before = prev[sessionId];
+      const after = mergeGroundedIds(before, ids);
+      return after === before ? prev : { ...prev, [sessionId]: after };
+    });
+  }, []);
+
+  /**
+   * The grounded set for the conversation ON SCREEN.
+   *
+   * 🔴 ALWAYS A SET, NEVER `undefined`, EVEN WHEN NOTHING IS GROUNDED. An empty
+   * set means "this conversation has grounded nothing, so refuse every model
+   * link" — which is the measured defect case, a turn that called no tool and
+   * cited from memory. Passing `undefined` there would mean "do not apply the
+   * rule" and would make the whole guard inert exactly where it is needed. See
+   * `linkHref`.
+   */
+  const groundedModelIds = useMemo(
+    () => new Set(activeSessionId ? (groundedBySession[activeSessionId] ?? []) : []),
+    [groundedBySession, activeSessionId],
+  );
+
   const selectSession = useCallback(async (id: string) => {
     // The `[activeSessionId]` effect above loads the messages; doing it here too
     // was a second concurrent read of the same key for no benefit. Setting the id
@@ -964,6 +1027,22 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       if (mentionExchange.length > 0) {
         apiMessages = [...apiMessages, ...mentionExchange];
         depsRef.current.track('mention_grounding_sent', { count: attachedMentions.length });
+        // 🔴 AN ATTACHED MODEL IS GROUNDED, AND FORGETTING THIS WOULD HAVE
+        // BROKEN THE MENTION FEATURE OUTRIGHT. The viewer picked it in HOST
+        // chrome and it came back through the clamped resolve endpoint, so its
+        // id is catalog-sourced by exactly the same argument a search result's
+        // is — and the model is being handed it right here, on the wire. Read
+        // off the `role:'tool'` message's own CONTENT rather than off
+        // `attachedMentions`, so the grounded set is literally what the model
+        // was shown; `buildMentionExchange` serialises it with the same
+        // `boundToolResponse({ items, truncated })` call `callTool` uses, which
+        // is why one extractor reads both.
+        recordGrounded(
+          activeSessionId,
+          mentionExchange.flatMap((m) =>
+            m.role === 'tool' ? groundedIdsFromToolResult(m.content) : [],
+          ),
+        );
       }
 
       const onChunk = (chunk: string) => {
@@ -1086,6 +1165,19 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         } finally {
           setLookupQuery(null);
         }
+
+        // 🔴 EVERY ID THIS ROUND RETURNED IS NOW GROUNDED FOR THIS
+        // CONVERSATION. Recorded BEFORE the abort check below on purpose: the
+        // catalog did return these ids, and prose citing them may already have
+        // streamed and been persisted by Stop. Refusing to render a link the
+        // viewer was charged for, because the turn they stopped is the turn
+        // that grounded it, would be a bug in the guard rather than the guard
+        // working.
+        //
+        // `activeSessionId` is THIS TURN'S session — the closure's value, the
+        // same one `claimMessageWrite` and both deferred writes use — never the
+        // one the viewer may have switched to.
+        recordGrounded(activeSessionId, results.flatMap((r) => groundedIdsFromToolResult(r)));
 
         // A Stop landing while the tool POSTs were in flight must not be spent
         // on another submit.
@@ -1283,6 +1375,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     sendGate,
     raiseGate,
     persist,
+    recordGrounded,
     // 🔴 OMITTING THIS MADE THE WHOLE MENTION FEATURE INERT, AND EVERY TEST
     // STILL PASSED. `handleSend` reads `pendingMentions` to build the synthetic
     // tool exchange; without it here the callback closes over the array as it
@@ -1723,6 +1816,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
                   onPickMention={handlePickMention}
                   onRemoveMention={handleRemoveMention}
                   lookupQuery={lookupQuery}
+                  groundedModelIds={groundedModelIds}
                 />
               </>
             ) : (

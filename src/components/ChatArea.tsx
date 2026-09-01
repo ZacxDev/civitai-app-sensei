@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Button, Textarea } from '@civitai/blocks-react/ui';
 import type { Message } from '../types.js';
 import type { ResolvedResource } from '../lib/mentions.js';
+import type { GroundedModelIds } from '../lib/grounding.js';
 import { MessageBubble } from './MessageBubble.js';
 import {
   MentionPickerButton,
@@ -52,6 +53,16 @@ export interface ChatAreaProps {
   sendGate: 'signin' | 'consent' | null;
   /** Ask the host for whatever `sendGate` says is missing. Required for the same reason. */
   onGatedSend: () => void;
+  /**
+   * The model ids THIS conversation's tool rounds have returned, accumulated
+   * across turns. Forwarded to every bubble; see `lib/grounding.ts`.
+   *
+   * 🔴 REQUIRED, for the same reason `sendGate` is. The safe-looking default
+   * would be `undefined` — "do not apply the rule" — so a caller who simply
+   * forgot the prop would silently ship the ungrounded-citation behaviour back,
+   * with every test still green. Required makes that a compile error.
+   */
+  groundedModelIds: GroundedModelIds;
 }
 
 export function ChatArea({
@@ -66,6 +77,7 @@ export function ChatArea({
   onPickMention,
   onRemoveMention,
   lookupQuery,
+  groundedModelIds,
 }: ChatAreaProps) {
   const [input, setInput] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
@@ -164,6 +176,7 @@ export function ChatArea({
             <div key={msg.id}>
               <MessageBubble
                 message={msg}
+                groundedModelIds={groundedModelIds}
                 onRegenerate={msg.role === 'assistant' ? () => onRegenerate?.(msg.id) : undefined}
                 onCopy={() => navigator.clipboard.writeText(msg.content)}
               />

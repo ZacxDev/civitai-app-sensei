@@ -1,0 +1,307 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { App } from './App.js';
+import { fakeAppStorage } from './test-helpers.js';
+import { clearCache } from './lib/research.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 THE GROUNDED-CITATION GATE, END TO END, THROUGH THE REAL APP.
+//
+// `lib/grounding.test.ts` proves the predicate and `lib/markdown.test.ts` proves
+// the parser honours it. NEITHER can see the defect this file is for: the wire
+// between them. The grounded set is accumulated inside `handleSend`'s tool loop
+// and has to travel App → ChatArea → MessageBubble → MarkdownText → linkHref.
+// Every one of those hops is a place the set can arrive as `undefined`, which
+// means "do not apply the rule" — so the guard would be perfectly correct,
+// perfectly unit-tested, and completely inert in production. "Verified in
+// isolation" is exactly how that ships.
+//
+// So every assertion here reads the RENDERED DOM: is there an `<a>` for this id
+// or is there not.
+//
+// 🔴 IDS ARE THE REAL MEASURED ONES from the 18-turn seam probe
+// (`eval/results/seam-baseline-2026-08-31.json`), pairwise distinct:
+//   4384  DreamShaper      — real, correctly named
+//   4823  "Deliberate"     — 404, NO SUCH MODEL
+//   18619 "Juggernaut"     — 404, NO SUCH MODEL
+//   22220 "Face Slider"    — real (CarDos Animated), cited under another name
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DREAMSHAPER = 4384;
+const DEAD_A = 4823;
+const DEAD_B = 18619;
+const CARDOS = 22220;
+
+const h = vi.hoisted(() => ({
+  storage: null as ReturnType<typeof fakeAppStorage> | null,
+}));
+
+const estimateFn = vi
+  .fn()
+  .mockResolvedValue({ workflowId: 'e', status: 'succeeded', cost: { total: 1 } });
+const submitFn = vi.fn(async () => ({ workflowId: 'wf', status: 'pending' }));
+
+/** One snapshot per poll, in order. Lets a test drive round N's reply. */
+let pollQueue: Array<Record<string, unknown>> = [];
+const pollFn = vi.fn(async () => {
+  const next = pollQueue.shift();
+  return next ?? { workflowId: 'wf-x', status: 'succeeded', cost: { total: 1 }, textOutputs: ['done'] };
+});
+
+vi.mock('@civitai/blocks-react', () => ({
+  // 🔴 ONE instance, resolved at call time. A `fakeAppStorage()` factory call
+  // here would hand every render a brand-new empty store, and the
+  // session-switch and reload cases below would then be measuring the fake.
+  useAppStorage: () => h.storage!.appStorage,
+  useBlockAnalytics: () => ({ track: vi.fn() }),
+  useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
+  useBlockResize: () => {},
+  useRequestConsent: () => ({ requestConsent: vi.fn() }),
+  useRequestSignIn: () => ({ requestSignIn: vi.fn() }),
+  useResourcePicker: () => ({ open: vi.fn().mockResolvedValue(null) }),
+  useBlockToken: () => ({ raw: 'block-jwt-test', scopes: ['ai:write:budgeted', 'buzz:read:self'] }),
+  useBuzzBalance: () => ({ balance: { blue: 100, green: 0, yellow: 200 } }),
+  useBuzzWorkflow: () => ({
+    estimate: estimateFn,
+    submit: submitFn,
+    poll: pollFn,
+    cancel: vi.fn().mockResolvedValue(undefined),
+    status: 'idle',
+    result: null,
+    error: null,
+  }),
+}));
+
+const DECLARATIONS = [
+  {
+    type: 'function',
+    function: {
+      name: 'search_models',
+      description: 'Search the Civitai model catalog',
+      parameters: { type: 'object', properties: { query: { type: 'string' } } },
+    },
+  },
+];
+
+/** What the next POST /tools returns. The catalog's answer, i.e. what grounds. */
+let toolItems: Array<Record<string, unknown>> = [];
+
+function toolCallSnapshot() {
+  return {
+    workflowId: 'wf-tc',
+    status: 'succeeded',
+    cost: { total: 1 },
+    toolCalls: [
+      {
+        id: 'call_abc',
+        type: 'function',
+        function: { name: 'search_models', arguments: JSON.stringify({ query: 'realistic' }) },
+      },
+    ],
+  };
+}
+
+function textSnapshot(text: string) {
+  return { workflowId: 'wf-t', status: 'succeeded', cost: { total: 1 }, textOutputs: [text] };
+}
+
+let originalFetch: typeof globalThis.fetch;
+
+function installFetch() {
+  originalFetch = globalThis.fetch;
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : String(input);
+    const method = init?.method ?? 'GET';
+    if (url.includes('/api/v1/blocks/tools')) {
+      const payload =
+        method === 'GET' ? { tools: DECLARATIONS } : { items: toolItems, truncated: 0 };
+      return new Response(JSON.stringify(payload), { status: 200 });
+    }
+    return new Response(JSON.stringify({ items: [], metadata: {} }), { status: 200 });
+  }) as unknown as typeof globalThis.fetch;
+}
+
+/** The rendered anchor for a model id, or null when the gate refused it. */
+function anchorFor(id: number): HTMLAnchorElement | null {
+  return document.querySelector<HTMLAnchorElement>(`a[href*="/models/${id}"]`);
+}
+
+async function startChat() {
+  render(<App />);
+  await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+  fireEvent.click(screen.getByTestId('new-session-button'));
+  await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+}
+
+/**
+ * Type and send; resolves once the reply is on screen AND the turn has settled.
+ *
+ * 🔴 WAITING FOR THE TEXT ALONE IS NOT ENOUGH, and the failure is silent: the
+ * reply renders before `handleSend`'s `finally` clears `isStreaming`, and
+ * `handleSend` refuses a send while it is true. A second `send()` therefore
+ * returned having done nothing at all, and the test then failed on the PREVIOUS
+ * turn's screen — which reads as the grounding gate misbehaving.
+ */
+async function send(question: string, expectInReply: string) {
+  fireEvent.change(screen.getByTestId('chat-input'), { target: { value: question } });
+  fireEvent.click(screen.getByTestId('send-button'));
+  await waitFor(() => expect(screen.getByText(new RegExp(expectInReply))).toBeTruthy(), {
+    timeout: 8000,
+  });
+  await waitFor(() => expect(screen.queryByTestId('streaming-indicator')).toBeNull(), {
+    timeout: 8000,
+  });
+}
+
+describe('grounded citations reach the screen', () => {
+  beforeEach(() => {
+    h.storage = fakeAppStorage();
+    pollQueue = [];
+    toolItems = [];
+    submitFn.mockClear();
+    pollFn.mockClear();
+    clearCache();
+    installFetch();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('🔴 the id the CATALOG returned is a link; the one beside it that it did not is TEXT', () => {
+    return (async () => {
+      toolItems = [{ id: DREAMSHAPER, name: 'DreamShaper', type: 'Checkpoint' }];
+      pollQueue = [
+        toolCallSnapshot(),
+        textSnapshot(
+          `1. [DreamShaper](https://civitai.com/models/${DREAMSHAPER})\n` +
+            `2. [Deliberate](https://civitai.com/models/${DEAD_A})`,
+        ),
+      ];
+      await startChat();
+      await send('photorealistic portraits?', 'Deliberate');
+
+      expect(anchorFor(DREAMSHAPER)).toBeTruthy();
+      // 4823 is a 404. Before this gate it rendered as a live link.
+      expect(anchorFor(DEAD_A)).toBeNull();
+      // 🔴 THE MODEL'S WORDS SURVIVE. Refusing the href must not delete the
+      // sentence; the viewer reads the same answer, minus a dead link.
+      expect(screen.getByText(/Deliberate/)).toBeTruthy();
+    })();
+  });
+
+  it('🔴 grounding ACCUMULATES: turn 1 looked it up, turn 5 may still link it', () => {
+    return (async () => {
+      toolItems = [{ id: DREAMSHAPER, name: 'DreamShaper', type: 'Checkpoint' }];
+      pollQueue = [toolCallSnapshot(), textSnapshot('DreamShaper is a checkpoint.')];
+      await startChat();
+      await send('what is DreamShaper?', 'DreamShaper is a checkpoint');
+
+      // Turn 2 calls NO tool — the exact posture that produced every measured
+      // fabrication — and cites one id from turn 1 plus one from nowhere.
+      pollQueue = [
+        textSnapshot(
+          `Use [DreamShaper](https://civitai.com/models/${DREAMSHAPER}), not ` +
+            `[Juggernaut](https://civitai.com/models/${DEAD_B}).`,
+        ),
+      ];
+      await send('anything else?', 'Juggernaut');
+
+      // Grounded on turn 1, still grounded now. A per-TURN set would refuse
+      // this and break every follow-up question in the app.
+      expect(anchorFor(DREAMSHAPER)).toBeTruthy();
+      expect(anchorFor(DEAD_B)).toBeNull();
+    })();
+  });
+
+  it('🔴 grounding is PER CONVERSATION: a lookup in one chat does not vouch for another', () => {
+    return (async () => {
+      toolItems = [{ id: DREAMSHAPER, name: 'DreamShaper', type: 'Checkpoint' }];
+      pollQueue = [toolCallSnapshot(), textSnapshot('DreamShaper is a checkpoint.')];
+      await startChat();
+      await send('what is DreamShaper?', 'DreamShaper is a checkpoint');
+
+      // A second conversation. Nothing has been looked up in it.
+      fireEvent.click(screen.getByTestId('new-session-button'));
+      await waitFor(() => expect(screen.queryByText(/is a checkpoint/)).toBeNull());
+
+      pollQueue = [
+        textSnapshot(`Try [DreamShaper](https://civitai.com/models/${DREAMSHAPER}) here too.`),
+      ];
+      await send('recommend something', 'here too');
+
+      // Same id, same app, different conversation — and this one grounded
+      // nothing. One flat set would let chat A silently authorise chat B.
+      expect(anchorFor(DREAMSHAPER)).toBeNull();
+    })();
+  });
+
+  it('🔴 a turn that calls NO tool links NOTHING — the measured defect, end to end', () => {
+    return (async () => {
+      pollQueue = [
+        textSnapshot(
+          `- **Face Slider** [link](https://civitai.com/models/${CARDOS}) tunes expressions.`,
+        ),
+      ];
+      await startChat();
+      await send('how do I improve faces?', 'Face Slider');
+
+      // 22220 IS a real model — CarDos Animated — so this link resolves 200 and
+      // sends the viewer somewhere unrelated. Nothing on screen says so, which
+      // is why the fix cannot be "read the answer".
+      expect(anchorFor(CARDOS)).toBeNull();
+      expect(screen.getByText(/Face Slider/)).toBeTruthy();
+    })();
+  });
+
+  it('positive control: the SAME answer renders a live link once the tool returns that id', () => {
+    return (async () => {
+      // Without this the four cases above are all satisfied by an app that
+      // renders no anchors at all, for any reason.
+      toolItems = [{ id: CARDOS, name: 'CarDos Animated', type: 'Checkpoint' }];
+      pollQueue = [
+        toolCallSnapshot(),
+        textSnapshot(
+          `- **Face Slider** [link](https://civitai.com/models/${CARDOS}) tunes expressions.`,
+        ),
+      ];
+      await startChat();
+      await send('how do I improve faces?', 'Face Slider');
+
+      const a = anchorFor(CARDOS);
+      expect(a).toBeTruthy();
+      // The rest of the link contract is unchanged by grounding.
+      expect(a?.getAttribute('target')).toBe('_blank');
+      expect(a?.getAttribute('rel')).toBe('noopener noreferrer');
+    })();
+  });
+
+  it('⚠️ RELOAD DROPS THE GROUNDING, and that is pinned rather than assumed', () => {
+    return (async () => {
+      // Tool results are not persisted (`types.ts`: `role:'tool'` is a
+      // transcript role, not a stored one), so a reloaded conversation starts
+      // with an empty set and its stored links render as plain text. That is
+      // the conservative direction — a link we can no longer prove is refused
+      // rather than trusted — but it IS a behaviour change, so it is asserted
+      // here instead of being discovered in production. If it ever needs
+      // fixing, carry the ids on the stored assistant message; they would ride
+      // the write that already happens.
+      toolItems = [{ id: DREAMSHAPER, name: 'DreamShaper', type: 'Checkpoint' }];
+      pollQueue = [
+        toolCallSnapshot(),
+        textSnapshot(`[DreamShaper](https://civitai.com/models/${DREAMSHAPER}) is great.`),
+      ];
+      await startChat();
+      await send('what is DreamShaper?', 'is great');
+      expect(anchorFor(DREAMSHAPER)).toBeTruthy();
+
+      cleanup();
+      render(<App />);
+      await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+      // The transcript came back…
+      await waitFor(() => expect(screen.getByText(/is great/)).toBeTruthy());
+      // …and its link did not.
+      expect(anchorFor(DREAMSHAPER)).toBeNull();
+    })();
+  });
+});

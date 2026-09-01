@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Group } from '@civitai/blocks-react/ui';
 import type { Message } from '../types.js';
+import type { GroundedModelIds } from '../lib/grounding.js';
 import { formatRoleLabel } from '../lib/chat.js';
 import { MarkdownText } from './MarkdownText.js';
 import { ResourceMentionCard } from './ResourceMention.js';
@@ -10,6 +11,16 @@ export interface MessageBubbleProps {
   message: Message;
   onRegenerate?: () => void;
   onCopy?: () => void;
+  /**
+   * The model ids this conversation's tool rounds have returned, accumulated.
+   *
+   * 🔴 APPLIED TO ASSISTANT PROSE ONLY — see the render below. The rule being
+   * enforced is "the model must not cite an id it was never given", which is a
+   * claim about MODEL output. A viewer who pastes a model link into their own
+   * question is not citing anything, and refusing their link would be a
+   * different (and wrong) product decision wearing this fix's clothes.
+   */
+  groundedModelIds?: GroundedModelIds;
 }
 
 const ROLE_COLORS: Record<string, string> = {
@@ -19,7 +30,12 @@ const ROLE_COLORS: Record<string, string> = {
   tool: token.error,
 };
 
-export function MessageBubble({ message, onRegenerate, onCopy }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  onRegenerate,
+  onCopy,
+  groundedModelIds,
+}: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === 'user';
   const roleColor = ROLE_COLORS[message.role] ?? token.text;
@@ -103,7 +119,16 @@ export function MessageBubble({ message, onRegenerate, onCopy }: MessageBubblePr
         {message.content
           ? message.withheld
             ? message.content
-            : <MarkdownText text={message.content} />
+            : (
+              <MarkdownText
+                text={message.content}
+                // 🔴 ASSISTANT ONLY. `undefined` for a user turn is the
+                // "no grounding context" argument, i.e. exactly today's
+                // behaviour — not an empty set, which would refuse the
+                // viewer's own links. See {@link MessageBubbleProps}.
+                groundedModelIds={message.role === 'assistant' ? groundedModelIds : undefined}
+              />
+            )
           : '…'}
       </div>
       {/*
