@@ -1,0 +1,963 @@
+{
+  "arm": "rewrite",
+  "startedAt": "2026-09-01T19:44:05.204Z",
+  "set": 1,
+  "model": "deepseek/deepseek-chat",
+  "temperature": 0.7,
+  "repeats": 3,
+  "systemPromptChars": 1345,
+  "systemPrompt": "You are Civitai Sensei, an AI research assistant for AI art and image generation.\n\nYou can look up Civitai catalog data by calling the tools you have been given. Call one when a question turns on a specific model — its name, id, link, stats, versions or base model — rather than answering from memory.\n\n- Recommending a model is a catalog question. Whenever you are going to name a model, look it up in this conversation first — including when the question is about technique and the model is your own suggestion rather than something the reader named.\n- Naming a model you have not looked up is not one of your options. If you want to name one, call the tool; a recommendation carrying real names, ids and download counts is worth far more to the reader than one assembled from memory.\n- Ground every specific claim in what a tool returned. Never invent a model, an id or a URL, and never guess a download count.\n- If a lookup returns nothing useful, say so plainly and answer from general knowledge instead, making clear which part is general knowledge.\n- General technique questions (samplers, CFG, LoRA training, prompting) need no catalog data — answer them directly without a lookup, unless you are naming a model as part of the answer.\n- Be concise and concrete. Link models as https://civitai.com/models/<id> using an id a tool returned.",
+  "declaredTools": [
+    "search_models"
+  ],
+  "buzzSpent": 188,
+  "results": [
+    {
+      "questionId": "R1",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2048,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\": \"photorealistic portrait\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\", \"limit\": 5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "photorealistic portrait",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [],
+      "ungroundedIds": [],
+      "groundedCitations": null,
+      "withheld": true,
+      "answerChars": 0,
+      "answer": "",
+      "errors": [],
+      "repeat": 1,
+      "seconds": 21
+    },
+    {
+      "questionId": "R1",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 4,
+      "rounds": 1,
+      "maxTokens": 2049,
+      "toolCalled": false,
+      "toolCalls": [],
+      "firstToolArgs": null,
+      "expectTool": true,
+      "toolExpectationMet": false,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [],
+      "ungroundedIds": [],
+      "groundedCitations": null,
+      "withheld": false,
+      "answerChars": 1585,
+      "answer": "To generate photorealistic portraits, you should use a Stable Diffusion model that is specifically trained for photorealism. Here are some key recommendations:\n\n1. **Model Choice**: Look for models that are known for their photorealistic capabilities. These models are often trained on high-quality datasets of human faces and are optimized for fine details like skin texture, hair, and lighting.\n\n2. **Sampling Method**: Use a sampler that produces smooth and detailed results. Popular choices include:\n   - **Euler a**: Known for its balance between speed and quality.\n   - **DPM++ 2M Karras**: Produces high-quality results with fine details.\n   - **DDIM**: Good for controlled and stable outputs.\n\n3. **CFG Scale**: Adjust the CFG (Classifier-Free Guidance) scale to balance creativity and adherence to the prompt. A CFG scale between 7 and 12 is often ideal for photorealism.\n\n4. **Prompting**: Use detailed prompts that describe the desired lighting, pose, background, and facial features. Including terms like \"cinematic lighting,\" \"ultra-detailed,\" and \"photorealistic\" can help guide the model.\n\n5. **Negative Prompts**: Use negative prompts to avoid common issues like overexposure, blurriness, or unrealistic features. For example, \"blurry, overexposed, cartoonish, deformed\" can help refine the output.\n\n6. **Post-Processing**: Consider using tools like Photoshop or specialized AI tools for final touches, such as retouching skin, enhancing details, or adjusting colors.\n\nWould you like me to look up specific models on Civitai that are known for photorealistic portraits?",
+      "errors": [],
+      "repeat": 2,
+      "seconds": 27
+    },
+    {
+      "questionId": "R1",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2050,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\": \"photorealistic portrait\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\", \"limit\": 5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "photorealistic portrait",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [],
+      "ungroundedIds": [],
+      "groundedCitations": null,
+      "withheld": true,
+      "answerChars": 0,
+      "answer": "",
+      "errors": [],
+      "repeat": 3,
+      "seconds": 33
+    },
+    {
+      "questionId": "R2",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2048,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\": \"architecture\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\", \"limit\": 5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "architecture",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [
+        "84958",
+        "8552",
+        "114612",
+        "52953"
+      ],
+      "ungroundedIds": [],
+      "groundedCitations": true,
+      "withheld": false,
+      "answerChars": 753,
+      "answer": "Here are some highly downloaded checkpoints for architectural renders:\n\n1. **[ArchitectureRealMix](https://civitai.com/models/84958)** - A versatile model for landscapes, buildings, and interior design, with 64K+ downloads.  \n2. **[dvArch](https://civitai.com/models/8552)** - Tuned for multi-prompt architecture, including Victorian and modern styles (41K+ downloads).  \n3. **[architecture_Exterior_SDlife_Chiasedamme](https://civitai.com/models/114612)** - Focused on exterior architecture and buildings (31K+ downloads).  \n4. **[Ra-render/Architecture render](https://civitai.com/models/52953)** - Photorealistic renders for architectural designs (13K+ downloads).  \n\nThe first two are the most popular and cover a wide range of architectural styles.",
+      "errors": [],
+      "repeat": 1,
+      "seconds": 14
+    },
+    {
+      "questionId": "R2",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2049,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\": \"architectural\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\", \"limit\": 5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "architectural",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [
+        "109730",
+        "31655",
+        "143771",
+        "131935",
+        "685368"
+      ],
+      "ungroundedIds": [],
+      "groundedCitations": true,
+      "withheld": false,
+      "answerChars": 1375,
+      "answer": "Here are some of the most downloaded checkpoint models for architectural renders:\n\n1. **[LW_Architecutral_MIX](https://civitai.com/models/109730)**  \n   - Base Model: SD 1.5  \n   - Downloads: 5,951  \n   - Creator: YanXiao_AI  \n   - Tags: Architecture, Buildings  \n\n2. **[XSarchitecturalV1Commercialbuildingrendering](https://civitai.com/models/31655)**  \n   - Base Model: SD 1.5  \n   - Downloads: 5,378  \n   - Creator: XSarchitectural  \n   - Tags: Buildings, CG, Landscape, Architecture Design  \n\n3. **[architectural_skyscraper](https://civitai.com/models/143771)**  \n   - Base Model: SD 1.5  \n   - Downloads: 3,217  \n   - Creator: WANGHUA  \n   - Tags: Style, Building, Skyscraper  \n\n4. **[Realistic Architecture](https://civitai.com/models/131935)**  \n   - Base Model: SD 1.5  \n   - Downloads: 2,407  \n   - Creator: shakebakentake  \n   - Tags: Interiors, Architecture, Buildings  \n\n5. **[Yu_Architectural Rendering Large Model flux.1 fp8](https://civitai.com/models/685368)**  \n   - Base Model: Flux.1 D  \n   - Downloads: 2,241  \n   - Creator: kunkun008  \n   - Tags: Buildings  \n\nFor general architectural renders, **LW_Architecutral_MIX** or **XSarchitecturalV1Commercialbuildingrendering** are highly recommended due to their popularity and focus on architectural details. If you're working with SDXL or other base models, let me know, and I can refine the search further!",
+      "errors": [],
+      "repeat": 2,
+      "seconds": 21
+    },
+    {
+      "questionId": "R2",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2050,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\": \"architecture\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\", \"limit\": 5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "architecture",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [
+        "84958",
+        "8552",
+        "114612",
+        "52953",
+        "128280"
+      ],
+      "ungroundedIds": [],
+      "groundedCitations": true,
+      "withheld": false,
+      "answerChars": 1358,
+      "answer": "Here are some highly downloaded checkpoints for architectural renders:\n\n1. **[ArchitectureRealMix](https://civitai.com/models/84958)** by laizhende  \n   - Base Model: SD 1.5  \n   - Downloads: 64,235  \n   - Likes: 3,485  \n   - Tags: Landscapes, Architecture, Buildings, Interior Design  \n\n2. **[dvArch - Multi-Prompt Architecture Tuned Model](https://civitai.com/models/8552)** by darkvoyage  \n   - Base Model: SD 1.5  \n   - Downloads: 41,602  \n   - Likes: 3,707  \n   - Tags: Architecture, Victorian, Buildings, Gothic  \n\n3. **[architecture_Exterior_SDlife_Chiasedamme](https://civitai.com/models/114612)** by Hoang_StablediffusionLife  \n   - Base Model: SD 1.5  \n   - Downloads: 31,344  \n   - Likes: 1,133  \n   - Tags: Architecture, Buildings, Concepts  \n\n4. **[Ra-render/Architecture render/建筑渲染效果](https://civitai.com/models/52953)** by rainn00  \n   - Base Model: SD 1.5  \n   - Downloads: 13,699  \n   - Likes: 1,596  \n   - Tags: Render, Photorealistic, Architecture  \n\n5. **[architecture_Urban_SDlife_Chiasedamme_V6.0](https://civitai.com/models/128280)** by Hoang_StablediffusionLife  \n   - Base Model: SD 1.5  \n   - Downloads: 11,654  \n   - Likes: 702  \n   - Tags: Anime, Photorealistic, Female, Architecture  \n\nFor architectural renders, **ArchitectureRealMix** and **dvArch** are particularly popular choices due to their high download and like counts.",
+      "errors": [],
+      "repeat": 3,
+      "seconds": 36
+    },
+    {
+      "questionId": "P1a",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2048,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\":\"anime portrait\",\"types\":[\"Checkpoint\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "anime portrait",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [],
+      "ungroundedIds": [],
+      "groundedCitations": null,
+      "withheld": true,
+      "answerChars": 0,
+      "answer": "",
+      "errors": [],
+      "repeat": 1,
+      "seconds": 32
+    },
+    {
+      "questionId": "P1a",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2049,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\":\"anime portraits\",\"types\":[\"Checkpoint\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "anime portraits",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [],
+      "ungroundedIds": [],
+      "groundedCitations": null,
+      "withheld": true,
+      "answerChars": 0,
+      "answer": "",
+      "errors": [],
+      "repeat": 2,
+      "seconds": 30
+    },
+    {
+      "questionId": "P1a",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2050,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\":\"anime portraits\",\"types\":[\"Checkpoint\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "anime portraits",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [
+        "376130",
+        "24149",
+        "23521",
+        "22364",
+        "96629"
+      ],
+      "ungroundedIds": [],
+      "groundedCitations": true,
+      "withheld": false,
+      "answerChars": 1388,
+      "answer": "Here are some highly recommended checkpoints for anime portraits, based on their popularity and download counts:\n\n1. **[Nova Anime XL](https://civitai.com/models/376130)**  \n   - **Base Model**: Illustrious  \n   - **Downloads**: 471,039  \n   - **Likes**: 18,967  \n   - A vibrant and colorful model designed for anime illustrations and fantasy art.\n\n2. **[Mistoon_Anime](https://civitai.com/models/24149)**  \n   - **Base Model**: Illustrious  \n   - **Downloads**: 224,933  \n   - **Likes**: 21,974  \n   - A versatile anime model with a focus on colorful and cartoonish styles.\n\n3. **[Anime Pastel Dream](https://civitai.com/models/23521)**  \n   - **Base Model**: SD 1.5  \n   - **Downloads**: 62,368  \n   - **Likes**: 6,104  \n   - Known for its soft pastel tones and manga-inspired aesthetics.\n\n4. **[Kizuki - Anime / Hentai Checkpoint](https://civitai.com/models/22364)**  \n   - **Base Model**: SD 1.5  \n   - **Downloads**: 57,249  \n   - **Likes**: 6,011  \n   - A specialized model for anime and hentai art styles.\n\n5. **[RealCartoon-Anime](https://civitai.com/models/96629)**  \n   - **Base Model**: SD 1.5  \n   - **Downloads**: 52,565  \n   - **Likes**: 4,675  \n   - A balanced model for both anime and cartoon-style portraits.\n\nThese models are widely used and praised for their quality and versatility in creating anime portraits. Let me know if you'd like more details about any of them!",
+      "errors": [],
+      "repeat": 3,
+      "seconds": 39
+    },
+    {
+      "questionId": "P1b",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2048,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\": \"blueprint\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\", \"limit\": 1}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "blueprint",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 1
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [
+        "131935"
+      ],
+      "ungroundedIds": [],
+      "groundedCitations": true,
+      "withheld": false,
+      "answerChars": 441,
+      "answer": "Based on the search results, a highly recommended checkpoint for technical blueprints is **Realistic Architecture** by shakebakentake. It specializes in architectural and interior design, making it a great choice for generating technical blueprints. You can find it here: [Realistic Architecture](https://civitai.com/models/131935). It has been downloaded **2,407 times** and is highly rated by users. Let me know if you'd like more details!",
+      "errors": [],
+      "repeat": 1,
+      "seconds": 14
+    },
+    {
+      "questionId": "P1b",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2049,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\": \"technical blueprints\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\", \"limit\": 5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "technical blueprints",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [],
+      "ungroundedIds": [],
+      "groundedCitations": null,
+      "withheld": false,
+      "answerChars": 561,
+      "answer": "It looks like there aren’t any specific Checkpoint models for technical blueprints in the Civitai catalog at the moment. However, for technical or blueprint-style artwork, you might consider using versatile Checkpoints like **DreamShaper** or **Protogen**, which are known for their flexibility in generating detailed and structured images. You can also experiment with ControlNet models paired with these Checkpoints to achieve precise technical designs.\n\nIf you’d like, I can look up those models specifically for their download counts and links. Let me know!",
+      "errors": [],
+      "repeat": 2,
+      "seconds": 15
+    },
+    {
+      "questionId": "P1b",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2050,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\": \"technical blueprints\", \"types\": [\"Checkpoint\"], \"sort\": \"Highest Rated\", \"limit\": 1}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "technical blueprints",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Highest Rated",
+        "limit": 1
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [],
+      "ungroundedIds": [],
+      "groundedCitations": null,
+      "withheld": false,
+      "answerChars": 492,
+      "answer": "It looks like there aren’t any specific checkpoint models for technical blueprints in the Civitai catalog. However, for technical blueprints or architectural-style images, you might want to try general-purpose checkpoints like **Realistic Vision** or **DreamShaper**, as they are versatile and can handle detailed outputs. You can also experiment with LoRAs or textual inversions tailored to technical or architectural styles if available. Let me know if you'd like recommendations for those!",
+      "errors": [],
+      "repeat": 3,
+      "seconds": 13
+    },
+    {
+      "questionId": "P2a",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2048,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\":\"fantasy landscape\",\"types\":[\"Checkpoint\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "fantasy landscape",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [
+        "41865",
+        "11031",
+        "11718",
+        "96101",
+        "313098"
+      ],
+      "ungroundedIds": [],
+      "groundedCitations": true,
+      "withheld": false,
+      "answerChars": 1292,
+      "answer": "Here are some highly downloaded checkpoints for generating fantasy landscapes:\n\n1. **[majicMIX fantasy 麦橘幻想](https://civitai.com/models/41865)**  \n   - Base Model: SD 1.5  \n   - Downloads: 68.5k | Likes: 9.1k  \n   - Focuses on fantasy and creative art styles.\n\n2. **[Fantasy World](https://civitai.com/models/11031)**  \n   - Base Model: SD 1.5  \n   - Downloads: 26.1k | Likes: 5.2k  \n   - Great for anime-style landscapes, concept art, and illustrations.\n\n3. **[Dungeons N Waifu's - v2.2](https://civitai.com/models/11718)**  \n   - Base Model: SD 1.5  \n   - Downloads: 22.7k | Likes: 3k  \n   - A 2.5D fantasy model with a mix of photorealistic and character art.\n\n4. **[✨𝕴𝖑𝖑𝖚𝖘𝖙𝖗𝖔 - 3RD Ed.✨](https://civitai.com/models/96101)**  \n   - Base Model: SD 1.5  \n   - Downloads: 22k | Likes: 1.9k  \n   - Photorealistic fantasy with a retro watercolor touch.\n\n5. **[绪儿-红蓝幻想 Red-blue fantasy](https://civitai.com/models/313098)**  \n   - Base Model: Pony  \n   - Downloads: 14.1k | Likes: 1.7k  \n   - Anime-style photorealistic fantasy, with a focus on characters.\n\nFor purely landscape-focused work, **Fantasy World** or **majicMIX fantasy** are excellent choices. If you want a mix of characters and environments, **Dungeons N Waifu's** or **𝕴𝖑𝖑𝖚𝖘𝖙𝖗𝖔** could be fun to experiment with.",
+      "errors": [],
+      "repeat": 1,
+      "seconds": 23
+    },
+    {
+      "questionId": "P2a",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2049,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\": \"fantasy landscape\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\", \"limit\": 5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "fantasy landscape",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [
+        "41865",
+        "11031",
+        "11718",
+        "96101",
+        "313098"
+      ],
+      "ungroundedIds": [],
+      "groundedCitations": true,
+      "withheld": false,
+      "answerChars": 1274,
+      "answer": "Here are some highly downloaded checkpoints for fantasy landscapes:\n\n1. **[majicMIX fantasy 麦橘幻想](https://civitai.com/models/41865)**  \n   - Base Model: SD 1.5  \n   - Downloads: 68,475  \n   - Likes: 9,144  \n   - A versatile checkpoint for fantasy-themed art.\n\n2. **[Fantasy World](https://civitai.com/models/11031)**  \n   - Base Model: SD 1.5  \n   - Downloads: 26,082  \n   - Likes: 5,158  \n   - Focused on landscapes, concept art, and illustrations.\n\n3. **[Dungeons N Waifu's - v2.2](https://civitai.com/models/11718)**  \n   - Base Model: SD 1.5  \n   - Downloads: 22,702  \n   - Likes: 3,031  \n   - A 2.5D fantasy model with a focus on character art and dark themes.\n\n4. **[✨𝕴𝖑𝖑𝖚𝖘𝖙𝖗𝖔 - 3RD Ed. NEW!✨](https://civitai.com/models/96101)**  \n   - Base Model: SD 1.5  \n   - Downloads: 22,021  \n   - Likes: 1,954  \n   - A photorealistic fantasy model with a retro and illustrative style.\n\n5. **[绪儿-红蓝幻想 Red-blue fantasy](https://civitai.com/models/313098)**  \n   - Base Model: Pony  \n   - Downloads: 14,051  \n   - Likes: 1,689  \n   - A unique checkpoint with a focus on anime-inspired fantasy themes.\n\nFor fantasy landscapes, **majicMIX fantasy 麦橘幻想** and **Fantasy World** are particularly popular choices. You can explore these models further by clicking on their links!",
+      "errors": [],
+      "repeat": 2,
+      "seconds": 41
+    },
+    {
+      "questionId": "P2a",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2050,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\":\"fantasy landscape\",\"types\":[\"Checkpoint\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "fantasy landscape",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [
+        "41865",
+        "11031",
+        "11718"
+      ],
+      "ungroundedIds": [],
+      "groundedCitations": true,
+      "withheld": false,
+      "answerChars": 922,
+      "answer": "Here are some excellent checkpoint models for generating fantasy landscapes:\n\n1. **[majicMIX fantasy 麦橘幻想](https://civitai.com/models/41865)**  \n   - Base Model: SD 1.5  \n   - Downloads: 68,475  \n   - Likes: 9,144  \n   - A highly popular and versatile checkpoint for fantasy-themed creations.\n\n2. **[Fantasy World](https://civitai.com/models/11031)**  \n   - Base Model: SD 1.5  \n   - Downloads: 26,082  \n   - Likes: 5,158  \n   - Focused on landscapes, concept art, and digital illustrations, making it ideal for fantasy settings.\n\n3. **[Dungeons N Waifu's - v2.2](https://civitai.com/models/11718)**  \n   - Base Model: SD 1.5  \n   - Downloads: 22,702  \n   - Likes: 3,031  \n   - A 2.5D fantasy model great for character art and detailed environments.\n\nThese models are highly downloaded and well-liked, making them reliable choices for fantasy landscape generation. Let me know if you'd like more details about any of them!",
+      "errors": [],
+      "repeat": 3,
+      "seconds": 34
+    },
+    {
+      "questionId": "P2b",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2048,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\":\"microscopy\",\"types\":[\"Checkpoint\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "microscopy",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [],
+      "ungroundedIds": [],
+      "groundedCitations": null,
+      "withheld": false,
+      "answerChars": 570,
+      "answer": "It seems there aren't any specific checkpoints tailored for microscopy imagery in the Civitai catalog. However, you might achieve the desired results by using general-purpose checkpoints like **SDXL 1.0** or **Stable Diffusion 1.5** and fine-tuning your prompts to emphasize scientific or detailed imagery. \n\nIf you're looking for highly detailed or scientific-style outputs, models trained on medical or technical datasets (such as **Sci-Fi Diffusion**) might also be worth experimenting with. Let me know if you'd like help refining prompts or exploring other options!",
+      "errors": [],
+      "repeat": 1,
+      "seconds": 19
+    },
+    {
+      "questionId": "P2b",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2049,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\": \"microscopy\", \"types\": [\"Checkpoint\"], \"limit\": 5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "microscopy",
+        "types": [
+          "Checkpoint"
+        ],
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [],
+      "ungroundedIds": [],
+      "groundedCitations": null,
+      "withheld": false,
+      "answerChars": 593,
+      "answer": "I couldn't find any specific checkpoints tailored for microscopy imagery in the Civitai catalog. However, you might try using a general-purpose checkpoint like **Stable Diffusion 1.5** or **SDXL 1.0**, which can generate a wide variety of images, including scientific or abstract visuals. You may need to experiment with prompts that describe microscopic details or textures to achieve the desired results. \n\nIf you're looking for a more specialized model, you could also explore training a custom LoRA for microscopy imagery using your own dataset. Let me know if you'd like guidance on that!",
+      "errors": [],
+      "repeat": 2,
+      "seconds": 15
+    },
+    {
+      "questionId": "P2b",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2050,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\": \"microscopy\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\", \"limit\": 5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "microscopy",
+        "types": [
+          "Checkpoint"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [],
+      "ungroundedIds": [],
+      "groundedCitations": null,
+      "withheld": false,
+      "answerChars": 806,
+      "answer": "I couldn't find any specific checkpoints for microscopy imagery in the Civitai catalog. However, microscopy imagery in AI art can often be created using general-purpose checkpoints by focusing on specific prompts and techniques. You might want to try using a versatile checkpoint like **Stable Diffusion** or **SDXL** and experiment with prompts that describe microscopic details, textures, and lighting. For example:\n\n- Use prompts like \"electron microscope view of cells,\" \"microscopic algae,\" or \"detailed texture of bacteria\" to guide the generation.\n- Adjust settings like CFG scale and sampling steps to enhance detail.\n\nIf you're looking for a more specialized model, you could explore training a custom checkpoint or LoRA using microscopy image datasets. Let me know if you'd like guidance on that!",
+      "errors": [],
+      "repeat": 3,
+      "seconds": 20
+    },
+    {
+      "questionId": "P3a",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2048,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\": \"hands\", \"types\": [\"LORA\"], \"sort\": \"Most Downloaded\", \"limit\": 5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "hands",
+        "types": [
+          "LORA"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [
+        "200255",
+        "109043",
+        "324264",
+        "450321",
+        "139755"
+      ],
+      "ungroundedIds": [],
+      "groundedCitations": true,
+      "withheld": false,
+      "answerChars": 1186,
+      "answer": "Here are some highly downloaded LoRAs designed to improve hand generation in AI art:\n\n1. **[Hands XL + SD 1.5 + F1D + Pony + Illustrious + zit + ZIB](https://civitai.com/models/200255)**  \n   - Base Model: ZImageBase  \n   - Downloads: 303,819  \n   - Focus: Works across multiple base models, including anime and photorealistic styles.\n\n2. **[Skin & Hands (male/female) from Polyhedron](https://civitai.com/models/109043)**  \n   - Base Model: SD 1.5  \n   - Downloads: 75,449  \n   - Focus: Enhances both skin and hands for photorealistic characters.\n\n3. **[Good Hands LoRA](https://civitai.com/models/324264)**  \n   - Base Model: SD 1.5  \n   - Downloads: 23,499  \n   - Focus: General improvement for hand details.\n\n4. **[Good Hands for Pony](https://civitai.com/models/450321)**  \n   - Base Model: Pony  \n   - Downloads: 20,119  \n   - Focus: Optimized for the Pony base model.\n\n5. **[Pov hands / torso grab](https://civitai.com/models/139755)**  \n   - Base Model: SD 1.5  \n   - Downloads: 9,397  \n   - Focus: Specialized for POV hand poses, often used in anime-style art.\n\nFor the best results, choose a LoRA that matches your base model and desired style (e.g., photorealistic or anime).",
+      "errors": [],
+      "repeat": 1,
+      "seconds": 17
+    },
+    {
+      "questionId": "P3a",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2049,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"types\": [\"LORA\"], \"query\": \"hands\", \"sort\": \"Most Downloaded\", \"limit\": 5}"
+        }
+      ],
+      "firstToolArgs": {
+        "types": [
+          "LORA"
+        ],
+        "query": "hands",
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [
+        "200255",
+        "109043",
+        "324264",
+        "450321",
+        "139755"
+      ],
+      "ungroundedIds": [],
+      "groundedCitations": true,
+      "withheld": false,
+      "answerChars": 1336,
+      "answer": "Here are some of the most downloaded LoRAs for improving hands in AI-generated images:\n\n1. **[Hands XL + SD 1.5 + F1D + Pony + Illustrious + zit + ZIB](https://civitai.com/models/200255)** by EauDeNoire  \n   - Base Model: ZImageBase  \n   - Downloads: 303,819  \n   - Focuses on anime, photorealistic, and hyperrealistic hands.  \n\n2. **[Skin & Hands (male/female) from Polyhedron](https://civitai.com/models/109043)** by Polyhedron_AI  \n   - Base Model: SD 1.5  \n   - Downloads: 75,449  \n   - Designed for photorealism in male and female hands.  \n\n3. **[Good Hands LoRA](https://civitai.com/models/324264)** by Gtonero  \n   - Base Model: SD 1.5  \n   - Downloads: 23,499  \n   - A general-purpose LoRA for improving hand details.  \n\n4. **[Good Hands for Pony](https://civitai.com/models/450321)** by lolkemo  \n   - Base Model: Pony  \n   - Downloads: 20,119  \n   - Tailored for the Pony base model.  \n\n5. **[Pov hands / torso grab](https://civitai.com/models/139755)** by psoft  \n   - Base Model: SD 1.5  \n   - Downloads: 9,397  \n   - Specializes in POV hand interactions and poses.  \n\nFor the best results, choose a LoRA that matches your base model and artistic style. If you're working with SD 1.5, the **Skin & Hands LoRA** or **Good Hands LoRA** are excellent starting points. For anime-focused work, **Hands XL** is highly recommended.",
+      "errors": [],
+      "repeat": 2,
+      "seconds": 45
+    },
+    {
+      "questionId": "P3a",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2050,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\": \"hands\", \"types\": [\"LORA\"], \"sort\": \"Most Downloaded\", \"limit\": 5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "hands",
+        "types": [
+          "LORA"
+        ],
+        "sort": "Most Downloaded",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [
+        "200255",
+        "109043",
+        "324264",
+        "450321",
+        "139755"
+      ],
+      "ungroundedIds": [],
+      "groundedCitations": true,
+      "withheld": false,
+      "answerChars": 1063,
+      "answer": "Here are some of the most downloaded LoRAs for improving hands in your AI-generated images:\n\n1. **[Hands XL + SD 1.5 + F1D + Pony + Illustrious + zit + ZIB](https://civitai.com/models/200255)**  \n   - Base Model: ZImageBase  \n   - Downloads: 303,819  \n   - A versatile LoRA for realistic and hyperrealistic hands.\n\n2. **[Skin & Hands (male/female) from Polyhedron](https://civitai.com/models/109043)**  \n   - Base Model: SD 1.5  \n   - Downloads: 75,449  \n   - Focuses on photorealistic hands for both genders.\n\n3. **[Good Hands LoRA](https://civitai.com/models/324264)**  \n   - Base Model: SD 1.5  \n   - Downloads: 23,499  \n   - A general-purpose LoRA for better hand details.\n\n4. **[Good Hands for Pony](https://civitai.com/models/450321)**  \n   - Base Model: Pony  \n   - Downloads: 20,119  \n   - Specialized for the Pony base model.\n\n5. **[Pov hands / torso grab](https://civitai.com/models/139755)**  \n   - Base Model: SD 1.5  \n   - Downloads: 9,397  \n   - Useful for dynamic poses involving hands.\n\nChoose the one that matches your base model and style needs!",
+      "errors": [],
+      "repeat": 3,
+      "seconds": 16
+    },
+    {
+      "questionId": "P3b",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2048,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\":\"Art Nouveau borders\",\"types\":[\"LORA\"]}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "Art Nouveau borders",
+        "types": [
+          "LORA"
+        ]
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [
+        "562604",
+        "182980",
+        "372852",
+        "638308",
+        "927468"
+      ],
+      "ungroundedIds": [],
+      "groundedCitations": true,
+      "withheld": false,
+      "answerChars": 1154,
+      "answer": "For Art Nouveau borders, here are some LoRA options you can consider:\n\n1. **[Art Nouveau](https://civitai.com/models/562604)**\n   - Base Model: ZImageBase\n   - Downloads: 14,594 | Likes: 1,171\n   - Creator: ArsMachina\n   - Tags: midjourney, style, art nouveau\n\n2. **[Art Nouveau Style](https://civitai.com/models/182980)**\n   - Base Model: Anima\n   - Downloads: 5,870 | Likes: 725\n   - Creator: oosayam\n   - Tags: style, art style\n\n3. **[Art Nouveau [Pony]](https://civitai.com/models/372852)**\n   - Base Model: Pony\n   - Downloads: 1,205 | Likes: 188\n   - Creator: MassBrainImpact\n   - Tags: style, art nouveau\n\n4. **[Art Nouveau - Flux Lora](https://civitai.com/models/638308)**\n   - Base Model: Flux.1 D\n   - Downloads: 1,772 | Likes: 157\n   - Creator: lolololo42\n   - Tags: character, vintage, art nouveau\n\n5. **[Art Nouveau Carmine](https://civitai.com/models/927468)**\n   - Base Model: SDXL 1.0\n   - Downloads: 556 | Likes: 116\n   - Creator: novuschroma\n   - Tags: red, style, art nouveau, patterns\n\nThe first two options are the most popular and widely used. Choose one based on your base model preference and the specific style you're aiming for.",
+      "errors": [],
+      "repeat": 1,
+      "seconds": 15
+    },
+    {
+      "questionId": "P3b",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2049,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\": \"Art Nouveau borders\", \"types\": [\"LORA\"], \"sort\": \"Highest Rated\", \"limit\": 5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "Art Nouveau borders",
+        "types": [
+          "LORA"
+        ],
+        "sort": "Highest Rated",
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [
+        "562604",
+        "182980",
+        "77487"
+      ],
+      "ungroundedIds": [],
+      "groundedCitations": true,
+      "withheld": false,
+      "answerChars": 977,
+      "answer": "Based on the search results, here are some highly-rated LoRAs for Art Nouveau borders and styles:\n\n1. **[Art Nouveau](https://civitai.com/models/562604)** by ArsMachina  \n   - Base Model: ZImageBase  \n   - Downloads: 14,594 | Likes: 1,171  \n   - Focuses on Art Nouveau aesthetics, ideal for creating detailed borders and patterns.\n\n2. **[Art Nouveau Style](https://civitai.com/models/182980)** by oosayam  \n   - Base Model: Anima  \n   - Downloads: 5,870 | Likes: 725  \n   - A versatile LoRA for achieving Art Nouveau-inspired designs.\n\n3. **[Alphonse Mucha Style](https://civitai.com/models/77487)** by silvermoong  \n   - Base Model: Other  \n   - Downloads: 3,509 | Likes: 703  \n   - Specifically designed to emulate Alphonse Mucha's iconic Art Nouveau style.\n\nFor best results, pair these LoRAs with prompts emphasizing Art Nouveau elements like floral patterns, elegant curves, and decorative borders. Let me know if you'd like guidance on prompting or generating with these!",
+      "errors": [],
+      "repeat": 2,
+      "seconds": 21
+    },
+    {
+      "questionId": "P3b",
+      "arm": "recommend",
+      "status": "succeeded",
+      "buzz": 8,
+      "rounds": 2,
+      "maxTokens": 2050,
+      "toolCalled": true,
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "rawArguments": "{\"query\":\"Art Nouveau borders\",\"types\":[\"LORA\"],\"limit\":5}"
+        }
+      ],
+      "firstToolArgs": {
+        "query": "Art Nouveau borders",
+        "types": [
+          "LORA"
+        ],
+        "limit": 5
+      },
+      "expectTool": true,
+      "toolExpectationMet": true,
+      "argsIncludeOk": null,
+      "argsOmitOk": null,
+      "answerMentionsOk": null,
+      "citedIds": [
+        "562604",
+        "182980",
+        "372852",
+        "638308",
+        "927468"
+      ],
+      "ungroundedIds": [],
+      "groundedCitations": true,
+      "withheld": false,
+      "answerChars": 1407,
+      "answer": "Here are some LoRAs that can help you achieve an Art Nouveau style, especially for borders and decorative elements:\n\n1. **[Art Nouveau](https://civitai.com/models/562604)**  \n   - **Base Model**: ZImageBase  \n   - **Creator**: ArsMachina  \n   - **Downloads**: 14,594  \n   - **Likes**: 1,171  \n   - Tags: midjourney, style, art nouveau  \n\n2. **[Art Nouveau Style](https://civitai.com/models/182980)**  \n   - **Base Model**: Anima  \n   - **Creator**: oosayam  \n   - **Downloads**: 5,870  \n   - **Likes**: 725  \n   - Tags: style, art style  \n\n3. **[Art Nouveau [Pony]](https://civitai.com/models/372852)**  \n   - **Base Model**: Pony  \n   - **Creator**: MassBrainImpact  \n   - **Downloads**: 1,205  \n   - **Likes**: 188  \n   - Tags: style, art nouveau  \n\n4. **[Art Nouveau - Flux Lora](https://civitai.com/models/638308)**  \n   - **Base Model**: Flux.1 D  \n   - **Creator**: lolololo42  \n   - **Downloads**: 1,772  \n   - **Likes**: 157  \n   - Tags: character, vintage, art, illustration, art nouveau  \n\n5. **[Art Nouveau Carmine](https://civitai.com/models/927468)**  \n   - **Base Model**: SDXL 1.0  \n   - **Creator**: novuschroma  \n   - **Downloads**: 556  \n   - **Likes**: 116  \n   - Tags: red, style, illustration, artstyle, art nouveau, patterns  \n\nThe first two options are the most popular and versatile. If you're working with a specific base model, choose the LoRA that matches it for the best results.",
+      "errors": [],
+      "repeat": 3,
+      "seconds": 20
+    }
+  ]
+}
