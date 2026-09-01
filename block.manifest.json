@@ -15,7 +15,7 @@
     "apps:storage:write"
   ],
   "scopeJustifications": {
-    "ai:write:budgeted": "Generates chat completions via the orchestrator; each response spends the viewer's Buzz within the per-message budget. A question that needs a catalog lookup makes MORE THAN ONE such request: each lookup round is its own separately-quoted, separately-charged submit, bounded at 3 tool-result messages per payload, so a single question can cost up to 4 budgeted requests.",
+    "ai:write:budgeted": "Generates chat completions via the orchestrator; each response spends the viewer's Buzz within the per-message budget. A question that needs a catalog lookup makes MORE THAN ONE such request: each lookup round is its own separately-quoted, separately-charged submit, bounded at 3 tool-result messages per payload. Up to 5 budgeted requests per question: 4 to look things up and answer, plus one if the answer names a model the lookups did not return and is sent back once to be rewritten.",
     "buzz:read:self": "Not read by the app since 0.1.5 — the Civitai header shows the balance instead. The scope is retained only so that viewers who already granted it are not asked to consent again.",
     "apps:storage:read": "Reads session history and settings from per-user KV storage.",
     "apps:storage:write": "Writes session history and settings to per-user KV storage."
