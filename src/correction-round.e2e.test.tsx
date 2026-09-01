@@ -77,8 +77,13 @@ const estimateFn = vi
 
 /** Bodies as submitted, in order. A submit is the BILLED event — count these. */
 let submittedBodies: Array<{ params: { messages: Array<Record<string, unknown>> } }> = [];
+/** 1-based submit index that should REJECT, modelling a host-side failure. */
+let failSubmitAt: number | null = null;
 const submitFn = vi.fn(async (body: unknown) => {
   submittedBodies.push(body as { params: { messages: Array<Record<string, unknown>> } });
+  if (failSubmitAt !== null && submittedBodies.length === failSubmitAt) {
+    throw new Error('workflow submit exploded');
+  }
   return { workflowId: `wf-${submittedBodies.length}`, status: 'pending' };
 });
 
@@ -256,6 +261,7 @@ describe('Layer 2 — the correction round', () => {
     toolItems = [];
     holdFromSubmit = null;
     submittedBodies = [];
+    failSubmitAt = null;
     submitFn.mockClear();
     pollFn.mockClear();
     trackFn.mockClear();
@@ -413,6 +419,72 @@ describe('Layer 2 — the correction round', () => {
     expect(toolMessagesAfter).toBe(toolMessagesBefore);
   });
 
+  it('🔴 a corrective submit that FAILS keeps the answer the viewer already paid for', async () => {
+    // 🔴 THE REGRESSION LAYER 2 COULD HAVE INTRODUCED. Before it existed, an
+    // ungrounded reply still rendered — Layer 1 dropped the hrefs and the prose
+    // survived. If the corrective submit throws and that propagates, the catch
+    // replaces a usable answer with "Error: …" and persists THAT. Correcting
+    // would then be strictly worse than not correcting.
+    pollQueue = [textSnapshot(S6_VERBATIM)];
+    failSubmitAt = 2;
+
+    await startChat();
+    await send('how do I improve faces?', /improves facial features/);
+
+    expect(submitFn).toHaveBeenCalledTimes(2);
+    // The pre-correction answer survived, verbatim, and did NOT become an error.
+    const stored = lastTranscript();
+    const assistant = [...stored].reverse().find((m) => m.role === 'assistant');
+    expect(assistant?.content).toContain('Detail Tweaker LoRA');
+    expect(assistant?.content).not.toMatch(/^Error:/);
+    // Recorded honestly: a round was bought and it bought nothing.
+    expect(storedCorrection()).toEqual({ rounds: 1, resolved: false });
+    expect(trackedNames()).toContain('grounding_correction_failed');
+    // 🔴 AND LAYER 1 IS STILL DOING ITS JOB on the answer we fell back to. A
+    // recovery that handed back the reply WITHOUT the gate would be a different,
+    // worse bug wearing this fix's clothes.
+    expect(anchorFor(EMILIA)).toBeNull();
+  });
+
+  it('🔴 the corrected reply shares the ORIGINAL turn\'s tool budget, it does not get a fresh one', async () => {
+    // The host caps `role:'tool'` messages per PAYLOAD at
+    // MAX_TOOL_RESULT_MESSAGES (3), and the correction appends to that same
+    // payload. Three parallel calls exhaust it; the corrected reply then asks
+    // for one more and must be refused with the cap notice rather than
+    // BAD_REQUESTing the whole submit after the viewer has paid.
+    const threeCalls = {
+      workflowId: 'wf-3',
+      status: 'succeeded',
+      cost: { total: 1 },
+      toolCalls: [1, 2, 3].map((n) => ({
+        id: `call_${n}`,
+        type: 'function',
+        function: { name: 'search_models', arguments: JSON.stringify({ query: `q${n}` }) },
+      })),
+    };
+    pollQueue = [
+      threeCalls,
+      // Budget now fully spent. This reply cites something nobody looked up.
+      textSnapshot(`Also try [Juggernaut](https://civitai.com/models/${DEAD_B}) for that.`),
+      // The correction asks it to look the model up; it tries, and cannot.
+      toolCallSnapshot(),
+    ];
+    toolItems = [{ id: REALISTIC_VISION, name: 'Realistic Vision', type: 'Checkpoint' }];
+
+    await startChat();
+    await send('what should I use?', /could not finish that/);
+
+    // THREE submits: the original, the one after the 3-call round, and the
+    // correction. The corrected reply's tool call is refused BEFORE the calls
+    // are executed — `toolMessages` is already at 3 from the original turn — so
+    // it costs no further submit. A fresh per-correction budget would have
+    // allowed it and produced a fourth.
+    expect(submitFn).toHaveBeenCalledTimes(3);
+    expect(storedCorrection()).toEqual({ rounds: 1, resolved: false });
+    // The cap notice is what the viewer is owed: an account of why it stopped.
+    expect(screen.getByText(/could not finish that/)).toBeTruthy();
+  });
+
   // ── ABORT AND SUPERSEDE. ───────────────────────────────────────────────────
 
   it('🔴 Stop DURING the correction round does not resurrect the turn', async () => {
@@ -448,6 +520,17 @@ describe('Layer 2 — the correction round', () => {
     // fire-rate systematically under-report exactly the turns that cost most.
     expect(trackedNames()).toContain('grounding_correction_round');
     expect(trackedNames()).not.toContain('grounding_correction_result');
+    // 🔴 AND A STOP IS NOT A HOST FAILURE. This is the ONLY thing the abort
+    // re-throw in the recovery block changes, and finding that out took a
+    // mutation: with `if (aborted()) throw e` removed, the turn still unwinds
+    // correctly — the post-loop `aborted()` guard returns either way — so the
+    // whole first battery scored that guard SURVIVED. What actually differs is
+    // the LABEL: the recovery path would swallow the abort and count it as
+    // `grounding_correction_failed`, and the failure column of the fire-rate
+    // would quietly fill up with turns the viewer ended on purpose. A guard
+    // whose only effect is on a measurement still needs the measurement
+    // asserted, or it is not a guard.
+    expect(trackedNames()).not.toContain('grounding_correction_failed');
   });
 
   it('🔴 a turn SUPERSEDED during the correction round discards its reply', async () => {

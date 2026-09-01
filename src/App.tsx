@@ -1185,11 +1185,22 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // submit is impossible without changing that module, and
         // `grounding.test.ts` proves the refusal exhaustively.
         //
-        // 🔴 IT CANNOT FIRE ON A ROUND-CAPPED TURN, for free rather than by a
-        // second guard: `hitRoundCap` breaks out of the loop above this point.
-        // Correcting there would ask the model to look something up in a payload
-        // that has no tool slot left, spending Buzz on an answer that structurally
-        // cannot be grounded.
+        // 🔴 IT CANNOT FIRE ON A ROUND-CAPPED TURN, and that falls out of the
+        // structure rather than needing a second guard: this block runs ONLY
+        // when there are no calls, the round-cap check below runs only when
+        // there ARE, and the cap's `break` leaves the loop without ever coming
+        // back here. Correcting a capped turn would ask the model to look
+        // something up in a payload with no tool slot left — Buzz spent on an
+        // answer that structurally cannot be grounded.
+        //
+        // 🔴 THE TOOL BUDGET IS SHARED WITH THE ORIGINAL TURN, NOT REFRESHED.
+        // `toolMessages` is declared outside this loop and this branch does not
+        // touch it, so the lookups the CORRECTED reply makes come out of the
+        // same `MAX_TOOL_RESULT_MESSAGES` allowance. That is the host's
+        // constraint rather than a choice — its cap is on the PAYLOAD, and the
+        // correction appends to that same payload — and it is why the corrective
+        // message must not be a `role:'tool'` one: it would spend a slot from
+        // the very budget the answer it asks for needs.
         //
         // ⚠️ THE VIEWER BRIEFLY SEES BOTH TEXTS. `onChunk` has already streamed
         // the ungrounded reply, and the corrected one appends to it — the same
@@ -1252,7 +1263,45 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             // the front while always keeping the system prompt.
             { role: 'user', content: plan.message ?? '' },
           ];
-          response = await submit();
+          // 🔴 A FAILED CORRECTION MUST NOT COST THE VIEWER THE ANSWER THEY HAVE
+          // ALREADY PAID FOR. Before Layer 2, a turn whose reply was ungrounded
+          // still rendered that reply — Layer 1 dropped the hrefs and the prose
+          // survived. If the corrective submit throws (the host 500s, the
+          // estimate comes back with no cost, the corrected text is WITHHELD,
+          // the poll deadline expires) and that propagates, the `catch` below
+          // replaces a usable answer with `Error: …` and persists it. That is
+          // strictly worse than never correcting, and it would be a regression
+          // this feature introduced rather than a pre-existing one.
+          //
+          // Breaking here leaves `response` holding the PRE-correction reply, so
+          // the turn renders and stores exactly what it would have without Layer
+          // 2, with `correctionResolved` still false — the honest record: a round
+          // was bought and it bought nothing.
+          //
+          // 🔴 AN ABORT IS RE-THROWN, NOT RECOVERED — AND BE EXACT ABOUT WHAT
+          // THAT BUYS, BECAUSE THE OBVIOUS ANSWER IS WRONG. `submit()` rejects
+          // with `Aborted` when the viewer presses Stop, which is
+          // indistinguishable HERE from a host failure. The tempting claim is
+          // that recovering would resurrect a stopped turn — it would not: the
+          // `break` lands on the post-loop `if (aborted()) return;`, which
+          // returns for the same reason this line throws. Measured, not
+          // reasoned: a mutation replacing this with `if (false)` SURVIVED the
+          // entire suite.
+          //
+          // What it actually protects is the MEASUREMENT. Without it the catch
+          // below swallows the abort and counts a Stop as
+          // `grounding_correction_failed`, so the failure column of the
+          // fire-rate — the number that decides whether this feature keeps
+          // earning its Buzz — fills up with turns the viewer ended on purpose.
+          // Asserted in `correction-round.e2e.test.tsx`'s Stop case, which is
+          // what makes this guard testable at all.
+          try {
+            response = await submit();
+          } catch (e) {
+            if (aborted()) throw e;
+            depsRef.current.track('grounding_correction_failed');
+            break;
+          }
           continue;
         }
 

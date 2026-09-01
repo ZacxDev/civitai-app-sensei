@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /**
  * 🔴 THE SEAM BETWEEN THE EVAL AND THE APP — the one thing neither side's own
@@ -81,10 +81,16 @@ describe('🔴 eval/run-eval.mjs grades with the SHIPPED predicate', () => {
     // instrument that has to measure it. Vitest transpiles TypeScript itself, so
     // importing it from a test proves nothing about `node` either. This spawns
     // the real runtime and reads the answer back.
+    // 🔴 AN ABSOLUTE `file:` URL, NOT `'./src/lib/grounding.ts'`. A bare relative
+    // specifier inside `node -e` has no importing file to resolve against, so
+    // whether it resolves at all is a property of the Node version rather than
+    // of this module — and CI runs 22 while this box runs 26. Resolving it here
+    // makes the probe test the thing it is named for.
+    const mod = JSON.stringify(pathToFileURL(`${ROOT}src/lib/grounding.ts`).href);
     const probe =
-      "import {planCorrectionRound,MAX_CORRECTION_ROUNDS} from './src/lib/grounding.ts';" +
-      "const p=planCorrectionRound('see https://civitai.com/models/7878 now',new Set(),0);" +
-      "process.stdout.write(JSON.stringify([p.correct,p.reason,p.ungroundedIds,MAX_CORRECTION_ROUNDS]));";
+      `const m = await import(${mod});` +
+      "const p = m.planCorrectionRound('see https://civitai.com/models/7878 now', new Set(), 0);" +
+      'process.stdout.write(JSON.stringify([p.correct, p.reason, p.ungroundedIds, m.MAX_CORRECTION_ROUNDS]));';
     const run = spawnSync(process.execPath, ['--input-type=module', '-e', probe], {
       cwd: ROOT,
       encoding: 'utf8',
