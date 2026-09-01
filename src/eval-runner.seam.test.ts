@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /**
  * 🔴 THE SEAM BETWEEN THE EVAL AND THE APP — the one thing neither side's own
@@ -70,6 +70,34 @@ describe('🔴 eval/run-eval.mjs grades with the SHIPPED predicate', () => {
     expect(code).not.toMatch(/civitai\\\.com/);
     expect(code).not.toMatch(/models\\\/\(\\d/);
     expect(code).not.toMatch(/toolResultIds\.has/);
+  });
+
+  it("🔴 Layer 2's decision is callable from PLAIN NODE, not just from Vitest", () => {
+    // 🔴 THE MODULE LOADING IS NOT THE SAME CLAIM AS THE FUNCTION WORKING.
+    // The case above proves `run-eval.mjs` resolves the module; it imports three
+    // names and none of them is `planCorrectionRound`, so a Layer 2 export that
+    // used non-erasable syntax IN ITS SIGNATURE — a parameter property, an enum
+    // default — would still let that case pass while being uncallable from the
+    // instrument that has to measure it. Vitest transpiles TypeScript itself, so
+    // importing it from a test proves nothing about `node` either. This spawns
+    // the real runtime and reads the answer back.
+    // 🔴 AN ABSOLUTE `file:` URL, NOT `'./src/lib/grounding.ts'`. A bare relative
+    // specifier inside `node -e` has no importing file to resolve against, so
+    // whether it resolves at all is a property of the Node version rather than
+    // of this module — and CI runs 22 while this box runs 26. Resolving it here
+    // makes the probe test the thing it is named for.
+    const mod = JSON.stringify(pathToFileURL(`${ROOT}src/lib/grounding.ts`).href);
+    const probe =
+      `const m = await import(${mod});` +
+      "const p = m.planCorrectionRound('see https://civitai.com/models/7878 now', new Set(), 0);" +
+      'process.stdout.write(JSON.stringify([p.correct, p.reason, p.ungroundedIds, m.MAX_CORRECTION_ROUNDS]));';
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', probe], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    });
+    expect(run.stderr).not.toMatch(/ERR_MODULE_NOT_FOUND|SyntaxError|ERR_UNSUPPORTED/);
+    expect(run.status).toBe(0);
+    expect(JSON.parse(run.stdout)).toEqual([true, 'ungrounded', ['7878'], 1]);
   });
 
   it('🔴 `lib/grounding.ts` has NO imports, which is what keeps the runner loadable', () => {

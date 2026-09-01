@@ -1,6 +1,6 @@
 import type { ToolCall } from './tools.js';
 import type { ResolvedResource } from './mentions.js';
-import type { Message } from '../types.js';
+import type { CorrectionRecord, Message } from '../types.js';
 
 const ROLE_LABELS: Record<string, string> = {
   system: 'System',
@@ -70,6 +70,12 @@ export interface StoredMessage {
    * reload makes the transcript a partial record of what the viewer paid for.
    */
   mentions?: ResolvedResource[];
+  /**
+   * Layer 2's correction record for an assistant turn. Stored so the fire-rate
+   * can be read off real transcripts rather than estimated — see
+   * `types.ts`'s {@link CorrectionRecord}.
+   */
+  correction?: CorrectionRecord;
 }
 
 /**
@@ -85,6 +91,12 @@ export function serializeMessages(messages: Message[]): StoredMessage[] {
     // Only when there is something to store — an empty array on every message
     // would grow the stored payload for nothing.
     ...(m.mentions && m.mentions.length > 0 ? { mentions: m.mentions } : {}),
+    // 🔴 THE KEY IS OMITTED WHEN NO ROUND FIRED, which is the common case, so
+    // the overwhelming majority of stored messages are byte-identical to what
+    // they were before Layer 2 existed. `rounds > 0` rather than "the object is
+    // present": a `{ rounds: 0 }` reaching here would be a caller bug, and
+    // storing it would put "a correction happened" on a turn where none did.
+    ...(m.correction && m.correction.rounds > 0 ? { correction: m.correction } : {}),
   }));
 }
 
@@ -130,6 +142,17 @@ export function deserializeMessages(stored: StoredMessage[]): Message[] {
     // build that predates mentions simply has no key here, and one written by a
     // future build carrying an unknown extra field still deserializes.
     ...(Array.isArray(m.mentions) && m.mentions.length > 0 ? { mentions: m.mentions } : {}),
+    // 🔴 SHAPE-CHECKED, NOT TRUSTED, and total like every clause beside it. A
+    // row written before Layer 2 has no key at all; a row written by some future
+    // build could carry anything. `typeof rounds === 'number'` is what stops a
+    // malformed row from putting a `correction` on the message whose `.rounds`
+    // then reads `undefined` at every consumer.
+    ...(m.correction &&
+    typeof m.correction.rounds === 'number' &&
+    m.correction.rounds > 0 &&
+    typeof m.correction.resolved === 'boolean'
+      ? { correction: { rounds: m.correction.rounds, resolved: m.correction.resolved } }
+      : {}),
   }));
 }
 

@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   citedModelIds,
+  correctionMessage,
   groundedIdsFromToolPayload,
   groundedIdsFromToolResult,
+  MAX_CORRECTION_ROUNDS,
   mergeGroundedIds,
   modelIdInHref,
+  planCorrectionRound,
   ungroundedModelIds,
 } from './grounding.js';
 
@@ -220,5 +223,187 @@ describe('mergeGroundedIds — accumulation across a conversation', () => {
 
   it('de-duplicates within the added batch too', () => {
     expect(mergeGroundedIds(undefined, [CARDOS, CARDOS, EMILIA])).toEqual([CARDOS, EMILIA]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 2 — `planCorrectionRound`, THE WHOLE DECISION, IN ISOLATION.
+//
+// 🔴 THREE PROPERTIES, AND ONLY ONE OF THEM IS ABOUT CORRECTNESS. The other two
+// are about MONEY: a firing costs a real extra submit (4 Buzz at
+// `maxTokens: 2048`), so "does not fire on a clean reply" and "cannot fire
+// twice" are the assertions that keep the feature from silently doubling the
+// cost of every turn. `correction-round.e2e.test.tsx` proves the App honours
+// what this decides; this file proves what it decides.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** No conversation has grounded anything — the measured no-tool-call posture. */
+const NOTHING_GROUNDED: ReadonlySet<string> = new Set<string>();
+
+describe('planCorrectionRound — the no-fire cases, which are the cost cases', () => {
+  it('🔴 does NOT fire when the reply cites nothing at all', () => {
+    // The single most common turn in the app. A guard that fired here would
+    // double the Buzz cost of every conversation, and nothing on screen would
+    // say so.
+    const plan = planCorrectionRound(
+      'Lower your CFG to around 4 and raise the step count. Nothing to look up.',
+      NOTHING_GROUNDED,
+      0,
+    );
+    expect(plan.correct).toBe(false);
+    // 🔴 THE REASON IS THE POINT, not just the boolean: it is what separates
+    // "cited nothing" from "cited only grounded ids" in the field, and those two
+    // are the pair a fire-rate has to be measured against.
+    expect(plan.reason).toBe('no-citations');
+    expect(plan.ungroundedIds).toEqual([]);
+    expect(plan.message).toBeNull();
+  });
+
+  it('🔴 does NOT fire when EVERY citation is grounded', () => {
+    const grounded = new Set([DREAMSHAPER, REALISTIC_VISION, DEAD_A]);
+    const plan = planCorrectionRound(S2_FRAGMENT, grounded, 0);
+    expect(plan.correct).toBe(false);
+    expect(plan.reason).toBe('grounded');
+    expect(plan.ungroundedIds).toEqual([]);
+    expect(plan.message).toBeNull();
+  });
+
+  it('a citation that is NOT a model link is not a citation', () => {
+    // Grounding has nothing to say about a profile or an article URL, so a reply
+    // full of them must not be charged a corrective submit.
+    const plan = planCorrectionRound(
+      'See [the creator](https://civitai.com/user/tester) and [this article](https://civitai.com/articles/99).',
+      NOTHING_GROUNDED,
+      0,
+    );
+    expect(plan.correct).toBe(false);
+    expect(plan.reason).toBe('no-citations');
+  });
+});
+
+describe('planCorrectionRound — the firing case', () => {
+  it('🔴 fires on the measured S6 answer, naming both invented ids', () => {
+    // The verbatim shape from the seam probe: BARE parenthesised URLs, which
+    // were never anchors, so Layer 1 had nothing to refuse and the false names
+    // ("Detail Tweaker LoRA" at Emilia's id) reached the viewer intact.
+    const plan = planCorrectionRound(S6_FRAGMENT, NOTHING_GROUNDED, 0);
+    expect(plan.correct).toBe(true);
+    expect(plan.reason).toBe('ungrounded');
+    expect(plan.ungroundedIds).toEqual([EMILIA, CARDOS]);
+    expect(plan.message).toContain(EMILIA);
+    expect(plan.message).toContain(CARDOS);
+  });
+
+  it('🔴 fires on the ONE ungrounded id in an otherwise grounded answer', () => {
+    // The partial case, and the one a "did it cite anything?" test would miss:
+    // two of the three ids in S2 came out of the catalog and the third did not.
+    const plan = planCorrectionRound(S2_FRAGMENT, new Set([DREAMSHAPER, REALISTIC_VISION]), 0);
+    expect(plan.correct).toBe(true);
+    expect(plan.ungroundedIds).toEqual([DEAD_A]);
+    // 🔴 IT NAMES ONLY WHAT IS ACTUALLY WRONG. Listing the grounded ids too
+    // would tell the model to re-look-up work it already did correctly, which is
+    // how a correction turns into a suppression — the failure mode that got the
+    // prompt-only fix rejected.
+    expect(plan.message).not.toContain(DREAMSHAPER);
+    expect(plan.message).not.toContain(REALISTIC_VISION);
+  });
+
+  it('de-duplicates a repeated invented id into one complaint', () => {
+    const plan = planCorrectionRound(
+      `${S6_FRAGMENT}\n${S6_FRAGMENT}`,
+      new Set([CARDOS]),
+      0,
+    );
+    expect(plan.ungroundedIds).toEqual([EMILIA]);
+  });
+});
+
+describe('🔴 planCorrectionRound — THE CAP. It must be impossible to loop.', () => {
+  it('the ceiling is one', () => {
+    expect(MAX_CORRECTION_ROUNDS).toBe(1);
+  });
+
+  it('🔴 refuses a SECOND round on text that is still ungrounded', () => {
+    // The whole bound, in one assertion: the same text that fired at
+    // `roundsUsed: 0` must not fire at `roundsUsed: 1`.
+    const first = planCorrectionRound(S6_FRAGMENT, NOTHING_GROUNDED, 0);
+    expect(first.correct).toBe(true);
+
+    const second = planCorrectionRound(S6_FRAGMENT, NOTHING_GROUNDED, 1);
+    expect(second.correct).toBe(false);
+    expect(second.reason).toBe('cap-reached');
+    expect(second.message).toBeNull();
+    // 🔴 THE IDS SURVIVE THE REFUSAL, and that is deliberate: the caller records
+    // "we spent a round and it did NOT work", which needs to know what is still
+    // wrong. Zeroing them here would make the failure indistinguishable from a
+    // clean reply.
+    expect(second.ungroundedIds).toEqual([EMILIA, CARDOS]);
+  });
+
+  it('🔴 refuses at every count above the ceiling, not just at exactly one', () => {
+    // A `=== MAX_CORRECTION_ROUNDS` comparison passes the case above and lets a
+    // caller that somehow reached 2 fire forever. Walked, not reasoned about.
+    for (const used of [1, 2, 3, 7, 99]) {
+      const plan = planCorrectionRound(S6_FRAGMENT, NOTHING_GROUNDED, used);
+      expect(plan.correct, `roundsUsed=${used} must not fire`).toBe(false);
+      expect(plan.reason).toBe('cap-reached');
+    }
+  });
+
+  it('🔴 the cap does NOT mask a corrected reply that came back clean', () => {
+    // The ordering trap: checking the cap before the grounding test would report
+    // `cap-reached` here — recording the SUCCESS case as the failure case, and
+    // inverting the only observability this feature has.
+    const plan = planCorrectionRound(S2_FRAGMENT, new Set([DREAMSHAPER, REALISTIC_VISION, DEAD_A]), 1);
+    expect(plan.correct).toBe(false);
+    expect(plan.reason).toBe('grounded');
+  });
+});
+
+describe('correctionMessage — what the model is actually told', () => {
+  it('🔴 contains NO civitai model URL, so the complaint is not itself a citation', () => {
+    // This string is appended to `apiMessages`, where anything is a candidate
+    // for being read back by `citedModelIds` — by the eval, by a test, by a
+    // future caller that scans the payload. Spelling the ids as
+    // `.../models/<id>` would make the instruction to stop citing them parse as
+    // a citation of them.
+    const msg = correctionMessage([EMILIA, CARDOS, DEAD_A]);
+    expect(citedModelIds(msg)).toEqual([]);
+    // Positive control on that assertion: the extractor DOES fire on the shape
+    // being forbidden, so the empty result above is a fact about the message and
+    // not about a mis-aimed matcher.
+    expect(citedModelIds(`${msg}\nhttps://civitai.com/models/${DETAIL_TWEAKER}`)).toEqual([
+      DETAIL_TWEAKER,
+    ]);
+  });
+
+  it('🔴 names no tool by name — declarations are fetched, not authored here', () => {
+    // `App.tsx` fetches the declarations from the host precisely so a model is
+    // never shown a contract the route does not enforce. Hard-coding
+    // `search_models` here would put a tool name in the instructions that the
+    // route is free to rename or withdraw, and the failure would be a model
+    // apologising for a tool it cannot see.
+    expect(correctionMessage([EMILIA])).not.toContain('search_models');
+  });
+
+  it('tells the model both permitted outs — look it up, or drop the id', () => {
+    const msg = correctionMessage([DEAD_B]);
+    expect(msg).toMatch(/look .*up/i);
+    // The suppression-safe escape hatch: a model that cannot verify must say so
+    // rather than stay silent about the model entirely.
+    expect(msg).toMatch(/no link/i);
+  });
+
+  it('🔴 stays bounded when an answer invents a great many ids', () => {
+    // The host truncates one message at 8,000 chars, silently and
+    // mid-sentence — which would cut the instruction off after the id list and
+    // leave the model with a complaint and no task.
+    const many = Array.from({ length: 400 }, (_, i) => String(900_000 + i));
+    const msg = correctionMessage(many);
+    expect(msg.length).toBeLessThan(2_000);
+    // The overflow is REPORTED, not silently dropped.
+    expect(msg).toMatch(/\d+ more/);
+    // And the first id is still named, so the message is about something.
+    expect(msg).toContain(many[0]);
   });
 });

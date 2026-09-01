@@ -32,6 +32,34 @@ const DEAD_A = 4823;
 const DEAD_B = 18619;
 const CARDOS = 22220;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 LAYER 2 CHANGED WHAT THESE FIXTURES HAVE TO CONTAIN, AND NOT WHAT THEY
+// ASSERT. Every case below feeds an UNGROUNDED citation on purpose — which is
+// now exactly the posture that makes `handleSend` spend ONE corrective
+// re-submit (`lib/grounding.ts`, `planCorrectionRound`). So a queue holding a
+// single reply per turn runs dry on the correction and the app renders
+// `pollFn`'s fallback instead of the answer under test.
+//
+// The fix is `twice()`: the model, asked to correct itself, says the same thing
+// again. That is the measured worst case AND it is what this file is for — it
+// keeps every assertion here about LAYER 1, and pins the designed relationship
+// between the two layers: after a correction round fails, the mechanical gate
+// is still the thing standing between the viewer and a wrong destination.
+//
+// 🔴 IT ALSO CLOSES A TEST THAT WAS PASSING FOR THE WRONG REASON. The
+// PER-CONVERSATION case below stayed green with a one-entry queue only because
+// its `waitFor` caught the text during the streaming transient, before the
+// correction replaced it. Green, and blind to its own subject.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The same reply queued twice: once for the turn, once for the correction round
+ * that this reply's ungrounded citation provokes.
+ */
+function twice(snap: Record<string, unknown>) {
+  return [snap, { ...snap }];
+}
+
 const h = vi.hoisted(() => ({
   storage: null as ReturnType<typeof fakeAppStorage> | null,
 }));
@@ -173,9 +201,11 @@ describe('grounded citations reach the screen', () => {
       toolItems = [{ id: DREAMSHAPER, name: 'DreamShaper', type: 'Checkpoint' }];
       pollQueue = [
         toolCallSnapshot(),
-        textSnapshot(
-          `1. [DreamShaper](https://civitai.com/models/${DREAMSHAPER})\n` +
-            `2. [Deliberate](https://civitai.com/models/${DEAD_A})`,
+        ...twice(
+          textSnapshot(
+            `1. [DreamShaper](https://civitai.com/models/${DREAMSHAPER})\n` +
+              `2. [Deliberate](https://civitai.com/models/${DEAD_A})`,
+          ),
         ),
       ];
       await startChat();
@@ -199,12 +229,12 @@ describe('grounded citations reach the screen', () => {
 
       // Turn 2 calls NO tool — the exact posture that produced every measured
       // fabrication — and cites one id from turn 1 plus one from nowhere.
-      pollQueue = [
+      pollQueue = twice(
         textSnapshot(
           `Use [DreamShaper](https://civitai.com/models/${DREAMSHAPER}), not ` +
             `[Juggernaut](https://civitai.com/models/${DEAD_B}).`,
         ),
-      ];
+      );
       await send('anything else?', 'Juggernaut');
 
       // Grounded on turn 1, still grounded now. A per-TURN set would refuse
@@ -225,9 +255,9 @@ describe('grounded citations reach the screen', () => {
       fireEvent.click(screen.getByTestId('new-session-button'));
       await waitFor(() => expect(screen.queryByText(/is a checkpoint/)).toBeNull());
 
-      pollQueue = [
+      pollQueue = twice(
         textSnapshot(`Try [DreamShaper](https://civitai.com/models/${DREAMSHAPER}) here too.`),
-      ];
+      );
       await send('recommend something', 'here too');
 
       // Same id, same app, different conversation — and this one grounded
@@ -238,11 +268,11 @@ describe('grounded citations reach the screen', () => {
 
   it('🔴 a turn that calls NO tool links NOTHING — the measured defect, end to end', () => {
     return (async () => {
-      pollQueue = [
+      pollQueue = twice(
         textSnapshot(
           `- **Face Slider** [link](https://civitai.com/models/${CARDOS}) tunes expressions.`,
         ),
-      ];
+      );
       await startChat();
       await send('how do I improve faces?', 'Face Slider');
 

@@ -1,5 +1,36 @@
 import type { ResolvedResource } from './lib/mentions.js';
 
+/**
+ * What Layer 2's correction round did to a turn. Set only on an `'assistant'`
+ * message, and only when a round actually fired.
+ *
+ * 🔴 RECORDED RATHER THAN INFERRED, BECAUSE THE ALTERNATIVE IS GUESSING AT A
+ * SPEND. Every firing costs a real extra submit (4 Buzz measured at
+ * `maxTokens: 2048`), charged to a viewer who did not ask for it, and the
+ * expected fire-rate — roughly 22% of technique-style turns — is an estimate
+ * from an 18-turn probe, not a measurement of production. Without this the only
+ * way to learn the real rate would be to reason about it. `App.tsx` also emits
+ * the matching `grounding_correction_*` analytics events; this is the copy that
+ * survives on the transcript, so a single stored conversation can be read back
+ * and audited without a metrics pipeline.
+ *
+ * ABSENT means no round fired, which is the overwhelmingly common case and is
+ * why the key is omitted rather than written as `{ rounds: 0 }`.
+ */
+export interface CorrectionRecord {
+  /**
+   * Corrective re-submits spent on this turn. Bounded by
+   * `MAX_CORRECTION_ROUNDS` in `lib/grounding.ts`; never 0 when present.
+   */
+  rounds: number;
+  /**
+   * Whether the reply that came back was clean — every citation grounded, or no
+   * citation at all. `false` means the model was asked once and still cited
+   * something unverified, and Layer 1 is gating the links.
+   */
+  resolved: boolean;
+}
+
 export interface Message {
   id: string;
   /**
@@ -44,6 +75,11 @@ export interface Message {
    * already has in its own transcript.
    */
   mentions?: ResolvedResource[];
+  /**
+   * Set when Layer 2's correction round fired on this turn. See
+   * {@link CorrectionRecord}. Only ever on an `'assistant'` message.
+   */
+  correction?: CorrectionRecord;
 }
 
 export interface Session {
