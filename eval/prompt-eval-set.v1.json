@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "name": "sensei system-prompt evaluation set v1",
+  "purpose": "Baseline the shipped DEFAULT_SYSTEM_PROMPT against the two operator-reported failures (clawgate #433): the prompt UNDER-USES tools, and it has a WEAK IDENTITY ('doesn't know it's Civitai'). Criterion 2 requires the rewrite to be scored against this exact file, so treat it as a fixed instrument: add questions in a v2 rather than editing these.",
+  "model": "deepseek/deepseek-chat",
+  "temperature": 0.7,
+  "maxTokens": 2048,
+  "repeats": 3,
+  "maxToolRounds": 2,
+  "notes": {
+    "temperature": "0.7 is the SHIPPED default (DEFAULT_SETTINGS.temperature). Deliberately NOT pinned to 0 — pinning it would measure a configuration no viewer runs. The cost is stochasticity, which is why repeats=3 and every result is reported as a RATE (n/3), never as a single flip.",
+    "repeats": "A 1-of-1 before/after difference is a sampling draw, not a prompt property. Three repeats is the minimum that distinguishes 'always' and 'never' from 'sometimes'; it does NOT give a confidence interval, and a 2/3 -> 3/3 move must not be reported as an improvement.",
+    "withheld": "A withheld turn is a MISSING OBSERVATION, not a wrong answer. It is recorded in its own field and excluded from correctness rates. Lumping it into 'fail' would make a prompt look WORSE the better it grounds, because grounding is what trips the output scanner (clawgate #430).",
+    "cost": "MEASURED cost.total is 4 Buzz per submit at maxTokens 2048 — NOT the 1/submit assumed in clawgate #433 comment 492. A lookup turn is 2 submits (8 Buzz); a no-lookup turn is 1 (4 Buzz). Full baseline arm ~= 51 submits ~= 204 Buzz.",
+    "cache": "🔴 AN IDENTICAL STEP INPUT IS REPLAYED FROM A SERVER-SIDE CACHE, AND THE REPLAY IS STILL CHARGED. Measured: two submits of a byte-identical body returned the SAME provider-generated tool_call id (call_dkitt…), across different workflowIds, hours apart — a provider mints those ids randomly, so an identical id cannot be a re-sample. Without a buster, `repeats` returns ONE observation three times while paying three times, and the resulting 3/3 reads as agreement between draws that never happened. The runner therefore varies `maxTokens` by the repeat index: answers run ~300 tokens against a 2048 ceiling, so the ceiling is never reached and the nudge cannot change a generation, but it does change the input hash (measured: 2049 gave a different id and different argument formatting; cost unchanged at 4). The question text, system prompt and temperature are deliberately NOT touched — perturbing any of those changes what is being measured.",
+    "grounding_check": "`groundedCitations` is fully mechanical: every civitai.com/models/<id> in the final answer must have its <id> present in a tool result from the SAME turn. A citation to an id no tool returned is a FABRICATION, which is the failure the whole prompt lineage exists to prevent. A turn with no citations is `null` (not applicable), never `true`."
+  },
+  "questions": [
+    {
+      "id": "L1",
+      "arm": "lookup",
+      "text": "What are the most popular models on Civitai right now?",
+      "expectTool": true,
+      "why": "Pure ranking question. The pre-#4499 failure was putting the ranking word into `query` and returning models NAMED 'Popular' (~2.1k downloads) instead of the catalog top (~2.3M).",
+      "checks": { "toolArgsMustInclude": ["sort"], "toolArgsMustOmit": ["query"] }
+    },
+    {
+      "id": "L2",
+      "arm": "lookup",
+      "text": "What base model is Pony Diffusion V6 XL built on?",
+      "expectTool": true,
+      "why": "THE SHARPEST PROBE (named in comment 492). The model almost certainly knows this from memory, which is exactly why it will skip the lookup — the under-use failure in its purest form. Expect this to be the question that moves most between prompts.",
+      "checks": { "toolArgsMustInclude": ["query"] }
+    },
+    {
+      "id": "L3",
+      "arm": "lookup",
+      "text": "How many downloads does DreamShaper have?",
+      "expectTool": true,
+      "why": "A specific numeric stat. The prompt explicitly says 'never guess a download count', so answering without a lookup is a direct violation of an instruction the prompt already contains.",
+      "checks": { "toolArgsMustInclude": ["query"] }
+    },
+    {
+      "id": "L4",
+      "arm": "lookup",
+      "text": "What are the most downloaded anime models?",
+      "expectTool": true,
+      "why": "Ranking WITHIN a text match — the tool description's own worked example (`query: \"anime\"` plus `sort: \"Most Downloaded\"`). Tests whether the model composes two arguments rather than picking one.",
+      "checks": { "toolArgsMustInclude": ["sort", "query"] }
+    },
+    {
+      "id": "L5",
+      "arm": "lookup",
+      "text": "Is there a model called Juggernaut XL, and who made it?",
+      "expectTool": true,
+      "why": "Named-model lookup. The tool description warns that adding `sort` to a named query 'ranks a hundred fuzzy matches and can push the exact model out' — so the correct call is `query` ALONE. Tests whether the model reads that instruction.",
+      "checks": { "toolArgsMustInclude": ["query"], "toolArgsMustOmit": ["sort"] }
+    },
+    {
+      "id": "T1",
+      "arm": "technique",
+      "text": "What does CFG scale do in Stable Diffusion?",
+      "expectTool": false,
+      "why": "Pure general technique. The prompt says these 'need no catalog data — answer them directly without a lookup'. A tool call here is the OVER-trigger failure, and it costs the viewer a second charged round for nothing.",
+      "checks": {}
+    },
+    {
+      "id": "T2",
+      "arm": "technique",
+      "text": "How do I avoid overfitting when training a LoRA?",
+      "expectTool": false,
+      "why": "Training advice. 'LoRA' is a catalog TYPE as well as a technique, so this tests whether a type word alone drags the model toward a lookup.",
+      "checks": {}
+    },
+    {
+      "id": "T3",
+      "arm": "technique",
+      "text": "What's the difference between the Karras and Exponential noise schedulers?",
+      "expectTool": false,
+      "why": "THE OVER-TRIGGER DECOY (the shape comment 492 asked for): 'Karras' and 'Exponential' are capitalised proper nouns that LOOK like catalog entities and are not — they are schedulers. A model that keys on surface form rather than meaning will search for them.",
+      "checks": {}
+    },
+    {
+      "id": "T4",
+      "arm": "technique",
+      "text": "Why do my generated hands look distorted, and how do I fix it?",
+      "expectTool": false,
+      "why": "A troubleshooting question with no named entity at all. The clean negative control for the technique arm — if this triggers a lookup, the over-use is unconditional rather than entity-driven.",
+      "checks": {}
+    },
+    {
+      "id": "I1",
+      "arm": "identity",
+      "text": "Who are you?",
+      "expectTool": false,
+      "why": "The operator's exact complaint: 'doesn't know it's Civitai'. Measured mechanically as whether the answer says 'Civitai' at all; the richer judgement (does it establish WHAT Civitai is) is recorded as text for a human read.",
+      "checks": { "answerMustMention": ["civitai"] }
+    },
+    {
+      "id": "I2",
+      "arm": "identity",
+      "text": "What is this site?",
+      "expectTool": false,
+      "why": "Tests whether the assistant can describe the PLATFORM it is embedded in. The prompt never says what Civitai is, and no platform-side preamble exists (measured: the system prompt is 100% the app's), so nothing supplies this if the prompt does not.",
+      "checks": { "answerMustMention": ["civitai"] }
+    },
+    {
+      "id": "I3",
+      "arm": "identity",
+      "text": "What can you help me with?",
+      "expectTool": false,
+      "why": "Capability self-description. A prompt that under-claims here (omitting that it can look up the catalog) is the mirror of the fabrication failure — the model has a tool and does not know to offer it.",
+      "checks": { "answerMustMention": ["civitai"] }
+    }
+  ]
+}

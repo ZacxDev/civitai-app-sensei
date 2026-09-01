@@ -31,7 +31,21 @@
  * text, not a link. The app's own system prompt tells the model to link
  * `https://civitai.com/models/<id>`, so this allowlist is the same claim
  * enforced rather than trusted.
+ *
+ * 🔴 AND A SECOND ALLOWLIST ON THE SAME MECHANISM: a `civitai.com/models/<id>`
+ * link is refused unless `<id>` came back from a tool round in THIS
+ * conversation. The host allowlist answers "could this URL be hostile"; the
+ * grounded set answers "did the model make this id up". Measured, the second
+ * question is the one that was failing — 4 ungrounded answers in an 18-turn
+ * probe, two of them REAL ids under INVENTED names, which resolve 200 and send
+ * the viewer somewhere unrelated with nothing on screen to say so. The rule
+ * itself lives in `lib/grounding.ts`, because `eval/run-eval.mjs` has to
+ * measure the same predicate this renders; see that file's header for why one
+ * copy is the whole point.
  */
+
+import type { GroundedModelIds } from './grounding.js';
+import { modelIdInHref } from './grounding.js';
 
 export type Inline =
   | { kind: 'text'; text: string }
@@ -52,8 +66,27 @@ const ALLOWED_HOSTS = new Set(['civitai.com', 'www.civitai.com', 'civit.ai']);
  *
  * Exported for its own test: this is the security-relevant half of the module
  * and deserves to fail loudly on its own rather than only through a render.
+ *
+ * `grounded` is the set of model ids this CONVERSATION's tool rounds returned.
+ *
+ * 🔴 OMITTING IT MUST BE EXACTLY TODAY'S BEHAVIOUR, and that is not a
+ * convenience for the existing call sites — it is what stops the guard from
+ * retroactively refusing links in contexts that have no tool results to judge
+ * them against. A user's own typed link, a fixture, a caller that never runs a
+ * tool loop: none of those has a grounded set, and inventing an empty one for
+ * them would refuse every model link in the app.
+ *
+ * 🔴 AN EMPTY SET IS THEREFORE NOT THE SAME ARGUMENT AS `undefined`. A
+ * conversation that has grounded nothing supplies `new Set()` and every model
+ * link is refused — which is precisely the measured defect case, a turn that
+ * called no tool and cited from memory. If those two ever collapse into one
+ * value the guard becomes inert in the only case it was built for.
+ *
+ * 🔴 CHECKED AFTER THE HOST/USERINFO CHECKS, NEVER BEFORE. Grounding can only
+ * ever NARROW what the allowlist already accepted; nothing below can make a
+ * refused URL renderable.
  */
-export function linkHref(raw: string): string | null {
+export function linkHref(raw: string, grounded?: GroundedModelIds | null): string | null {
   const trimmed = raw.trim();
   // A relative or scheme-less URL would resolve against the SANDBOXED iframe's
   // opaque origin, which is never useful and is not obviously safe. Absolute
@@ -75,7 +108,21 @@ export function linkHref(raw: string): string | null {
     // authored by a language model out of third-party catalog rows. A real
     // civitai link never carries userinfo, so refusing it costs nothing.
     if (u.username !== '' || u.password !== '') return null;
-    return ALLOWED_HOSTS.has(u.hostname.toLowerCase()) ? u.toString() : null;
+    if (!ALLOWED_HOSTS.has(u.hostname.toLowerCase())) return null;
+
+    const href = u.toString();
+    // No grounding context supplied — the pre-grounding behaviour, unchanged.
+    if (grounded == null) return href;
+    // Not a model link at all (a profile, an image, an article). The grounded
+    // set has nothing to say about it, so the host allowlist above is the whole
+    // decision — exactly as it was before this parameter existed.
+    const id = modelIdInHref(href);
+    if (id === null) return href;
+    // 🔴 THE CITATION GATE. Refusing returns `null`, which `parseInline` renders
+    // as the link's TEXT with no href — the viewer still reads the model name
+    // the model wrote, and cannot be sent to an id nothing in this conversation
+    // ever returned.
+    return grounded.has(id) ? href : null;
   } catch {
     return null;
   }
@@ -88,8 +135,13 @@ const LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/;
 const BOLD_RE = /\*\*([^*]+)\*\*/;
 const CODE_RE = /`([^`]+)`/;
 
-/** Parse one line of inline markdown into spans. Never throws. */
-export function parseInline(line: string): Inline[] {
+/**
+ * Parse one line of inline markdown into spans. Never throws.
+ *
+ * `grounded` is forwarded verbatim to {@link linkHref} — see there for why
+ * `undefined` and an empty set are different arguments.
+ */
+export function parseInline(line: string, grounded?: GroundedModelIds | null): Inline[] {
   const out: Inline[] = [];
   let rest = line;
 
@@ -115,7 +167,7 @@ export function parseInline(line: string): Inline[] {
 
     if (win.kind === 'link') {
       const [, text, href] = win.m;
-      const safe = linkHref(href);
+      const safe = linkHref(href, grounded);
       // 🔴 A REFUSED LINK KEEPS ITS TEXT, never the URL. Rendering the raw href
       // as a consolation would put an unvetted string on screen, which is the
       // thing the allowlist exists to prevent.
@@ -138,8 +190,14 @@ const OL_RE = /^\s*\d+[.)]\s+(.*)$/;
 /**
  * Parse a message into blocks. Total: any input produces a valid tree, and
  * unsupported syntax survives as literal text rather than being dropped.
+ *
+ * 🔴 `grounded` MUST REACH EVERY `parseInline` CALL BELOW, and there are three
+ * of them (paragraph, ordered item, unordered item). The measured defect shape
+ * is a LIST — `- **Detail Tweaker LoRA** (https://civitai.com/models/7878) …` —
+ * so threading it into the paragraph path alone would leave the guard passing
+ * its own unit tests while the actual answers went ungated.
  */
-export function parseMarkdown(src: string): Block[] {
+export function parseMarkdown(src: string, grounded?: GroundedModelIds | null): Block[] {
   const blocks: Block[] = [];
   const lines = src.split('\n');
 
@@ -149,7 +207,7 @@ export function parseMarkdown(src: string): Block[] {
 
   const flushPara = () => {
     if (para.length) {
-      blocks.push({ kind: 'para', spans: parseInline(para.join(' ')) });
+      blocks.push({ kind: 'para', spans: parseInline(para.join(' '), grounded) });
       para = [];
     }
   };
@@ -162,10 +220,10 @@ export function parseMarkdown(src: string): Block[] {
     if (line.trim().length === 0) { flushPara(); flushLists(); continue; }
 
     const olM = OL_RE.exec(line);
-    if (olM) { flushPara(); if (ul.length) flushLists(); ol.push(parseInline(olM[1])); continue; }
+    if (olM) { flushPara(); if (ul.length) flushLists(); ol.push(parseInline(olM[1], grounded)); continue; }
 
     const ulM = UL_RE.exec(line);
-    if (ulM) { flushPara(); if (ol.length) flushLists(); ul.push(parseInline(ulM[1])); continue; }
+    if (ulM) { flushPara(); if (ol.length) flushLists(); ul.push(parseInline(ulM[1], grounded)); continue; }
 
     flushLists();
     para.push(line.trim());
