@@ -1,7 +1,7 @@
 {
   "name": "sensei",
   "private": true,
-  "version": "0.1.9",
+  "version": "0.1.10",
   "type": "module",
   "description": "Civitai Sensei — an AI research assistant App Block with chat and catalog-grounded answers.",
   "license": "Apache-2.0",
