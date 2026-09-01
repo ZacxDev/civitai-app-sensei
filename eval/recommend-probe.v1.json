@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "name": "recommendation arm v1",
+  "purpose": "Score the question shape the operator's 'under-uses tools' report actually lives in, and which NO existing instrument scores. prompt-eval-set.v1.json's five expectTool:true questions are all NAMED-ENTITY or RANKING lookups (name a model, or ask for a top-N) where reaching for the tool is syntactically obvious — it reports 36/36 and structurally cannot see this. seam-probe.v1.json contains the right shape but carries expectTool:null on every question, so all 18 of its turns score toolExpectationMet:null and contribute NOTHING to any tool-expectation ratio. Re-scoring its recorded baseline by hand gives 4/18. This set makes that a measured number instead of a hand count, and adds the variable the re-score suggested is the real one.",
+  "model": "deepseek/deepseek-chat",
+  "temperature": 0.7,
+  "maxTokens": 2048,
+  "repeats": 3,
+  "maxToolRounds": 2,
+  "notes": {
+    "metric": "🔴 THE METRIC HERE IS `toolExpectationMet`, AND EVERY QUESTION IS `expectTool: true`. That is the whole difference from seam-probe.v1.json, which asks the same kind of question and deliberately scores neither behaviour as wrong. The claim being tested is narrower and checkable: when a viewer asks WHICH MODEL to use, answering from memory is a defect, because the catalog is the only authority on what exists, what it is called, and what its id is. Read `fabricated` alongside — a rewrite that raises toolCalled while still naming ungrounded models has moved the failure, not fixed it.",
+    "why_not_all_six_seam_questions": "🔴 ONLY S2 AND S5 ARE CARRIED OVER, AND THE OMISSIONS ARE THE POINT. Promoting all six to expectTool:true would repeat, inverted, the labelling error this set exists to correct — asserting a lookup is mandatory on questions where it is not. S1 ('why do hands look distorted') and S6 ('better faces') are quality-complaint questions whose correct answer is technique; naming a model is optional. S3 ('where do I start') is open enough that a settings-and-workflow answer is complete. S4 is the clearest case: seam-probe's own note records that 'recommendations' there most naturally means SETTINGS. Those four stay in seam-probe.v1.json with expectTool:null, which is the correct instrument for them. A label is a claim about what the right answer is; do not make one you cannot defend.",
+    "design": "🔴 MATCHED FAMOUS/NICHE PAIRS, BECAUSE THAT IS THE VARIABLE THE RE-SCORE POINTED AT. S2 (0/3 tool calls) and S5 (3/3) are the same question shape with opposite behaviour in the same run on the same prompt, which rules out both 'the prompt never induces lookups here' and 'the question is badly worded'. What is left is whether the model believes it ALREADY KNOWS the answer — famous portrait checkpoints yes, architectural ones no. That pair was found by accident. P1–P3 below design it in: each pair holds the wording template fixed and varies ONLY how likely a memorised answer is, so the difference within a pair is attributable to that and to nothing else.",
+    "checks_are_deliberately_empty": "🔴 NO `toolArgsMustInclude`. It is tempting to require `query`, but that would bake in an assumption about HOW a recommendation should be looked up — `sort` with a filter is a legitimate way to answer 'what's a good checkpoint for X', and #4499 exists precisely because the wrong choice between them was a real defect. This arm scores WHETHER the model looked, not how. Add an args check only once there is evidence about which form produces better answers.",
+    "baseline_is_partly_free": "S2 and S5 already have a recorded baseline on the shipped prompt in eval/results/seam-baseline-2026-08-31.json (0/3 and 3/3, temp 0.7, 3 repeats, same model and maxTokens) — carried over VERBATIM so those six turns need not be re-bought. Only P1a–P3b are new: 6 questions x 3 repeats = 18 turns. A turn with no tool call costs 4 Buzz, one with a call costs 8, so the new baseline is 72–144 Buzz depending on how often the model looks — and the arm is interesting precisely when it lands nearer the bottom of that range.",
+    "cache": "Same cache-buster as the other sets (maxTokens + repeat index). Without it three repeats are one charged observation replayed three times and reported as 3/3 agreement — see prompt-eval-set.v1.json.",
+    "pre_registered_bar": "🔴 FOR ANY FUTURE PROMPT REWRITE, JUDGED ON THIS ARM AND NOT ON prompt-eval-set.v1: `toolCalled` RISES **and** ungrounded citations FALL **and** NO question that was already 3/3 regresses. The third clause is not decoration — the rejected v2 rewrite improved the aggregate while S5 fell from 3/3 to 2/3 and gained a fabrication, and the aggregate hid it. A rewrite that raises toolCalled by suppressing model mentions fails this bar too, which is why `fabricated` and mention count must both be reported."
+  },
+  "questions": [
+    {
+      "id": "R1",
+      "arm": "recommend",
+      "text": "What should I use to generate photorealistic portraits?",
+      "expectTool": true,
+      "why": "CARRIED OVER VERBATIM FROM seam-probe S2 — the anchor, and half of the control pair the re-score found. Recorded baseline: 0/3 tool calls, and 2 of 3 turns emitted the identical memorised list (DreamShaper 4384, Realistic Vision 4201, 4823) with 4823 a verified 404. Wording is unchanged so this stays a re-measurement of a known event rather than a new experiment; changing a character would forfeit the free baseline.",
+      "checks": {}
+    },
+    {
+      "id": "R2",
+      "arm": "recommend",
+      "text": "What's a good checkpoint for architectural renders?",
+      "expectTool": true,
+      "why": "CARRIED OVER VERBATIM FROM seam-probe S5 — the other half of the control pair, and the arm's positive control. Recorded baseline: 3/3 tool calls, 3/3 grounded, real download counts. It proves the shipped prompt CAN reach for the tool on this question shape, so a low rate elsewhere is a property of the question's subject rather than of the prompt's ability. If this one ever drops, that is the regression clause of the pre-registered bar firing.",
+      "checks": {}
+    },
+    {
+      "id": "P1a",
+      "arm": "recommend",
+      "text": "What's a good checkpoint for anime portraits?",
+      "expectTool": true,
+      "why": "PAIR 1, FAMOUS. Template held identical to P1b; the only variable is the subject. Anime checkpoints are among the most written-about models in existence, so a memorised answer is maximally available — this is where skipping the lookup should be most tempting. Shares S5's exact wording template on purpose, so R2-vs-P1a is a second read of the same variable with the shape held constant.",
+      "checks": {}
+    },
+    {
+      "id": "P1b",
+      "arm": "recommend",
+      "text": "What's a good checkpoint for technical blueprints?",
+      "expectTool": true,
+      "why": "PAIR 1, NICHE. Same template as P1a. Blueprints are a real but sparsely-served niche, so the model is unlikely to hold a memorised list — the condition under which S5 looked things up 3/3. If P1a skips and P1b looks, the famous/niche variable reproduces on a designed pair rather than only on the accidental one.",
+      "checks": {}
+    },
+    {
+      "id": "P2a",
+      "arm": "recommend",
+      "text": "What's a good checkpoint for fantasy landscapes?",
+      "expectTool": true,
+      "why": "PAIR 2, FAMOUS. A second famous subject in a different domain from P1a, so a result on pair 1 is not carried entirely by anime being a special case. Fantasy-landscape checkpoints are widely discussed and a from-memory answer is readily available.",
+      "checks": {}
+    },
+    {
+      "id": "P2b",
+      "arm": "recommend",
+      "text": "What's a good checkpoint for microscopy imagery?",
+      "expectTool": true,
+      "why": "PAIR 2, NICHE. Deliberately more obscure than P1b: a subject where the honest answer may be that the catalog has little, which is itself only knowable by looking. The highest-value cell in the arm — a from-memory answer here is likely to be not merely ungrounded but WRONG, and a grounded 'there isn't much for this' is the ideal behaviour.",
+      "checks": {}
+    },
+    {
+      "id": "P3a",
+      "arm": "recommend",
+      "text": "Which LoRA should I use for better hands?",
+      "expectTool": true,
+      "why": "PAIR 3, FAMOUS, and a different catalog TYPE (LoRA, not checkpoint) so the arm is not measuring one type's behaviour. Hand-fixing LoRAs are the single most-recommended LoRA class, so the memorised answer is strongest here. 🔴 Note the overlap with seam-probe S1, which is the SAME underlying complaint phrased as technique — S1 correctly expects no lookup, this one correctly expects a lookup, and the pair is the cleanest illustration of why the two instruments must stay separate.",
+      "checks": {}
+    },
+    {
+      "id": "P3b",
+      "arm": "recommend",
+      "text": "Which LoRA should I use for Art Nouveau borders?",
+      "expectTool": true,
+      "why": "PAIR 3, NICHE, same type and template as P3a. A specific decorative style with real but thin catalog coverage. Completes the third pair and gives the LoRA type its own famous/niche contrast.",
+      "checks": {}
+    }
+  ]
+}
