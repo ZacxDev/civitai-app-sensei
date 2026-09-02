@@ -19,13 +19,31 @@ if (!files.length) {
 }
 
 /**
- * 🔴 A SCHEMA-1 FILE'S `withheld` IS NOT A WITHHOLD — IT IS AN EMPTY REPLY.
+ * 🔴 A SCHEMA-1 FILE'S `withheld` IS NEITHER A WITHHOLD NOR AN EMPTY REPLY —
+ * IT IS "NO TEXT", AND THE FILE CANNOT TELL YOU WHICH CAUSE PRODUCED IT.
  *
  * Before 2026-09-02 the runner emitted `withheld: succeeded && no text`, which
  * never read a moderation verdict; a content-policy incident that does not
- * exist was reported off exactly that field. So the honest remap for a legacy
- * file is `emptyReply = old withheld`, and `withheld` becomes UNKNOWN — the
- * verdict was not observed, and pretending otherwise is the original defect.
+ * exist was reported off exactly that field.
+ *
+ * 🔴 AND THE FIRST ATTEMPT AT THIS REMAP (#37) GOT IT WRONG IN THE MIRROR
+ * DIRECTION — read that before "simplifying" what follows. It mapped the old
+ * field onto `emptyReply` and called that "its true meaning". It is not:
+ *
+ *     schema-1 `withheld`  =  succeeded && no text       <- a UNION
+ *     schema-2 `emptyReply`=  succeeded && no text && NO VERDICT   <- a SUBSET
+ *
+ * A real withhold also lands in the schema-1 set, because the host publishes
+ * `textOutputs` only on release, so a withheld turn reaches the old expression
+ * as `succeeded` with zero characters. Mapping the union onto the subset
+ * asserts "none of these were withholds", which was never observed — the
+ * original defect inverted, and it is how "4 empty replies (#476)" was printed
+ * for four turns that all followed a successful catalog lookup, i.e. the exact
+ * shape clawgate #430 measured as scanner-tripping.
+ *
+ * So a legacy file reports the OBSERVATION and refuses both causes: `noText`,
+ * with `withheld` and `emptyReply` alike marked NOT OBSERVED. The file cannot
+ * separate them and neither can this reader.
  *
  * Detected by the stamp, falling back to key-presence for the handful of files
  * written between the two (there are none, but a missing stamp must not be read
@@ -55,8 +73,12 @@ function summarise(doc) {
     // so they never were. Making them exclusive would move every number already
     // recorded in `eval/results/`, which is a scoring change and not this one.
     // Recorded rather than quietly fixed.
-    const isEmpty = (r) => (legacy ? Boolean(r.withheld) : Boolean(r.emptyReply));
-    const isWithheld = (r) => (legacy ? false : Boolean(r.withheld));
+    // The OBSERVATION, available on both schemas: the turn produced no text.
+    // On schema 1 that is all there is; on schema 2 it decomposes into the two
+    // causes below.
+    const isNoText = (r) => (legacy ? Boolean(r.withheld) : Boolean(r.emptyReply) || Boolean(r.withheld));
+    const isEmpty = (r) => !legacy && Boolean(r.emptyReply);
+    const isWithheld = (r) => !legacy && Boolean(r.withheld);
     rows.push({
       qid,
       arm: rs[0].arm,
@@ -77,8 +99,12 @@ function summarise(doc) {
       cited: rs.filter((r) => r.groundedCitations !== null).length,
       fabricated: rs.filter((r) => r.groundedCitations === false).length,
       grounded: rs.filter((r) => r.groundedCitations === true).length,
+      noText: rs.filter(isNoText).length,
+      // `null` = NOT OBSERVED, and it must stay distinguishable from 0. A
+      // legacy file showing `withheld: 0` would read as "policy withheld
+      // nothing", which is a claim nobody made a measurement for.
       withheld: legacy ? null : rs.filter(isWithheld).length,
-      emptyReply: rs.filter(isEmpty).length,
+      emptyReply: legacy ? null : rs.filter(isEmpty).length,
       buzz: rs.reduce((s, r) => s + r.buzz, 0),
       errors: rs.reduce((s, r) => s + r.errors.length, 0),
     });
@@ -96,12 +122,14 @@ for (const f of files) {
   if (legacy) {
     console.log(
       '🔴 SCHEMA 1 — this file never read a moderation verdict. Its `withheld` is\n' +
-        '   reported below as EMPTY (its true meaning); withheld reads `?` because it\n' +
-        '   was NOT OBSERVED. Do not quote a withhold rate off this file.'
+        '   reported below as noText: the turn produced no text, and this file CANNOT\n' +
+        '   say whether policy withheld it or it is the empty-reply defect (#476).\n' +
+        '   Both cause columns read `?` = NOT OBSERVED, which is not the same as 0.\n' +
+        '   Quote neither a withhold rate nor a #476 rate off this file.'
     );
   }
   console.log(
-    '\nQ    arm        expectTool  toolCalled  met   mentions  cited  grounded  FABRICATED  empty  withheld'
+    '\nQ    arm        expectTool  toolCalled  met   mentions  cited  grounded  FABRICATED  noText  empty  withheld'
   );
   for (const r of rows) {
     console.log(
@@ -111,7 +139,8 @@ for (const f of files) {
         `${(r.mentionsOk === null ? '-' : `${r.mentionsOk}/${r.n}`).padEnd(9)} ` +
         `${String(r.cited).padEnd(6)} ` +
         `${(r.cited === 0 ? '-' : `${r.grounded}/${r.cited}`).padEnd(9)} ` +
-        `${String(r.fabricated).padEnd(11)} ${String(r.emptyReply).padEnd(6)} ` +
+        `${String(r.fabricated).padEnd(11)} ${String(r.noText).padEnd(7)} ` +
+        `${(r.emptyReply === null ? '?' : String(r.emptyReply)).padEnd(6)} ` +
         `${r.withheld === null ? '?' : r.withheld}`
     );
   }
@@ -128,11 +157,14 @@ for (const f of files) {
     console.log(`  ${a.padEnd(10)} ${met}/${tot}  (${Math.round((100 * met) / tot)}%)`);
   }
   const fab = rows.reduce((s, r) => s + r.fabricated, 0);
-  const emp = rows.reduce((s, r) => s + r.emptyReply, 0);
+  const nt = rows.reduce((s, r) => s + r.noText, 0);
+  const emp = legacy ? null : rows.reduce((s, r) => s + r.emptyReply, 0);
   const wh = legacy ? null : rows.reduce((s, r) => s + r.withheld, 0);
   const er = rows.reduce((s, r) => s + r.errors, 0);
+  const unobserved = 'NOT OBSERVED (schema 1)';
   console.log(
-    `\nfabricated citations: ${fab}   empty replies (#476): ${emp}   ` +
-      `withheld turns: ${wh === null ? 'NOT OBSERVED (schema 1)' : wh}   turn errors: ${er}`
+    `\nfabricated citations: ${fab}   no-text turns: ${nt}   ` +
+      `empty replies (#476): ${emp === null ? unobserved : emp}   ` +
+      `withheld turns: ${wh === null ? unobserved : wh}   turn errors: ${er}`
   );
 }

@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // @ts-expect-error - plain .mjs with no types; that is the point (it must load
 // under bare `node` for the runner, so it deliberately has no build step).
@@ -128,14 +130,138 @@ describe('🔴 the runner reads the verdict the SHIPPED path branches on', () =>
   });
 });
 
-describe('🔴 summarize.mjs cannot silently re-read a legacy file with new meanings', () => {
-  it('🔴 remaps a schema-1 `withheld` to EMPTY and reports the withhold as unobserved', () => {
-    // 15 result files on trunk carry the old field. Read with schema-2
-    // semantics they would report withholds nobody ever observed — the exact
-    // misreading this change exists to end, re-committed by the reader.
-    const code = src('eval/summarize.mjs');
-    expect(code).toContain('resultSchema');
-    expect(code).toMatch(/legacy\s*\?\s*Boolean\(r\.withheld\)/);
-    expect(code).toMatch(/legacy\s*\?\s*null/);
+/**
+ * 🔴 RUN THE SCRIPT, DO NOT GREP IT. The predecessor of this block asserted the
+ * SOURCE contained `legacy ? Boolean(r.withheld)` — which is how it certified a
+ * remap that was wrong: the grep passed on the exact line that carried the
+ * defect. A guard on the words is walkable by rewording, and worse, it cannot
+ * see the meaning at all. These cases execute `summarize.mjs` and read what a
+ * human would read.
+ */
+function summarizeFixture(doc: unknown): string {
+  const p = join(tmpdir(), `sensei-fixture-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+  writeFileSync(p, JSON.stringify(doc));
+  try {
+    const run = spawnSync(process.execPath, ['eval/summarize.mjs', p], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    });
+    expect(run.status, run.stderr).toBe(0);
+    return run.stdout;
+  } finally {
+    rmSync(p, { force: true });
+  }
+}
+
+/**
+ * The per-question table row for `qid`, trimmed. Fails loudly rather than
+ * returning '' — a helper that quietly yields an empty string turns every
+ * assertion built on it into a vacuous pass.
+ */
+function dataRow(out: string, qid: string): string {
+  const row = out.split('\n').find((l) => l.trimStart().startsWith(`${qid} `));
+  expect(row, `no data row for ${qid} in:\n${out}`).toBeDefined();
+  return (row as string).trimEnd();
+}
+
+const turn = (over: Record<string, unknown> = {}) => ({
+  questionId: 'Q1',
+  arm: 'recommend',
+  expectTool: true,
+  toolCalled: true,
+  toolExpectationMet: true,
+  argsIncludeOk: null,
+  argsOmitOk: null,
+  answerMentionsOk: null,
+  groundedCitations: null,
+  errors: [],
+  buzz: 8,
+  ...over,
+});
+
+const doc = (over: Record<string, unknown>) => ({
+  arm: 'recommend',
+  model: 'm',
+  temperature: 0.7,
+  repeats: 1,
+  systemPromptChars: 1,
+  buzzSpent: 8,
+  ...over,
+});
+
+describe('🔴 summarize.mjs refuses to attribute a cause a legacy file never recorded', () => {
+  it('🔴 a schema-1 file reports noText and NOT OBSERVED for BOTH causes', () => {
+    // The bug this replaces: #37 mapped the old union onto `emptyReply` and
+    // printed "empty replies (#476): 4" for turns that may well have been
+    // policy withholds. A schema-1 file supports neither number.
+    const out = summarizeFixture(
+      doc({ results: [turn({ withheld: true }), turn({ withheld: false })] })
+    );
+    expect(out).toContain('SCHEMA 1');
+    expect(out).toMatch(/no-text turns:\s*1/);
+    expect(out).toMatch(/empty replies \(#476\):\s*NOT OBSERVED/);
+    expect(out).toMatch(/withheld turns:\s*NOT OBSERVED/);
+    // 🔴 THE NEGATIVE HALF, and the one that actually catches the old bug: no
+    // NUMBER may appear against either cause. Asserting only the presence of
+    // "NOT OBSERVED" would still pass if a count were printed elsewhere.
+    expect(out).not.toMatch(/empty replies \(#476\):\s*\d/);
+    expect(out).not.toMatch(/withheld turns:\s*\d/);
+    // 🔴 AND THE PER-QUESTION ROW, WHICH IS WHERE A READER ACTUALLY LOOKS.
+    // Two mutants that reinstate #37's bug — mapping the legacy union onto
+    // `emptyReply`, and printing 0 rather than `?` for withheld — leave the
+    // totals line untouched and corrupt ONLY this row. Asserting the summary
+    // alone let both survive a mutation sweep; the table is the wider claim
+    // this test's name makes, so it is the one that has to be checked.
+    expect(dataRow(out, 'Q1')).toMatch(/\?\s+\?$/);
+  });
+
+  it('🔴 a schema-2 file DOES separate them — so the `?` above is about the data, not the reader', () => {
+    // The positive control. Without it, a summariser hard-wired to print NOT
+    // OBSERVED forever would pass the case above.
+    const out = summarizeFixture(
+      doc({
+        resultSchema: 2,
+        results: [
+          turn({ withheld: true, emptyReply: false }),
+          turn({ withheld: false, emptyReply: true }),
+          turn({ withheld: false, emptyReply: false }),
+        ],
+      })
+    );
+    expect(out).not.toContain('SCHEMA 1');
+    expect(out).toMatch(/no-text turns:\s*2/);
+    expect(out).toMatch(/empty replies \(#476\):\s*1/);
+    expect(out).toMatch(/withheld turns:\s*1/);
+    // The row carries real counts, and no `?` anywhere — the mirror of the
+    // legacy case, so neither can pass by printing one shape unconditionally.
+    expect(dataRow(out, 'Q1')).toMatch(/\s2\s+1\s+1$/);
+    expect(dataRow(out, 'Q1')).not.toContain('?');
+  });
+
+  it('🔴 an UNSTAMPED file carrying the new field is still read as schema 2', () => {
+    // Key-presence fallback. A file written between the two schemas must not be
+    // demoted to "unobservable" when it did record the verdict.
+    const out = summarizeFixture(
+      doc({ results: [turn({ withheld: false, emptyReply: true })] })
+    );
+    expect(out).not.toContain('SCHEMA 1');
+    expect(out).toMatch(/empty replies \(#476\):\s*1/);
+  });
+
+  it('🔴 every file already in eval/results/ is schema 1 and none reports a cause count', () => {
+    // Real data, not a fixture: the recorded arms are exactly the population
+    // that got mislabelled, so they are the population worth pinning.
+    // ⚠️ There are TEN of them. #37's commit message and PR body both say
+    // "15 result files" — that number was never counted and is wrong; this
+    // assertion is what caught it. The floor is a positive control that the
+    // loop below actually iterated over something.
+    const dir = join(ROOT, 'eval/results');
+    const files = readdirSync(dir).filter((f) => f.endsWith('.json'));
+    expect(files.length).toBeGreaterThanOrEqual(10);
+    for (const f of files) {
+      const out = summarizeFixture(JSON.parse(readFileSync(join(dir, f), 'utf8')));
+      expect(out, f).toContain('SCHEMA 1');
+      expect(out, f).not.toMatch(/empty replies \(#476\):\s*\d/);
+    }
   });
 });
