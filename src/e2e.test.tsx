@@ -73,7 +73,10 @@ describe('E2E: Sensei App', () => {
       expect(screen.queryByTestId('app-loading')).toBeNull();
     });
 
-    expect(screen.getByText('Start a new conversation with Sensei')).toBeTruthy();
+    // Copy changed in the 2026-09-02 taste pass — the sentence above the New
+    // Chat button used to repeat the button's own label. The anchor here is the
+    // affordance, which is what this flow actually depends on.
+    expect(screen.getByTestId('start-chat-button')).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('new-session-button'));
 

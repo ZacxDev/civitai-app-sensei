@@ -9,3 +9,159 @@ body {
 #root {
   min-height: 100dvh;
 }
+
+/* ───────────────────────────────────────────────────────────────────────────
+   SENSEI BRAND — brandDepth: accent.
+
+   🔴 NOT ONE HOST TOKEN IS REDEFINED HERE. Every `--civitai-*` variable keeps
+   the value the host gave it, so surfaces, body, text, dimmed text and borders
+   stay the platform's problem and keep flipping with the platform's theme.
+   What this block adds is an APP-OWNED accent, applied only where the app's own
+   identity belongs: the mark, a citation link, the active chat, the viewer's
+   own message, focus. That is the `accent` depth, and it is the reason the pass
+   did not take on a full skin: a full-bleed chat app is almost entirely host
+   surface, so owning the palette would mean owning light/dark for the whole
+   frame in exchange for colouring a sidebar.
+
+   🔴 THE TWO ACCENT VALUES ARE THE ONE THING THIS APP DOES OWN IN BOTH THEMES,
+   so they are measured rather than eyeballed. Contrast against the store's own
+   reference backgrounds (light #F7F9FC, dark #0B0E14), WCAG 2.1 relative
+   luminance:
+
+     --sensei-accent  light  #497529  on #F7F9FC  =  5.16:1   (AA text)
+     --sensei-accent  dark   #8CC763  on #0B0E14  =  9.43:1   (AAA text)
+
+   The plate #67A63A itself is only 2.80:1 on light, which is why it is NEVER
+   used for text — it is a FILL, with white on top, and `--sensei-accent` is the
+   text/stroke value. Keep that split if you retint anything.
+
+   The hue and the plate come from `brand/README.md`, which is the source of
+   truth for both; they are not chosen here.
+
+   🔴 THE SELECTORS ARE DOUBLED (`[data-theme][data-theme]`) AND THAT IS
+   LOAD-BEARING, NOT A TYPO. `@civitai/theme`'s `tokens.css` defines the same
+   variables on `:root`, `[data-theme='light']` and `[data-theme='dark']` — the
+   IDENTICAL specificity (0,1,0) — with NO `@layer`, and the component pack
+   INJECTS it into `<head>` at first render, i.e. AFTER Vite has already loaded
+   this file. On a specificity tie the later rule wins, so the single-attribute
+   form of this block is SILENTLY INERT: the tokens read as overridden in the
+   source and the app renders host blue. That is exactly how it behaved when
+   first written, and only a screenshot showed it. Doubling the attribute takes
+   the selector to (0,2,0), which wins regardless of injection order.
+
+   🔴 A CSS TEST CANNOT SEE THIS. `lib/brand.test.ts` reads this file as text
+   and resolves no cascade, so it would have passed over the inert version. The
+   check that catches it is rendering the app and looking at a button.
+   ─────────────────────────────────────────────────────────────────────────── */
+[data-theme][data-theme] {
+  /* The brand plate. A FILL colour — see the note above; never text. */
+  --sensei-plate: #67A63A;
+  /* Text/stroke accent. Light theme: the brand's own -0.13 body shade. */
+  --sensei-accent: #497529;
+  /* What reads on top of a solid plate fill. */
+  --sensei-on-plate: #ffffff;
+  /* Translucent brand washes. Alpha over whatever surface is underneath, so
+     these need no per-theme value and cannot fight the host's theme. */
+  --sensei-wash: color-mix(in srgb, var(--sensei-plate) 14%, transparent);
+  --sensei-wash-strong: color-mix(in srgb, var(--sensei-plate) 26%, transparent);
+  --sensei-hairline: color-mix(in srgb, var(--sensei-plate) 38%, transparent);
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     🔴 THE FOUR HOST TOKENS THIS APP REPOINTS, AND THE ONLY FOUR.
+
+     This is the deviation the `accent` depth is FOR, and it is stated rather
+     than hidden: without it the app ships a green mark next to a blue primary
+     button, which reads as a mistake rather than as restraint. The four
+     `--civitai-color-primary*` tokens are the design system's ACCENT channel —
+     `@civitai/components` uses them for the filled button, focus rings, slider
+     accent-color and the segmented control, and for nothing structural. Every
+     STRUCTURAL token (`body`, `surface`, `surface-2`, `text`, `text-dimmed`,
+     `border`) and every SEMANTIC one (`error`, `success`, `warning`, `info`)
+     is left alone, so the platform still owns light/dark for the frame and a
+     status colour still means status.
+
+     `lib/brand.test.ts` holds the LEDGER: exactly this set, failing if it grows
+     OR shrinks. A ledger rather than a ban, because "no host token is
+     redefined" was the rule this block breaks on purpose, and a guard that
+     merely forbade it would have been deleted instead of updated.
+
+     Contrast, computed by that test from these hexes (not restated here):
+     white on the light fill and near-black on the dark fill both clear AA.
+     ───────────────────────────────────────────────────────────────────────── */
+  --civitai-color-primary: #497529;
+  --civitai-color-primary-hover: #3c6321;
+  --civitai-color-primary-fg: #ffffff;
+  --civitai-color-primary-light: rgba(103, 166, 58, 0.12);
+}
+
+[data-theme='dark'][data-theme] {
+  /* Lighter tint so the accent clears AA on a dark surface — see the block
+     above for the measured ratios. The plate is unchanged; only text moves. */
+  --sensei-accent: #8cc763;
+
+  /* 🔴 `primary-fg` GOES DARK HERE, and skipping it is the trap. The dark
+     accent is a LIGHT green, so the host's white `primary-fg` would ride on it
+     at roughly 2:1 — an unreadable filled button, in the theme most viewers
+     use. The foreground has to flip with the fill, which is precisely the
+     light/dark ownership this app took on by repointing the channel at all. */
+  --civitai-color-primary: #8cc763;
+  --civitai-color-primary-hover: #a0d47c;
+  --civitai-color-primary-fg: #0b1207;
+  --civitai-color-primary-light: rgba(103, 166, 58, 0.18);
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   MOTION — KEYFRAMES ONLY.
+
+   🔴 THERE IS DELIBERATELY NO `prefers-reduced-motion` BLOCK IN THIS FILE.
+   Reduced motion is decided in `lib/motion.ts` and applied by each component
+   NOT SETTING an animation; a media block here would be a second, untestable
+   copy of that rule which could silently disagree with it. If you add a
+   duration to this file you have created that second copy. See the header of
+   `lib/motion.ts`.
+   ─────────────────────────────────────────────────────────────────────────── */
+/* Session-row actions reveal on hover or keyboard focus.
+
+   🔴 NO DURATION, ON PURPOSE — AND THAT IS WHAT KEEPS THIS OUT OF THE MOTION
+   RULE. An instant reveal is not motion, so it needs no reduced-motion branch
+   and adds no second copy of `lib/motion.ts`'s decision. Adding a `transition`
+   to these selectors WOULD create one; put it in the component instead, via
+   `useMotion`.
+
+   The `hover: none` block is load-bearing rather than defensive: a touch device
+   never fires `:hover`, so without it the rename and delete buttons would be
+   permanently invisible while remaining laid out and clickable — an unseeable
+   delete target. */
+.sensei-row-actions {
+  opacity: 0;
+}
+.sensei-row:hover .sensei-row-actions,
+.sensei-row:focus-within .sensei-row-actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .sensei-row-actions {
+    opacity: 1;
+  }
+}
+
+@keyframes senseiRise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes senseiPulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}

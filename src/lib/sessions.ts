@@ -137,12 +137,130 @@ export async function deleteMessages(
   await appStorage.delete(`${MESSAGES_PREFIX}${sessionId}`);
 }
 
+/** The title a session carries until its first message names it. */
+export const UNTITLED = 'New Chat';
+
+/** Longest auto-title, in characters, before the word-boundary cut below. */
+const TITLE_MAX = 48;
+
 /**
- * Auto-generate a title from the first user message (truncated).
+ * Auto-generate a title from the first user message.
+ *
+ * 🔴 IT CUTS ON A WORD BOUNDARY, WHICH IS NOT COSMETIC HERE. The old rule was
+ * `slice(0, 40) + '…'`, so a sidebar of questions about the same subject
+ * produced rows that were identical for 40 characters and then stopped
+ * mid-word — indistinguishable at a glance AND unreadable. The multi-line
+ * source of a pasted question made it worse: newlines survived the slice, so
+ * one row's title carried a fragment of line two.
  */
 export function generateTitle(messages: Message[]): string {
   const firstUser = messages.find((m) => m.role === 'user');
-  if (!firstUser) return 'New Chat';
-  const text = firstUser.content.trim();
-  return text.length > 40 ? text.slice(0, 40) + '…' : text;
+  if (!firstUser) return UNTITLED;
+  // Any run of whitespace — newlines included — becomes one space, so a pasted
+  // multi-line question titles as a single readable line.
+  const text = firstUser.content.replace(/\s+/g, ' ').trim();
+  if (text.length === 0) return UNTITLED;
+  if (text.length <= TITLE_MAX) return text;
+
+  const head = text.slice(0, TITLE_MAX);
+  const lastSpace = head.lastIndexOf(' ');
+  // Only honour the boundary if it leaves a useful amount of title; a question
+  // whose first "word" is longer than the budget still has to be cut somewhere.
+  const cut = lastSpace >= TITLE_MAX / 2 ? head.slice(0, lastSpace) : head;
+  return cut.replace(/[\s,;:.!-]+$/, '') + '…';
+}
+
+/**
+ * A session that has been created and never used.
+ *
+ * 🔴 THIS PREDICATE IS WHY THE SIDEBAR STOPS FILLING WITH "New Chat" ROWS.
+ * `createSession` persists a session the moment "+ New" is pressed, so every
+ * press that is not followed by a question leaves a permanent, identical,
+ * contentless row. A live sidebar carried FIVE of them alongside six rows with
+ * the same auto-title.
+ *
+ * 🔴 IT IS DERIVED FROM THE SESSION RECORD ALONE, DELIBERATELY. Messages live
+ * under a different storage key and are only loaded for the OPEN session, so a
+ * "does it have messages" test would need a read per row — on a host that
+ * cannot serve a block its own writes (see this file's header). `updatedAt` is
+ * bumped by the first send, and by nothing else that leaves the title alone, so
+ * `createdAt === updatedAt && title === UNTITLED` identifies exactly the
+ * never-used rows. A renamed-but-empty session is deliberately NOT matched:
+ * naming it is a statement that the viewer wants it.
+ */
+export function isUnusedSession(session: Session): boolean {
+  return session.title === UNTITLED && session.createdAt === session.updatedAt;
+}
+
+/** Recency buckets, in the order the sidebar renders them. */
+export type RecencyLabel = 'Today' | 'Yesterday' | 'Previous 7 days' | 'Older';
+
+export interface SessionGroup {
+  label: RecencyLabel;
+  sessions: Session[];
+}
+
+const DAY_MS = 86_400_000;
+
+/** Local midnight at the start of the day containing `ts`. */
+function startOfDay(ts: number): number {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/**
+ * Bucket sessions by recency, newest bucket first and newest row first inside
+ * each. Empty buckets are omitted, so the sidebar never shows a bare heading.
+ *
+ * 🔴 THE BOUNDARIES ARE CALENDAR DAYS, NOT ELAPSED HOURS. "Yesterday" has to
+ * mean the previous calendar day or the heading is a lie for anyone reading it
+ * at 00:30. `now` is injected so the tests are not clock-dependent.
+ */
+export function groupSessionsByRecency(
+  sessions: Session[],
+  now: number = Date.now(),
+): SessionGroup[] {
+  const today = startOfDay(now);
+  const yesterday = today - DAY_MS;
+  const weekAgo = today - 6 * DAY_MS;
+
+  const buckets: Record<RecencyLabel, Session[]> = {
+    Today: [],
+    Yesterday: [],
+    'Previous 7 days': [],
+    Older: [],
+  };
+
+  for (const s of sortSessions(sessions)) {
+    // A clock skew or a bad stored timestamp must not vanish a row: anything at
+    // or after today's midnight — including the future — reads as Today.
+    if (s.updatedAt >= today) buckets.Today.push(s);
+    else if (s.updatedAt >= yesterday) buckets.Yesterday.push(s);
+    else if (s.updatedAt >= weekAgo) buckets['Previous 7 days'].push(s);
+    else buckets.Older.push(s);
+  }
+
+  return (Object.keys(buckets) as RecencyLabel[])
+    .filter((label) => buckets[label].length > 0)
+    .map((label) => ({ label, sessions: buckets[label] }));
+}
+
+/**
+ * A compact "when" for a session row — the field that REPLACED the model name.
+ *
+ * The old subtitle was `session.model.split('/').pop()`, i.e. `deepseek-chat`
+ * on every row, because every session uses the app's one selected model. A
+ * column with the same value in every cell carries no information and costs a
+ * line of height per row; the time actually separates two rows that share an
+ * auto-title, which is the case the live sidebar was full of.
+ */
+export function formatRelativeTime(ts: number, now: number = Date.now()): string {
+  const diff = now - ts;
+  if (diff < 60_000) return 'now';
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`;
+  if (diff < DAY_MS) return `${Math.floor(diff / 3_600_000)}h`;
+  const days = Math.floor(diff / DAY_MS);
+  if (days < 7) return `${days}d`;
+  return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }

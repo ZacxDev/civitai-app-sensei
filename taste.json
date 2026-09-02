@@ -1,0 +1,106 @@
+{
+  "slug": "sensei",
+  "pass": "2026-09-02",
+  "baseSha": "13f32df",
+  "appVersionAtPass": "0.1.12",
+  "brandDepth": "accent",
+  "hue": "#67A63A",
+  "heroPrompt": null,
+  "heroSeed": null,
+  "sdkVersionAtPass": {
+    "@civitai/app-sdk": "0.31.0",
+    "@civitai/blocks-react": "0.39.0",
+    "@civitai/components-react": "0.3.0",
+    "@civitai/theme": "0.2.0",
+    "_canonicalPairingAtPass": "app-sdk ^0.35.0 + blocks-react ^0.43.1, from civitai-app-starters/starters/civitai-block-starter/package.json",
+    "_bumped": false,
+    "_whyNot": "Nothing this pass builds needs a method the pinned pair lacks. The pass touches the markdown renderer, layout, an app-owned CSS palette and a matchMedia hook — none of which is SDK surface. `useBlockResize`, the one SDK hook the work depends on, is present at 0.39.0 and unchanged. Bumping would have added an untested variable to a pass whose whole point is a visible-defect fix, so the pair is left where it is and the gap is recorded instead."
+  },
+
+  "decisions": [
+    {
+      "id": "brand-depth",
+      "fork": "accent vs skin",
+      "chose": "accent",
+      "why": "Sensei is a full-bleed 100dvh chat app: almost every pixel is host surface, border or body text. Taking `skin` would have meant owning light/dark correctness for the entire frame in exchange for colouring a sidebar and a link. The app instead defines app-owned `--sensei-*` tokens used only at identity sites (mark, citation link, active chat, viewer bubble, streaming dot) and redefines NOT ONE `--civitai-*` variable, which `src/lib/brand.test.ts` asserts by grepping for an assignment.",
+      "cost": "Two values ARE owned in both themes (`--sensei-accent` light/dark), so the dual-theme debt is real but bounded. It is discharged by computing WCAG contrast from the hexes in `index.css` rather than restating the numbers in a comment."
+    },
+    {
+      "id": "hero",
+      "fork": "add a hero band vs none",
+      "chose": "none",
+      "why": "Three reasons, in order of weight. (1) There is no band to put it in: the app is a fixed-height iframe whose whole vertical budget is the transcript, and a hero would take rows from the thing the app is FOR — the rubric's own first IA rule. (2) A chat app is re-entered constantly; art that is pleasant once is dead pixels on visit two, and it cannot scroll away because the transcript is the scrolling region, not the page. (3) The pass was instructed not to spend Buzz, and `civitai generate` is the only route to a hero the brand system would accept. The brand statement is carried instead by the header mark, drawn from `brand/icon.svg`'s geometry so it costs no asset request from a sandboxed iframe.",
+      "cost": "The store listing carries no NEW art from this pass. Existing icon and cover are untouched and remain valid."
+    },
+    {
+      "id": "defect-2-ordered-lists",
+      "fork": "renderer bug vs prompt bug",
+      "chose": "renderer — measured, not inferred",
+      "why": "Two independent mechanisms in `parseMarkdown`, both reproduced against the parser at `13f32df`. (a) An indented sub-bullet (`   - Type: LORA`) hit the UL branch, which flushed the open OL — so each numbered row became its own single-item `<ol>` and the browser restarted every one at 1. (b) A blank line between items flushed the list outright, same symptom, different route. A third, smaller one: the source's start number was discarded, so `3. / 4.` renumbered to 1. The model's output was never at fault; the exact string in `lib/markdown.ts`'s own header does not render correctly at base and does at HEAD."
+    },
+    {
+      "id": "settings-bar-demotion",
+      "fork": "restyle in place vs move the controls",
+      "chose": "move temperature and max-tokens into the Settings dialog; keep the model select on a halved, body-coloured strip",
+      "why": "A restyle answers 'too loud' but not 'wrong level' — three power-user knobs were siblings of the conversation itself. The model is NOT a tuning knob: it decides what a reply costs (2-4 Buzz for one identical conversation, measured in `lib/models.ts`) and is a per-question choice, so hiding it would hide a spend decision. Temperature and max-tokens belong beside the system prompt, which is where the app's other tuning already lived.",
+      "cost": "`temperature-slider` and `max-tokens-slider` leave the boot DOM for the settings dialog. Neither is named by the capture recipe's `ready`, `clickable` or `states`, and both now appear INSIDE the recipe's existing `settings` state, which is a better shot than before. `settings-bar` and `model-selector` are deliberately unchanged."
+    },
+    {
+      "id": "empty-session-reuse",
+      "fork": "reuse any unused chat vs reuse only one you are not looking at",
+      "chose": "only one you are not looking at",
+      "why": "The unrestricted rule makes '+ New', pressed while already on an empty chat, do nothing at all — indistinguishable from a dead button, and pressed precisely because the viewer wants a fresh slate. It also silently broke the setup of six 🔴 regression tests that create their second session by pressing '+ New' twice (clawgate #425/#427/#434); rewriting those setups would have risked disarming guards for real prior incidents in order to buy a smaller win."
+    }
+  ],
+
+  "deferred": [
+    {
+      "id": "unused-session-sweep",
+      "ask": "Bound the number of never-used 'New Chat' rows that can accumulate across visits. The reuse rule above only recycles an unused chat the viewer is not currently on, so pressing '+ New' repeatedly within one visit still leaves a row per press.",
+      "whyNotDone": "The remaining fix is a sweep of unused rows at load, which DELETES viewer-visible rows without being asked. It is safe by construction (an unused row holds no content by definition) but it is still an unprompted destructive default, and it changes boot to perform a storage write on a host that cannot serve a block its own writes.",
+      "closingCondition": "A merged PR adding `sweepUnusedSessions` to the load path in `src/App.tsx` with a unit test that a renamed-but-empty session SURVIVES it, plus one live boot against the real host confirming the session list is unchanged when there is nothing to sweep. Checked mechanically: the PR is merged and `npm run test` is green on trunk."
+    },
+    {
+      "id": "reshoot",
+      "ask": "Re-shoot the store screenshots. This pass changes the header, the sidebar, the empty conversation and the bottom bar — every state the current store images show.",
+      "whyNotDone": "Phase 7 is two steps that cannot ship together: the recipe FILE is updated in this PR, but a re-shoot needs the new version live, i.e. through moderator review.",
+      "closingCondition": "sensei > 0.1.12 is approved and live, then `capture.sh recipes/sensei.json --evidence` is run and its output diffed against a before run. Checked by a human — the operator — comparing the two evidence directories."
+    },
+    {
+      "id": "crop-rect-bottom-edge",
+      "ask": "The capture recipe's crop rect is measured to end just under the old full-height settings bar. That strip is now roughly half as tall.",
+      "whyNotDone": "The rect can only be re-measured against a live render of the new version, which does not exist until review passes.",
+      "closingCondition": "Same run as `reshoot`: re-read `APPFRAME_RECT` from the capture probe and confirm `rect.h` still lands inside the iframe and above nothing important. Checked mechanically by capture.sh's own frame guards plus one look by eye."
+    },
+    {
+      "id": "sdk-pair-bump",
+      "ask": "Move to the canonical pairing app-sdk ^0.35.0 + blocks-react ^0.43.1.",
+      "whyNotDone": "Nothing in this pass needs it, and a version bump inside a defect-fix PR mixes two red/green matrices.",
+      "closingCondition": "A separate PR bumping both packages together with `npm run test`, `typecheck` and `build` green, and one live boot confirming the block still renders. Checked mechanically by that PR merging."
+    }
+  ],
+
+  "_blockedByInstruction": {
+    "what": "Two steps the app-taste skill requires IN THIS PR could not be taken, because both write to `datapacket-talos` and this pass was instructed not to touch that repo (its capture recipe is being edited concurrently by another agent).",
+    "conflict": "app-taste SKILL.md phase 7 says to rewrite the capture recipe in the pass's own PR, and `reference/rubric.md` §'Growing the taste' item 2 says a constraint discovered mid-pass is written back to `platform-constraints.md` in the same PR. The session instruction forbids both. The instruction wins; the required content is recorded here instead so nothing is lost.",
+    "recipeEditsNeeded": {
+      "file": "<datapacket-talos>/.claude/skills/app-capture/scripts/recipes/sensei.json",
+      "stillValid": [
+        "ready.testid = session-list — unchanged, still present at boot and in both the empty and populated states",
+        "clickable = [button[data-testid='settings-button']] — unchanged, still a non-mutating control",
+        "states[0] 'ask' — still the booted idle screen, still needs no action",
+        "states[1] 'settings' — still opens on settings-button and still waits on the text 'Settings'"
+      ],
+      "needsUpdate": [
+        "_bootVsPopulated's list of boot testids: `temperature-slider` and `max-tokens-slider` MOVED into the settings dialog, so they are no longer present at boot. They ARE now inside the `settings` state's screenshot, which is an improvement. That list is already labelled a snapshot rather than a contract.",
+        "crop.rect.h — the rect was measured to end 'just under the model/temperature bar'. That bar is now roughly half as tall (padding 8px -> 5px, three controls -> one) and sits on the body colour rather than a raised surface, so the rect's bottom edge no longer lands where the note describes. Re-measure against a live render of the new version; do not adjust the number from source.",
+        "states[1].caption — 'Set a system prompt to steer how Sensei answers.' is now incomplete: the dialog also carries temperature and max tokens. Suggested: 'Set a system prompt, and tune how long and how literal each reply is.'",
+        "Optionally re-add the deferred `mention` state — `_removedState_mention`'s closing condition asks for a pass that drives sensei live and can read the post-start screen. That screen changed here: the empty conversation no longer renders the 'Ask me about AI models' sentence (it never was in the boot DOM), so a repair keyed on that text would still be wrong."
+      ]
+    },
+    "constraintWriteBackNeeded": {
+      "file": "<datapacket-talos>/.claude/skills/app-taste/reference/platform-constraints.md",
+      "content": "A markdown-ish inline node that carries a STRING where it should carry CHILD SPANS silently swallows every construct nested inside it, and the loss is invisible to a parse-tree test that asserts the string. Measured on sensei 0.1.12: `bold` was `{ kind:'bold'; text:string }`, both bold and link matched at different offsets, the earlier offset won, and every `**[Name](url)**` citation — the app's entire output — rendered as its own raw source. It had shipped that way through twelve releases behind a test NAMED 'renders a bold link' whose expectation pinned the swallowed source verbatim. The general shape: when a renderer's node type has a leaf where the grammar has a container, the defect presents as 'feature X never works' rather than as a crash, and a test written from the observed output freezes it. Check container-ness before believing an inline grammar."
+    }
+  }
+}

@@ -22,7 +22,16 @@ function InlineSpans({ spans }: { spans: Inline[] }) {
   return (
     <>
       {spans.map((s, i) => {
-        if (s.kind === 'bold') return <strong key={i}>{s.text}</strong>;
+        // 🔴 BOLD IS A CONTAINER, NOT A LEAF. It used to render `s.text`, which
+        // is what put the raw source of every `**[Name](url)**` citation on
+        // screen; the parser now hands back the parsed body and this walks it.
+        if (s.kind === 'bold') {
+          return (
+            <strong key={i}>
+              <InlineSpans spans={s.spans} />
+            </strong>
+          );
+        }
         if (s.kind === 'code') {
           return (
             <code
@@ -61,10 +70,28 @@ function BlockNode({ block }: { block: Block }) {
   if (block.kind === 'ul' || block.kind === 'ol') {
     const List = block.kind === 'ul' ? 'ul' : 'ol';
     return (
-      <List style={{ margin: '6px 0', paddingLeft: 22 }}>
-        {block.items.map((spans, i) => (
+      <List
+        // 🔴 `start` IS RENDERED, not dropped. `3. / 4.` in the source is an
+        // answer continuing a list, and renumbering it from 1 makes the prose
+        // around it ("the fourth one") point at the wrong row.
+        start={block.kind === 'ol' ? block.start : undefined}
+        style={{ margin: '6px 0', paddingLeft: 22 }}
+      >
+        {block.items.map((item, i) => (
           <li key={i} style={{ margin: '2px 0' }}>
-            <InlineSpans spans={spans} />
+            <InlineSpans spans={item.spans} />
+            {item.sub && item.sub.length > 0 && (
+              // The detail bullets the model hangs under each numbered model.
+              // Nested INSIDE the `<li>`, which is what keeps the parent list's
+              // numbering unbroken.
+              <ul style={{ margin: '2px 0', paddingLeft: 18 }}>
+                {item.sub.map((spans, j) => (
+                  <li key={j} style={{ margin: '1px 0' }}>
+                    <InlineSpans spans={spans} />
+                  </li>
+                ))}
+              </ul>
+            )}
           </li>
         ))}
       </List>

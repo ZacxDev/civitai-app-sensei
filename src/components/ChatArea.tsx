@@ -9,7 +9,8 @@ import {
   ResourceMentionCard,
   type MentionPickerType,
 } from './ResourceMention.js';
-import { token, mutedText } from '../theme.js';
+import { useMotion } from '../lib/motion.js';
+import { token, brand, mutedText, metaText } from '../theme.js';
 
 export interface ChatAreaProps {
   messages: Message[];
@@ -81,15 +82,18 @@ export function ChatArea({
 }: ChatAreaProps) {
   const [input, setInput] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
+  const motion = useMotion();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sendingRef = useRef(false);
 
   useEffect(() => {
     if (messagesEndRef.current?.scrollIntoView) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      // 🔴 SMOOTH SCROLLING IS MOTION TOO, and it is the one a vestibular
+      // sufferer notices most — the whole viewport moves. It was unconditional.
+      messagesEndRef.current.scrollIntoView({ behavior: motion.reduced ? 'auto' : 'smooth' });
     }
-  }, [messages, isStreaming]);
+  }, [messages, isStreaming, motion.reduced]);
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
@@ -149,19 +153,21 @@ export function ChatArea({
         }}
         data-testid="messages-container"
       >
-        {messages.length === 0 && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flex: 1,
-              ...mutedText,
-            }}
-          >
-            Ask me about AI models, checkpoints, or anything related to AI art generation.
-          </div>
-        )}
+        {/*
+          🔴 THE EMPTY CONVERSATION SAYS NOTHING NOW, and that is the deletion
+          the rubric asks for rather than a loss. It read "Ask me about AI
+          models, checkpoints, or anything related to AI art generation." —
+          directly above a composer whose placeholder already reads "Ask Sensei
+          anything…", which is the same instruction, shorter, in the box you
+          type into. An explainer paragraph beside the control it explains is
+          the tell that the control is doing its job.
+
+          NOT a capture-recipe change: `_bootVsPopulated` measured this string
+          ABSENT from the DOM at boot (it only ever rendered once a session was
+          open), and the recipe's `waitForText` on it had already been removed
+          as both wrong and redundant.
+        */}
+        {messages.length === 0 && <div style={{ flex: 1 }} data-testid="empty-conversation" />}
         {messages.map((msg) => {
           // 🔴 DEFENCE IN DEPTH, NOT A KNOWN LEGACY POPULATION. Nothing writes
           // a `'tool'` message, and — corrected from what this comment used to
@@ -184,11 +190,25 @@ export function ChatArea({
           );
         })}
         {isStreaming && (
-          <div style={{ ...mutedText, padding: '0 12px' }}>
+          <div
+            style={{ ...mutedText, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 8 }}
+          >
+            <span
+              aria-hidden="true"
+              data-testid="streaming-dot"
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: '50%',
+                background: brand.plate,
+                flexShrink: 0,
+                animation: motion.animation('senseiPulse 1.2s ease-in-out infinite'),
+              }}
+            />
             <span data-testid="streaming-indicator">Thinking…</span>
             {lookupQuery ? (
-              <span data-testid="lookup-query" style={{ marginLeft: 8 }}>
-                Looking up: <strong>{lookupQuery}</strong>
+              <span data-testid="lookup-query" style={metaText}>
+                Looking up <strong>{lookupQuery}</strong>
               </span>
             ) : null}
           </div>

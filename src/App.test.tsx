@@ -36,12 +36,25 @@ describe('App', () => {
     expect(screen.getByText('Civitai Sensei')).toBeTruthy();
   });
 
-  it('renders the AI Research Assistant subtitle', async () => {
+  it('🔴 the header does NOT restate the app’s own category back at the viewer', async () => {
+    // 🔴 REPOINTED 2026-09-02. This test was `expect(getByText('AI Research
+    // Assistant'))` — it pinned a subtitle that sat directly under the app's
+    // name, inside the app, on a page the viewer reached by opening the app.
+    // A label restating the thing it labels; the store listing is where a
+    // category belongs. Pinning the absence alone would pass on an empty
+    // header, so the identity it replaced is asserted alongside it: the app's
+    // own mark, and its name.
     render(<App />);
     await waitFor(() => {
       expect(screen.queryByTestId('app-loading')).toBeNull();
     });
-    expect(screen.getByText('AI Research Assistant')).toBeTruthy();
+    expect(screen.queryByText('AI Research Assistant')).toBeNull();
+    expect(screen.getByText('Civitai Sensei')).toBeInTheDocument();
+    // 🔴 THE MARK IS DECORATION, and that is what licenses shipping a glyph
+    // measured at 2.96:1 on the brand plate — below the 3:1 threshold for a
+    // graphic that carries meaning. See `lib/brand.test.ts`. If this ever stops
+    // being `aria-hidden`, that measurement stops being acceptable.
+    expect(screen.getByTestId('app-mark')).toHaveAttribute('aria-hidden', 'true');
   });
 
   it('does not render stub badge in bridge mode', async () => {
@@ -69,11 +82,19 @@ describe('App', () => {
   });
 
   it('shows no active session state', async () => {
+    // 🔴 THE STRING CHANGED, THE CONTRACT DID NOT. "Start a new conversation
+    // with Sensei" sat above a button labelled "New Chat" — the sentence and
+    // the control said the same thing, and the sentence was the one carrying no
+    // extra information. It is replaced by the app's actual promise (the
+    // manifest tagline), which is a claim about what Sensei DOES. The
+    // start-chat affordance is asserted alongside so this cannot be satisfied
+    // by copy alone.
     render(<App />);
     await waitFor(() => {
       expect(screen.queryByTestId('app-loading')).toBeNull();
     });
-    expect(screen.getByText('Start a new conversation with Sensei')).toBeTruthy();
+    expect(screen.getByText('Ask a question. Sensei looks it up.')).toBeTruthy();
+    expect(screen.getByTestId('start-chat-button')).toBeInTheDocument();
   });
 
   it('renders the settings bar', async () => {

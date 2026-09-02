@@ -5,7 +5,8 @@ import type { GroundedModelIds } from '../lib/grounding.js';
 import { formatRoleLabel } from '../lib/chat.js';
 import { MarkdownText } from './MarkdownText.js';
 import { ResourceMentionCard } from './ResourceMention.js';
-import { token, radius } from '../theme.js';
+import { useMotion } from '../lib/motion.js';
+import { token, brand, radius } from '../theme.js';
 
 export interface MessageBubbleProps {
   message: Message;
@@ -23,9 +24,18 @@ export interface MessageBubbleProps {
   groundedModelIds?: GroundedModelIds;
 }
 
+/**
+ * 🔴 THE VIEWER AND SENSEI ARE THE TWO BRAND-COLOURED ROLES, and they are the
+ * only two the host token set is asked to give up. `assistant` used to be
+ * `--civitai-color-success` — the platform's GREEN-FOR-OK — which read as a
+ * status, not an identity, and collided with the brand hue by accident rather
+ * than by design. It is now the app's own accent, which is a measured
+ * dual-theme value (see `index.css`); `system` and `tool` stay on host tokens
+ * because they ARE status.
+ */
 const ROLE_COLORS: Record<string, string> = {
-  user: token.primary,
-  assistant: token.success,
+  user: brand.accent,
+  assistant: brand.accent,
   system: token.dimmed,
   tool: token.error,
 };
@@ -37,6 +47,7 @@ export function MessageBubble({
   groundedModelIds,
 }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
+  const motion = useMotion();
   const isUser = message.role === 'user';
   const roleColor = ROLE_COLORS[message.role] ?? token.text;
 
@@ -52,9 +63,14 @@ export function MessageBubble({
         display: 'flex',
         flexDirection: 'column',
         padding: '10px 12px',
-        borderRadius: radius.sm,
-        background: isUser ? token.primaryLight : 'transparent',
-        border: isUser ? undefined : `1px solid ${token.border}`,
+        borderRadius: radius.md,
+        background: isUser ? brand.wash : 'transparent',
+        border: isUser ? `1px solid ${brand.hairline}` : `1px solid ${token.border}`,
+        // 🔴 THE ENTRY ANIMATION IS OMITTED, NOT ZEROED, under reduced motion —
+        // see `lib/motion.ts` for why `undefined` rather than `'none'`. The
+        // keyframe starts at `opacity: 0`, so a zero-duration variant would
+        // flash the bubble rather than simply placing it.
+        animation: motion.animation('senseiRise 160ms ease-out'),
       }}
       data-testid={`message-${message.role}`}
     >
