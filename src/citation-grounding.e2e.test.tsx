@@ -306,16 +306,15 @@ describe('grounded citations reach the screen', () => {
     })();
   });
 
-  it('⚠️ RELOAD DROPS THE GROUNDING, and that is pinned rather than assumed', () => {
+  it('🔴 RELOAD KEEPS THE GROUNDING — the ids ride the stored assistant turn', () => {
     return (async () => {
-      // Tool results are not persisted (`types.ts`: `role:'tool'` is a
-      // transcript role, not a stored one), so a reloaded conversation starts
-      // with an empty set and its stored links render as plain text. That is
-      // the conservative direction — a link we can no longer prove is refused
-      // rather than trusted — but it IS a behaviour change, so it is asserted
-      // here instead of being discovered in production. If it ever needs
-      // fixing, carry the ids on the stored assistant message; they would ride
-      // the write that already happens.
+      // ⚠️ THIS CASE USED TO ASSERT THE OPPOSITE, and the inversion is the fix.
+      // `role:'tool'` is a transcript role and is never stored, so a reloaded
+      // conversation rebuilt an EMPTY grounded set and every stored model link
+      // rendered as plain text — the gate refusing links it had approved
+      // minutes earlier because the EVIDENCE was gone, not because the id was
+      // bad. The old comment here named this exact remedy: carry the ids on the
+      // stored assistant message, riding the write that already happens.
       toolItems = [{ id: DREAMSHAPER, name: 'DreamShaper', type: 'Checkpoint' }];
       pollQueue = [
         toolCallSnapshot(),
@@ -330,8 +329,52 @@ describe('grounded citations reach the screen', () => {
       await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
       // The transcript came back…
       await waitFor(() => expect(screen.getByText(/is great/)).toBeTruthy());
-      // …and its link did not.
-      expect(anchorFor(DREAMSHAPER)).toBeNull();
+      // …and so did its link.
+      expect(anchorFor(DREAMSHAPER)).toBeTruthy();
+      // The full link contract, not merely the presence of an anchor — a
+      // restored link that lost `rel` would be a quieter regression than a
+      // missing one.
+      expect(anchorFor(DREAMSHAPER)?.getAttribute('rel')).toBe('noopener noreferrer');
+    })();
+  });
+
+  it('🔴 RELOAD DOES NOT TRUST WHAT THE GATE NEVER APPROVED — an invented id stays plain text', () => {
+    return (async () => {
+      // 🔴 THE SECURITY HALF, and the one that makes the case above safe rather
+      // than merely convenient. Restoring evidence must not become "restore a
+      // permissive set": only ids a tool round actually RETURNED are written, so
+      // an id the model invented was never stored and is still refused after a
+      // reload. Without this, "keeps the grounding" could be satisfied by a fix
+      // that simply stopped applying the rule to restored transcripts.
+      toolItems = [{ id: DREAMSHAPER, name: 'DreamShaper', type: 'Checkpoint' }];
+      pollQueue = [
+        toolCallSnapshot(),
+        // The tool returned DREAMSHAPER; the reply cites CARDOS as well, which
+        // nothing in this conversation ever grounded.
+        // 🔴 `twice`, because the ungrounded citation makes Layer 2's correction
+        // round fire and re-submit. A single snapshot leaves the queue empty on
+        // that second submit and the turn never settles — which presents as the
+        // RELOAD losing the transcript, not as a queue underrun.
+        ...twice(
+          textSnapshot(
+            `[DreamShaper](https://civitai.com/models/${DREAMSHAPER}) and ` +
+              `[Cardos](https://civitai.com/models/${CARDOS}) are great.`,
+          ),
+        ),
+      ];
+      await startChat();
+      await send('what is DreamShaper?', 'are great');
+
+      cleanup();
+      render(<App />);
+      await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+      await waitFor(() => expect(screen.getByText(/are great/)).toBeTruthy());
+      // The grounded one survives the reload…
+      expect(anchorFor(DREAMSHAPER)).toBeTruthy();
+      // …and the invented one is still refused. Its TEXT is still readable —
+      // refusing a link keeps the words, it does not delete the sentence.
+      expect(anchorFor(CARDOS)).toBeNull();
+      expect(screen.getByText(/Cardos/)).toBeTruthy();
     })();
   });
 });
