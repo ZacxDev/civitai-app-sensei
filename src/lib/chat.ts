@@ -76,6 +76,11 @@ export interface StoredMessage {
    * `types.ts`'s {@link CorrectionRecord}.
    */
   correction?: CorrectionRecord;
+  /**
+   * Catalog ids this turn's tool rounds returned, so the citation gate can be
+   * rebuilt after a reload. See `types.ts`'s {@link Message.grounded}.
+   */
+  grounded?: string[];
 }
 
 /**
@@ -97,6 +102,9 @@ export function serializeMessages(messages: Message[]): StoredMessage[] {
     // present": a `{ rounds: 0 }` reaching here would be a caller bug, and
     // storing it would put "a correction happened" on a turn where none did.
     ...(m.correction && m.correction.rounds > 0 ? { correction: m.correction } : {}),
+    // Omitted when empty, same reasoning as `mentions`: a turn that grounded
+    // nothing stores byte-identically to what it did before this field existed.
+    ...(m.grounded && m.grounded.length > 0 ? { grounded: [...m.grounded] } : {}),
   }));
 }
 
@@ -152,6 +160,16 @@ export function deserializeMessages(stored: StoredMessage[]): Message[] {
     m.correction.rounds > 0 &&
     typeof m.correction.resolved === 'boolean'
       ? { correction: { rounds: m.correction.rounds, resolved: m.correction.resolved } }
+      : {}),
+    // 🔴 EVERY ELEMENT SHAPE-CHECKED, because this array feeds a SECURITY gate.
+    // A stored row is not trusted input: it is whatever some build wrote, and a
+    // non-string element reaching `grounded.has(id)` would compare against ids
+    // extracted as strings and quietly never match — or, worse, a future
+    // `Set` of mixed types would make the gate's behaviour depend on the writer.
+    // Filtering to strings keeps the reconstructed set exactly as strong as the
+    // set the live turn used.
+    ...(Array.isArray(m.grounded) && m.grounded.some((id) => typeof id === 'string')
+      ? { grounded: m.grounded.filter((id): id is string => typeof id === 'string') }
       : {}),
   }));
 }

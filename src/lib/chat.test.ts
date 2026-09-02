@@ -82,6 +82,54 @@ describe('chat', () => {
       expect(deserializeMessages(serializeMessages(messages))[0].withheld).toBe(true);
     });
 
+    it('round-trips the grounded ids that keep a restored link renderable', () => {
+      const messages: Message[] = [
+        { id: 'm', role: 'assistant', content: 'x', timestamp: 1, grounded: ['4384', '22220'] },
+      ];
+      expect(deserializeMessages(serializeMessages(messages))[0].grounded).toEqual([
+        '4384',
+        '22220',
+      ]);
+    });
+
+    it('OMITS grounded when the turn grounded nothing, so old rows stay byte-identical', () => {
+      const messages: Message[] = [
+        { id: 'm', role: 'assistant', content: 'x', timestamp: 1, grounded: [] },
+      ];
+      expect(serializeMessages(messages)[0]).not.toHaveProperty('grounded');
+      expect(deserializeMessages(serializeMessages(messages))[0]).not.toHaveProperty('grounded');
+    });
+
+    it('🔴 FILTERS non-string ids out of a stored row — this array feeds a security gate', () => {
+      // A stored row is whatever some build wrote, not trusted input. A number
+      // reaching `grounded.has(id)` never matches the string ids extracted from
+      // hrefs, so it would silently weaken or confuse the gate depending on the
+      // writer. The surviving strings must still be honoured.
+      const stored = [
+        {
+          id: 'm',
+          role: 'assistant',
+          content: 'x',
+          timestamp: 1,
+          grounded: ['4384', 22220, null, 'abc'] as unknown as string[],
+        },
+      ];
+      expect(deserializeMessages(stored)[0].grounded).toEqual(['4384', 'abc']);
+    });
+
+    it('drops a grounded array with NO usable ids rather than storing an empty one', () => {
+      const stored = [
+        {
+          id: 'm',
+          role: 'assistant',
+          content: 'x',
+          timestamp: 1,
+          grounded: [1, 2] as unknown as string[],
+        },
+      ];
+      expect(deserializeMessages(stored)[0]).not.toHaveProperty('grounded');
+    });
+
     it("deserializes a LEGACY stored 'tool' message rather than dropping it", () => {
       // Sessions written by the tool-loop build are still in KV storage.
       const stored = [{ id: 't', role: 'tool', content: '{"items":[]}', timestamp: 2 }];

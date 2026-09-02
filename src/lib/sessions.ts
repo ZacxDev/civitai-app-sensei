@@ -120,6 +120,30 @@ export async function getMessages(
   return stored ? deserializeMessages(stored) : [];
 }
 
+/**
+ * PURE. The citation gate's grounded set, rebuilt from a loaded transcript.
+ *
+ * 🔴 THE UNION OVER STORED ASSISTANT TURNS, not the last turn's set. The gate is
+ * conversation-scoped by design — a follow-up question about a model searched
+ * for three turns ago must still render its link — so narrowing this to one
+ * turn would reintroduce the same blank-link symptom one reload later.
+ *
+ * 🔴 IT CANNOT ADMIT AN ID A TOOL ROUND NEVER RETURNED. Everything here was
+ * written by `serializeMessages` from a live turn's grounded set, so a
+ * hallucinated id was never stored and stays refused. This restores evidence;
+ * it does not lower the bar.
+ *
+ * Structurally typed on purpose so a caller can pass either `Message[]` or a
+ * stored row array without a conversion step.
+ */
+export function groundedIdsFromMessages(
+  messages: readonly { readonly grounded?: readonly string[] }[],
+): string[] {
+  const out = new Set<string>();
+  for (const m of messages) for (const id of m.grounded ?? []) out.add(id);
+  return [...out];
+}
+
 /** WRITE. Persists the caller's authoritative array verbatim. Never reads. */
 export async function saveMessages(
   appStorage: UseAppStorage,

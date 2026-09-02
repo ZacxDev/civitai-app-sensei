@@ -292,6 +292,12 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         if (loaded.length > 0) {
           setActiveSessionId(loaded[0].id);
           const msgs = await sessionsLib.getMessages(depsRef.current.appStorage, loaded[0].id);
+          // 🔴 NO `recordGrounded` HERE, DELIBERATELY. Setting `activeSessionId`
+          // above makes the load effect run for this same session, and that is
+          // where the grounded set is rebuilt — for BOTH boot and session
+          // switch, from one call site. Seeding here as well was measurably
+          // dead: removing it broke no test precisely because the effect had
+          // already done it, which is the definition of a second copy of a rule.
           if (!cancelled) setMessages(msgs);
         }
       } catch (e) {
@@ -382,7 +388,14 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     sessionsLib
       .getMessages(depsRef.current.appStorage, activeSessionId)
       .then((msgs) => {
-        if (!cancelled) setMessages(msgs);
+        if (cancelled) return;
+        setMessages(msgs);
+        // 🔴 BOTH LOAD SITES, NOT JUST THE FIRST. This is the session-SWITCH
+        // path; the boot path above is the other. Seeding only one leaves the
+        // symptom alive on whichever route the viewer happens to take, which is
+        // the harder half to notice because switching back and forth appears to
+        // fix it.
+        recordGrounded(activeSessionId, sessionsLib.groundedIdsFromMessages(msgs));
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -1478,6 +1491,15 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         content: replyText ?? '',
         timestamp: assistantMsg.timestamp,
         ...(correction ? { correction } : {}),
+        // 🔴 THE CITATION GATE'S EVIDENCE, RIDING THE WRITE THAT ALREADY
+        // HAPPENS. `role:'tool'` is a transcript role and is never stored, so
+        // without this a reload rebuilds an EMPTY grounded set and every link
+        // in this reply renders as plain text — the guard refusing links it
+        // approved minutes ago because the evidence was gone, not because the
+        // id was bad. `turnGrounded` is this turn's accumulated set, which is
+        // exactly what `linkHref` was consulted with while the reply rendered,
+        // so what is stored is what was actually enforced.
+        ...(turnGrounded.size > 0 ? { grounded: [...turnGrounded] } : {}),
       };
       // 🔴 ONLY IF THIS TURN STILL OWNS THE TRANSCRIPT. `updatedMessages` was
       // built when this turn started; writing it now would drop anything a newer

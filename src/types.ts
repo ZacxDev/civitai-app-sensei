@@ -80,6 +80,31 @@ export interface Message {
    * {@link CorrectionRecord}. Only ever on an `'assistant'` message.
    */
   correction?: CorrectionRecord;
+  /**
+   * The catalog model ids this turn's tool rounds RETURNED. Only ever on an
+   * `'assistant'` message.
+   *
+   * 🔴 WHY THIS IS STORED AT ALL: the citation gate refuses a
+   * `civitai.com/models/<id>` link unless `<id>` came back from a tool round in
+   * this conversation, and `role:'tool'` is a TRANSCRIPT role, not a stored one.
+   * So a reloaded conversation used to rebuild an EMPTY grounded set and every
+   * stored model link rendered as plain text — the guard refusing links it had
+   * itself approved minutes earlier, because the evidence was gone rather than
+   * because the id was bad. `citation-grounding.e2e.test.tsx` pinned that as a
+   * known loss and named this exact fix: carry the ids on the stored assistant
+   * message, riding the write that already happens.
+   *
+   * 🔴 THIS DOES NOT WEAKEN THE GATE. What is persisted is only what a tool
+   * round actually returned, so an id the model invented was never written and
+   * is still refused after a reload. The set is reconstructed by union over
+   * stored assistant turns — see `groundedIdsFromMessages`.
+   *
+   * 🔴 OLDER TRANSCRIPTS CANNOT BE RECOVERED. Messages written before this
+   * field existed carry no ids, so their links stay plain text. That is the
+   * conservative direction and it is not fixable from stored data — the tool
+   * results were never written down.
+   */
+  grounded?: readonly string[];
 }
 
 export interface Session {
