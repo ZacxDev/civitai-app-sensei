@@ -42,6 +42,7 @@ import {
   groundedIdsFromToolPayload,
   ungroundedModelIds,
 } from '../src/lib/grounding.ts';
+import { classifyReplyOutcome } from './reply-outcome.mjs';
 
 const BASE = process.env.CIVITAI_BASE ?? 'https://civitai.com';
 const SLUG = process.env.SENSEI_SLUG ?? 'sensei';
@@ -181,6 +182,11 @@ async function runTurn(blockToken, declarations, question, repeat) {
   let rounds = 0;
   let finalText = '';
   let lastStatus = null;
+  // 🔴 THE VERDICT, READ BACK FROM THE HOST — not inferred from emptiness.
+  // Captured on every round because a withhold ENDS the turn: the host publishes
+  // `textOutputs` only on a released verdict, so the round that is withheld is
+  // the last one and carries no prose to break the loop on.
+  let textOutputWithheld = null;
   const errors = [];
 
   for (let round = 0; round <= SET.maxToolRounds; round++) {
@@ -192,6 +198,14 @@ async function runTurn(blockToken, declarations, question, repeat) {
       break;
     }
     lastStatus = snap?.status ?? null;
+    // Same field, and same precedence, as `orchestrator-bridge.ts:459` — which
+    // checks it BEFORE released text. Reading it after would let a withheld
+    // round fall through to the empty-text branch and be misfiled all over
+    // again, one layer down.
+    if (snap?.textOutputWithheld) {
+      textOutputWithheld = snap.textOutputWithheld;
+      break;
+    }
     const calls = Array.isArray(snap?.toolCalls) ? snap.toolCalls : [];
     const texts = Array.isArray(snap?.textOutputs) ? snap.textOutputs : [];
 
@@ -290,7 +304,12 @@ async function runTurn(blockToken, declarations, question, repeat) {
     groundedCitations,
     // 🔴 A withheld turn is a MISSING OBSERVATION, not a wrong answer. Kept in
     // its own field and excluded from correctness rates downstream.
-    withheld: lastStatus === 'succeeded' && finalText.trim().length === 0,
+    //
+    // 🔴 `withheld` NOW MEANS A VERDICT WAS READ BACK. It used to be
+    // `succeeded && no text`, which names a CAUSE it never observed — and a
+    // content-policy incident that does not exist was reported off it. The
+    // unexplained case keeps the emptiness but drops the claim: `emptyReply`.
+    ...classifyReplyOutcome({ status: lastStatus, textOutputWithheld, text: finalText }),
     answerChars: finalText.length,
     answer: finalText,
     errors,
@@ -321,6 +340,13 @@ const flush = () =>
     JSON.stringify(
       {
         arm: ARM,
+        // 🔴 STAMPED SO A READER NEVER HAS TO GUESS WHICH `withheld` THIS IS.
+        // Schema 1 files (everything written before 2026-09-02) carry a
+        // `withheld` that was computed as `succeeded && no text` and never read
+        // a verdict — i.e. its TRUE meaning is schema 2's `emptyReply`.
+        // `summarize.mjs` remaps them on that basis rather than reporting
+        // withholds that were never observed.
+        resultSchema: 2,
         startedAt: started,
         set: SET.version,
         model: SET.model,
@@ -348,7 +374,7 @@ for (const q of SET.questions) {
     flush(); // incremental — a crash mid-arm keeps everything already paid for
     console.error(
       `[${q.id} ${rep}/${SET.repeats}] tool=${r.toolCalled} expect=${q.expectTool} ` +
-        `ok=${r.toolExpectationMet} withheld=${r.withheld} buzz=${r.buzz} ${r.seconds}s ` +
+        `ok=${r.toolExpectationMet} withheld=${r.withheld} empty=${r.emptyReply} buzz=${r.buzz} ${r.seconds}s ` +
         `${r.errors.length ? 'ERR:' + r.errors.join('|') : ''}`
     );
     await sleep(1200); // stay clear of the per-token catalog rate limit
