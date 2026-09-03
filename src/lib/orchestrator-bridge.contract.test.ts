@@ -198,8 +198,19 @@ describe('orchestrator-bridge — lifecycle contract', () => {
     // priced at nothing — and the first reads as "you have no Buzz". That cost a
     // real diagnosis once (see `buildChatCompletionBody`'s 0.1.6 note).
     //
-    // These assert the SPLIT, not the wording of either half: an implementation
-    // that collapses them again fails here however it spells the message.
+    // 🔴 WHAT PINS THE SPLIT IS THE WORDING ASSERTIONS, NOT THE INEQUALITY —
+    // an earlier version of this comment claimed the opposite and was measured
+    // false. A collapsed single-template implementation interpolating the value
+    // (`…zero or missing cost (undefined)` vs `…(0)`) PASSES `not.toBe`, because
+    // two different renderings of one message are still two different strings.
+    // So `not.toBe` is necessary and nowhere near sufficient. Two things carry
+    // the guarantee instead, and both must survive a reword of the messages:
+    //   - the `toThrow(/…/)` assertions above, which do kill the collapse; and
+    //   - `the unpriced message names no price`, below, which is the structural
+    //     half — a collapsed template has to render SOMETHING for a value that
+    //     does not exist, and every rendering of it is a tell.
+    // Relaxing the regexes without replacing that structural half removes the
+    // protection, which is exactly what the old comment invited a reader to do.
 
     type Estimate = WorkflowHelpers['estimate'];
 
@@ -215,6 +226,40 @@ describe('orchestrator-bridge — lifecycle contract', () => {
       }
       throw new Error('expected the estimate gate to reject, but it resolved');
     };
+
+    it('estimate-gate-admits-only-a-finite-positive-price', async () => {
+      // 🔴 THIS IS THE MONEY GATE, AND IT USED TO LEAK. The old test was
+      // `(cost?.total ?? 0) > 0`. `NaN` slips past `<= 0` because every NaN
+      // comparison is false; `Infinity > 0` is true; `"5" > 0` coerces. All three
+      // therefore SUBMITTED — real Buzz spent on a request that was never priced.
+      // Without this case the `typeof`/`Number.isFinite` half of the guard can be
+      // deleted and the whole suite stays green, so the leak returns silently.
+      const notPrices = [NaN, Infinity, -Infinity, '5' as unknown as number, null, undefined];
+
+      for (const value of notPrices) {
+        const estimate: Estimate = vi.fn().mockResolvedValue({ cost: { total: value } });
+        const helpers = mockWorkflowHelpers({ estimate });
+        const adapter = createBridgeAdapter(helpers);
+
+        await expect(
+          adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE }),
+        ).rejects.toThrow(/returned no cost/i);
+
+        expect(helpers.submit, `submitted on cost.total = ${String(value)}`).not.toHaveBeenCalled();
+      }
+    });
+
+    it('still submits on a legitimate positive price — the gate is not merely closed', async () => {
+      // Positive control for the case above: a guard that rejected EVERYTHING
+      // would satisfy every assertion in this describe block and be useless.
+      const estimate: Estimate = vi.fn().mockResolvedValue({ cost: { total: 4 } });
+      const helpers = mockWorkflowHelpers({ estimate });
+      const adapter = createBridgeAdapter(helpers);
+
+      await adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE });
+
+      expect(helpers.submit).toHaveBeenCalled();
+    });
 
     it('gives an UNPRICED estimate and a ZERO-PRICED one different messages', async () => {
       const unpriced = await messageFrom(unpricedEstimate());
@@ -232,6 +277,17 @@ describe('orchestrator-bridge — lifecycle contract', () => {
       });
 
       await expect(messageFrom(estimate)).resolves.toContain('unrecognized_keys');
+    });
+
+    it('the unpriced message names no price — the structural half of the split', async () => {
+      // 🔴 WORDING-INDEPENDENT BY CONSTRUCTION, which the inequality above is not.
+      // The unpriced branch has no number to report, so any implementation that
+      // reaches it through a shared "cost" template must render the missing value
+      // — `undefined`, `NaN`, `null`, or a bare `()`. Asserting the message names
+      // none of those kills the collapse however the prose is spelled.
+      const message = await messageFrom(unpricedEstimate());
+
+      expect(message).not.toMatch(/undefined|NaN|null|\(\s*\)/);
     });
 
     it('does not claim a reason it was not given', async () => {

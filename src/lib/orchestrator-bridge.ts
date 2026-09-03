@@ -270,9 +270,17 @@ export function buildChatCompletionBody(request: ChatCompletionRequest): Workflo
   //     [{ "code": "unrecognized_keys", "keys": ["tool_choice"] }]
   // Shipped in 0.1.6 and it broke EVERY send, not just tool-calling ones —
   // `tools`+`toolChoice` are attached whenever declarations are available, which
-  // is always once the route is live. The estimate 400s, and the app reports it
-  // as "Workflow estimate returned zero or missing cost" because the guard it
-  // trips is a PRICE check, which is why it read as a billing fault.
+  // is always once the route is live. The estimate 400s, and at the time the app
+  // reported that as a PRICE failure, which is why it read as a billing fault.
+  //
+  // 🔴 HISTORICAL — DO NOT GREP FOR THAT STRING, IT NO LONGER EXISTS. The message
+  // was "Workflow estimate returned zero or missing cost" and the guard it tripped
+  // was the price check; both were changed by the estimate-attribution split in
+  // `createBridgeAdapter` below, so an unpriced estimate now reports itself as one.
+  // The CAUSAL half above — that a 400 is what lands there — is NOT verified: the
+  // SDK's `estimate` rethrows a transport rejection (`useBuzzWorkflow.js`), so a
+  // 400 surfacing as a resolved-but-unpriced snapshot depends on the host replying
+  // with an ESTIMATE_RESULT rather than an error. Left as the 0.1.6 narrative.
   //
   // The exact accepted key set is pinned in `orchestrator-bridge.test.ts`, so a
   // future rename fails here rather than in production.
@@ -417,9 +425,15 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       // optional field on a workflow snapshot, and the old guard discarded it in
       // favour of a message it invented. Prefer the host's own words.
       //
-      // The GATE IS UNCHANGED and still fail-closed: neither branch submits, so
-      // nothing here can spend Buzz that the old code would have withheld. Only
-      // the attribution moves.
+      // 🔴 THE GATE IS STRICTLY TIGHTER, NOT UNCHANGED — an earlier version of
+      // this comment claimed unchanged and that was measurably false. The old
+      // test was `(cost?.total ?? 0) > 0`, which ADMITTED three classes that are
+      // not prices: `NaN`, `Infinity`, and a numeric STRING like `"5"` — each of
+      // them compared `> 0` (or, for NaN, slipped past `<= 0`) and SUBMITTED,
+      // spending Buzz on a request that had never been priced. The new test is
+      // "a finite number, greater than zero", a strict subset, so the direction
+      // is fail-closed: every input the old gate refused this one still refuses.
+      // `estimate-gate-admits-only-a-finite-positive-price` below pins it.
       const total = estimateSnap.cost?.total;
 
       if (typeof total !== 'number' || !Number.isFinite(total)) {
