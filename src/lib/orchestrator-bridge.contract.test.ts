@@ -214,8 +214,14 @@ describe('orchestrator-bridge — lifecycle contract', () => {
     //     out`, below, is the wording-INDEPENDENT half: it derives the template
     //     from the implementation's own two priced outputs and enumerates no
     //     spelling, so a reword carries it along unchanged.
-    // Relax the regexes and the template test still holds the line; delete the
-    // template test and only the spellings are left.
+    // 🔴 AND NEITHER IS COMPLETE — an earlier version of this line said "relax
+    // the regexes and the template test still holds the line", which claims a
+    // completeness the template test does not have. It catches a collapse only
+    // where every byte outside the price slot is identical; a collapse whose
+    // empty slot reads as WORDS is measured to walk past it. So the two halves
+    // are complements with a gap between them, not a belt and braces: relaxing
+    // the regexes really does lose coverage, and the template test is what
+    // survives a reword, not a replacement for them.
 
     type Estimate = WorkflowHelpers['estimate'];
 
@@ -317,6 +323,14 @@ describe('orchestrator-bridge — lifecycle contract', () => {
       // template. If the unpriced message also matches that template, both branches
       // are one message and the split is gone — whatever the prose says, and
       // whatever it renders in the empty slot.
+      //
+      // 🔴 WHAT IT DOES NOT CATCH, STATED SO NOBODY READS IT AS COMPLETE. It sees
+      // a collapse only where every byte OUTSIDE the slot is identical. A collapse
+      // that renders the empty slot as WORDS rather than a symbol perturbs bytes
+      // next to the slot and walks past — measured, a single-template throw whose
+      // slot reads `without any price at all` keeps the suite green. So this is a
+      // wording-INDEPENDENT guard, not a collapse-COMPLETE one; the two are
+      // different claims and only the first is made here.
       const zero = await messageFrom(zeroPriceEstimate());
       const negative = await messageFrom(pricedAt(-3));
       const unpriced = await messageFrom(unpricedEstimate());
@@ -324,9 +338,29 @@ describe('orchestrator-bridge — lifecycle contract', () => {
       const prefix = commonPrefix(zero, negative);
       const suffix = commonSuffix(zero, negative);
 
-      // Guard the guard: if the two priced messages shared nothing, the template
-      // would be empty and every string would "match" it, making this vacuous.
-      expect(prefix.length + suffix.length).toBeGreaterThan(0);
+      // 🔴 GUARD THE GUARD — and on the right quantity. A SUM was measured to
+      // admit both degenerate modes it was meant to exclude, because it passes
+      // when either anchor alone is non-empty:
+      //   - shared EVERYTHING: if the two priced messages are byte-identical
+      //     (e.g. the price stops being interpolated) both anchors span the whole
+      //     string, the sum double-counts, and the assertion silently decays into
+      //     `unpriced !== zero` — the very inequality this block calls "nowhere
+      //     near sufficient". Silent, so nothing would ever report it.
+      //   - ONE-SIDED: with the number at the end, `suffix` is empty,
+      //     `endsWith('')` is always true, and the test reduces to a prefix
+      //     comparison — which then FALSE-ACCUSES a genuinely split implementation
+      //     that merely shares a lead-in. That is how a good guard gets deleted.
+      // Requiring both anchors non-empty AND a real slot between them makes the
+      // test say "I cannot judge this message family" instead of either.
+      expect(zero, 'the two priced messages must differ for a template to exist').not.toBe(
+        negative,
+      );
+      expect(prefix.length, 'no shared lead-in: cannot derive a template').toBeGreaterThan(0);
+      expect(suffix.length, 'no shared tail: cannot derive a template').toBeGreaterThan(0);
+      expect(
+        prefix.length + suffix.length,
+        'the anchors leave no slot between them: cannot derive a template',
+      ).toBeLessThan(Math.min(zero.length, negative.length));
 
       expect(
         unpriced.startsWith(prefix) && unpriced.endsWith(suffix),
