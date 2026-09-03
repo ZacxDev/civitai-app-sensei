@@ -171,7 +171,7 @@ describe('orchestrator-bridge — lifecycle contract', () => {
 
       await expect(
         adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE }),
-      ).rejects.toThrow(/zero or missing cost/i);
+      ).rejects.toThrow(/priced this request at 0/i);
 
       expect(helpers.submit).not.toHaveBeenCalled();
     });
@@ -185,9 +185,63 @@ describe('orchestrator-bridge — lifecycle contract', () => {
 
       await expect(
         adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE }),
-      ).rejects.toThrow(/zero or missing cost/i);
+      ).rejects.toThrow(/returned no cost/i);
 
       expect(helpers.submit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('an estimate failure is not reported as a billing failure', () => {
+    // 🔴 THE REGRESSION THIS SUITE EXISTS FOR. Both states below used to throw
+    // the single string "Workflow estimate returned zero or missing cost", so a
+    // request the host never PRICED was indistinguishable on screen from one it
+    // priced at nothing — and the first reads as "you have no Buzz". That cost a
+    // real diagnosis once (see `buildChatCompletionBody`'s 0.1.6 note).
+    //
+    // These assert the SPLIT, not the wording of either half: an implementation
+    // that collapses them again fails here however it spells the message.
+
+    type Estimate = WorkflowHelpers['estimate'];
+
+    const unpricedEstimate = (): Estimate => vi.fn().mockResolvedValue({ status: 'failed' });
+    const zeroPriceEstimate = (): Estimate => vi.fn().mockResolvedValue({ cost: { total: 0 } });
+
+    const messageFrom = async (estimate: Estimate): Promise<string> => {
+      const adapter = createBridgeAdapter(mockWorkflowHelpers({ estimate }));
+      try {
+        await adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE });
+      } catch (err) {
+        return (err as Error).message;
+      }
+      throw new Error('expected the estimate gate to reject, but it resolved');
+    };
+
+    it('gives an UNPRICED estimate and a ZERO-PRICED one different messages', async () => {
+      const unpriced = await messageFrom(unpricedEstimate());
+      const zeroPriced = await messageFrom(zeroPriceEstimate());
+
+      expect(unpriced).not.toBe(zeroPriced);
+    });
+
+    it('surfaces the host’s own reason when the snapshot carries one', async () => {
+      // The reason was always on the snapshot; the old guard threw it away and
+      // invented a message about cost instead.
+      const estimate: Estimate = vi.fn().mockResolvedValue({
+        status: 'failed',
+        error: "invalid params for step 'chat-completion': unrecognized_keys",
+      });
+
+      await expect(messageFrom(estimate)).resolves.toContain('unrecognized_keys');
+    });
+
+    it('does not claim a reason it was not given', async () => {
+      // Negative control for the test above: with no `error` on the snapshot the
+      // message must fall back, not fabricate. Without this, a hardcoded string
+      // containing "unrecognized_keys" would pass the previous test.
+      const message = await messageFrom(unpricedEstimate());
+
+      expect(message).not.toContain('unrecognized_keys');
+      expect(message).toMatch(/rejected before it could be priced/i);
     });
   });
 

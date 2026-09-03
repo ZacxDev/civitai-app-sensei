@@ -404,10 +404,34 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       const body = buildChatCompletionBody(request);
 
       const estimateSnap = await workflow.estimate(body);
-      const cost = estimateSnap.cost?.total ?? 0;
 
-      if (cost <= 0) {
-        throw new Error('Workflow estimate returned zero or missing cost');
+      // 🔴 TWO DIFFERENT FAILURES USED TO SHARE ONE MESSAGE, AND ONLY ONE OF THEM
+      // IS ABOUT MONEY. `cost` ABSENT means the host never priced the request;
+      // `cost.total <= 0` means it priced it at nothing. Both were reported as
+      // "zero or missing cost", so an unpriced request was indistinguishable on
+      // screen from a free one — and the first reads as "you have no Buzz". The
+      // 0.1.6 note on `buildChatCompletionBody` above records that shape sending
+      // a diagnosis after billing.
+      //
+      // 🔴 AND THE SNAPSHOT ALREADY CARRIED THE REAL REASON: `error` is an
+      // optional field on a workflow snapshot, and the old guard discarded it in
+      // favour of a message it invented. Prefer the host's own words.
+      //
+      // The GATE IS UNCHANGED and still fail-closed: neither branch submits, so
+      // nothing here can spend Buzz that the old code would have withheld. Only
+      // the attribution moves.
+      const total = estimateSnap.cost?.total;
+
+      if (typeof total !== 'number' || !Number.isFinite(total)) {
+        const reason =
+          typeof estimateSnap.error === 'string' && estimateSnap.error.trim() !== ''
+            ? estimateSnap.error.trim()
+            : 'the request was rejected before it could be priced';
+        throw new Error(`Workflow estimate returned no cost — ${reason}`);
+      }
+
+      if (total <= 0) {
+        throw new Error(`Workflow estimate priced this request at ${total} — nothing to submit`);
       }
 
       const submitSnap = await workflow.submit(body);
