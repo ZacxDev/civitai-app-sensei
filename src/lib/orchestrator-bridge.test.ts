@@ -452,13 +452,26 @@ describe('orchestrator-bridge', () => {
       ).rejects.toThrow('Workflow expired');
     });
 
-    it('throws on a zero cost estimate', async () => {
+    it('throws on a zero cost estimate, naming the PRICE and not a missing one', async () => {
       const estimate = vi.fn().mockResolvedValue({ cost: { total: 0 } });
       const adapter = createBridgeAdapter(mockWorkflowHelpers({ estimate }));
 
       await expect(
         adapter.submitChatCompletion({ model: MODEL, messages: [{ role: 'user', content: 'hi' }] }),
-      ).rejects.toThrow('zero or missing cost');
+      ).rejects.toThrow('priced this request at 0');
+    });
+
+    it('reports the ACTUAL non-positive price, not a hardcoded zero', async () => {
+      // 🔴 THE FIXTURE ABOVE PRICES AT 0, WHICH IS THE LITERAL A HARDCODING
+      // MUTANT EMITS — so it cannot see `${total}` being replaced by `0`, and
+      // that mutation survives the whole suite. -3 is a value the constant
+      // cannot equal, which is what makes the interpolation observable.
+      const estimate = vi.fn().mockResolvedValue({ cost: { total: -3 } });
+      const adapter = createBridgeAdapter(mockWorkflowHelpers({ estimate }));
+
+      await expect(
+        adapter.submitChatCompletion({ model: MODEL, messages: [{ role: 'user', content: 'hi' }] }),
+      ).rejects.toThrow('priced this request at -3');
     });
 
     it('throws when submit returns no workflowId', async () => {

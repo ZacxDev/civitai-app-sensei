@@ -270,9 +270,18 @@ export function buildChatCompletionBody(request: ChatCompletionRequest): Workflo
   //     [{ "code": "unrecognized_keys", "keys": ["tool_choice"] }]
   // Shipped in 0.1.6 and it broke EVERY send, not just tool-calling ones —
   // `tools`+`toolChoice` are attached whenever declarations are available, which
-  // is always once the route is live. The estimate 400s, and the app reports it
-  // as "Workflow estimate returned zero or missing cost" because the guard it
-  // trips is a PRICE check, which is why it read as a billing fault.
+  // is always once the route is live. The estimate 400s, and at the time the app
+  // reported that as a PRICE failure, which is why it read as a billing fault.
+  //
+  // 🔴 HISTORICAL — THAT STRING IS NO LONGER THROWN (it survives only in comments
+  // like this one, so a grep still finds it; nothing emits it). The message
+  // was "Workflow estimate returned zero or missing cost" and the guard it tripped
+  // was the price check; both were changed by the estimate-attribution split in
+  // `createBridgeAdapter` below, so an unpriced estimate now reports itself as one.
+  // The CAUSAL half above — that a 400 is what lands there — is NOT verified: the
+  // SDK's `estimate` rethrows a transport rejection (`useBuzzWorkflow.js`), so a
+  // 400 surfacing as a resolved-but-unpriced snapshot depends on the host replying
+  // with an ESTIMATE_RESULT rather than an error. Left as the 0.1.6 narrative.
   //
   // The exact accepted key set is pinned in `orchestrator-bridge.test.ts`, so a
   // future rename fails here rather than in production.
@@ -404,10 +413,50 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       const body = buildChatCompletionBody(request);
 
       const estimateSnap = await workflow.estimate(body);
-      const cost = estimateSnap.cost?.total ?? 0;
 
-      if (cost <= 0) {
-        throw new Error('Workflow estimate returned zero or missing cost');
+      // 🔴 TWO DIFFERENT FAILURES USED TO SHARE ONE MESSAGE, AND ONLY ONE OF THEM
+      // IS ABOUT MONEY. `cost` ABSENT means the host never priced the request;
+      // `cost.total <= 0` means it priced it at nothing. Both were reported as
+      // "zero or missing cost", so an unpriced request was indistinguishable on
+      // screen from a free one — and the first reads as "you have no Buzz". The
+      // 0.1.6 note on `buildChatCompletionBody` above records that shape sending
+      // a diagnosis after billing.
+      //
+      // 🔴 AND THE SNAPSHOT ALREADY CARRIED THE REAL REASON: `error` is an
+      // optional field on a workflow snapshot, and the old guard discarded it in
+      // favour of a message it invented. Prefer the host's own words.
+      //
+      // 🔴 THE GATE IS STRICTLY TIGHTER, NOT UNCHANGED — an earlier version of
+      // this comment claimed unchanged and that was measurably false. The old
+      // gate was, verbatim:
+      //
+      //     const cost = estimateSnap.cost?.total ?? 0;
+      //     if (cost <= 0) { throw … }
+      //
+      // so it ADMITTED everything for which `cost <= 0` is false — and that is
+      // three classes which are not prices. `NaN` admits because EVERY NaN
+      // comparison is false, so `NaN <= 0` is false; `Infinity` admits; the
+      // string `"5"` admits by coercion. All three SUBMITTED, spending Buzz on a
+      // request that had never been priced. (Quoting the old gate as `> 0` — as
+      // this comment briefly did — gets NaN backwards, because `NaN > 0` is also
+      // false and would have REJECTED it. The `<= 0` spelling is what makes the
+      // leak follow with no exception clause.) The new test is "a finite number,
+      // greater than zero", a strict subset, so the direction is fail-closed:
+      // every input the old gate refused, this one still refuses.
+      // `estimate-gate-rejects-every-value-that-is-not-a-finite-number` below
+      // pins the rejections; the `total <= 0` branch is pinned separately.
+      const total = estimateSnap.cost?.total;
+
+      if (typeof total !== 'number' || !Number.isFinite(total)) {
+        const reason =
+          typeof estimateSnap.error === 'string' && estimateSnap.error.trim() !== ''
+            ? estimateSnap.error.trim()
+            : 'the request was rejected before it could be priced';
+        throw new Error(`Workflow estimate returned no cost — ${reason}`);
+      }
+
+      if (total <= 0) {
+        throw new Error(`Workflow estimate priced this request at ${total} — nothing to submit`);
       }
 
       const submitSnap = await workflow.submit(body);

@@ -171,7 +171,7 @@ describe('orchestrator-bridge — lifecycle contract', () => {
 
       await expect(
         adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE }),
-      ).rejects.toThrow(/zero or missing cost/i);
+      ).rejects.toThrow(/priced this request at 0/i);
 
       expect(helpers.submit).not.toHaveBeenCalled();
     });
@@ -185,9 +185,197 @@ describe('orchestrator-bridge — lifecycle contract', () => {
 
       await expect(
         adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE }),
-      ).rejects.toThrow(/zero or missing cost/i);
+      ).rejects.toThrow(/returned no cost/i);
 
       expect(helpers.submit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('an estimate failure is not reported as a billing failure', () => {
+    // 🔴 THE REGRESSION THIS SUITE EXISTS FOR. Both states below used to throw
+    // the single string "Workflow estimate returned zero or missing cost", so a
+    // request the host never PRICED was indistinguishable on screen from one it
+    // priced at nothing — and the first reads as "you have no Buzz". That cost a
+    // real diagnosis once (see `buildChatCompletionBody`'s 0.1.6 note).
+    //
+    // 🔴 WHAT PINS THE SPLIT IS THE WORDING ASSERTIONS, NOT THE INEQUALITY —
+    // an earlier version of this comment claimed the opposite and was measured
+    // false. A collapsed single-template implementation interpolating the value
+    // (`…zero or missing cost (undefined)` vs `…(0)`) PASSES `not.toBe`, because
+    // two different renderings of one message are still two different strings.
+    // So `not.toBe` is necessary and nowhere near sufficient. Two things carry
+    // the guarantee instead, and they are NOT interchangeable — an earlier
+    // version of this paragraph listed them as if they were, and said both
+    // "must survive a reword", which is false of the first by definition:
+    //   - the `toThrow(/…/)` assertions above KILL the collapse but are SPELLED:
+    //     reword either message and they must be rewritten. They are a pin on
+    //     today's wording, not an invariant.
+    //   - `the unpriced message is not the priced TEMPLATE with the price left
+    //     out`, below, is the wording-INDEPENDENT half: it derives the template
+    //     from the implementation's own two priced outputs and enumerates no
+    //     spelling, so a reword carries it along unchanged.
+    // 🔴 AND NEITHER IS COMPLETE — an earlier version of this line said "relax
+    // the regexes and the template test still holds the line", which claims a
+    // completeness the template test does not have. It catches a collapse only
+    // where every byte outside the price slot is identical; a collapse whose
+    // empty slot reads as WORDS is measured to walk past it. So the two halves
+    // are complements with a gap between them, not a belt and braces: relaxing
+    // the regexes really does lose coverage, and the template test is what
+    // survives a reword, not a replacement for them.
+
+    type Estimate = WorkflowHelpers['estimate'];
+
+    const unpricedEstimate = (): Estimate => vi.fn().mockResolvedValue({ status: 'failed' });
+    const pricedAt = (total: number): Estimate => vi.fn().mockResolvedValue({ cost: { total } });
+    const zeroPriceEstimate = (): Estimate => pricedAt(0);
+
+    const commonPrefix = (a: string, b: string): string => {
+      let i = 0;
+      while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+      return a.slice(0, i);
+    };
+    const commonSuffix = (a: string, b: string): string => {
+      let i = 0;
+      while (i < a.length && i < b.length && a[a.length - 1 - i] === b[b.length - 1 - i]) i += 1;
+      return a.slice(a.length - i);
+    };
+
+    const messageFrom = async (estimate: Estimate): Promise<string> => {
+      const adapter = createBridgeAdapter(mockWorkflowHelpers({ estimate }));
+      try {
+        await adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE });
+      } catch (err) {
+        return (err as Error).message;
+      }
+      throw new Error('expected the estimate gate to reject, but it resolved');
+    };
+
+    it('estimate-gate-rejects-every-value-that-is-not-a-finite-number', async () => {
+      // 🔴 THIS IS THE MONEY GATE, AND IT USED TO LEAK. The old test was
+      // `(cost?.total ?? 0) > 0`. `NaN` slips past `<= 0` because every NaN
+      // comparison is false; `Infinity > 0` is true; `"5" > 0` coerces. All three
+      // therefore SUBMITTED — real Buzz spent on a request that was never priced.
+      // Without this case the `typeof`/`Number.isFinite` half of the guard can be
+      // deleted and the whole suite stays green, so the leak returns silently.
+      //
+      // 🔴 SCOPE: this pins the REJECTIONS only. The name used to say "admits only a
+      // finite positive price", which was wider than the body on both halves — it
+      // asserts no admission (that is the positive control below) and never
+      // exercises 0 or a negative (that is the `total <= 0` branch, pinned in
+      // `orchestrator-bridge.test.ts`). Deleting the `total <= 0` branch leaves
+      // this test green.
+      const notPrices = [NaN, Infinity, -Infinity, '5' as unknown as number, null, undefined];
+
+      for (const value of notPrices) {
+        const estimate: Estimate = vi.fn().mockResolvedValue({ cost: { total: value } });
+        const helpers = mockWorkflowHelpers({ estimate });
+        const adapter = createBridgeAdapter(helpers);
+
+        await expect(
+          adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE }),
+        ).rejects.toThrow(/returned no cost/i);
+
+        expect(helpers.submit, `submitted on cost.total = ${String(value)}`).not.toHaveBeenCalled();
+      }
+    });
+
+    it('still submits on a legitimate positive price — the gate is not merely closed', async () => {
+      // Positive control for the case above: a guard that rejected EVERYTHING
+      // would satisfy every assertion in this describe block and be useless.
+      const estimate: Estimate = vi.fn().mockResolvedValue({ cost: { total: 4 } });
+      const helpers = mockWorkflowHelpers({ estimate });
+      const adapter = createBridgeAdapter(helpers);
+
+      await adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE });
+
+      expect(helpers.submit).toHaveBeenCalled();
+    });
+
+    it('gives an UNPRICED estimate and a ZERO-PRICED one different messages', async () => {
+      const unpriced = await messageFrom(unpricedEstimate());
+      const zeroPriced = await messageFrom(zeroPriceEstimate());
+
+      expect(unpriced).not.toBe(zeroPriced);
+    });
+
+    it('surfaces the host’s own reason when the snapshot carries one', async () => {
+      // The reason was always on the snapshot; the old guard threw it away and
+      // invented a message about cost instead.
+      const estimate: Estimate = vi.fn().mockResolvedValue({
+        status: 'failed',
+        error: "invalid params for step 'chat-completion': unrecognized_keys",
+      });
+
+      await expect(messageFrom(estimate)).resolves.toContain('unrecognized_keys');
+    });
+
+    it('the unpriced message is not the priced TEMPLATE with the price left out', async () => {
+      // 🔴 THIS DERIVES THE TEMPLATE FROM THE IMPLEMENTATION'S OWN OUTPUT AND
+      // ENUMERATES NO SPELLING — which is what the previous version of this test
+      // got wrong. It asserted the message contained none of `undefined`/`NaN`/
+      // `null`/`()`, called itself "wording-independent BY CONSTRUCTION", and was
+      // then walked straight past by a collapsed implementation that rendered the
+      // missing price as an em-dash. A hardcoded list of four spellings is a
+      // SPELLED guard; the hazard has infinitely many spellings.
+      //
+      // The real invariant has no spelling at all: two PRICED messages differ ONLY
+      // where the number goes, so their common prefix and suffix ARE the priced
+      // template. If the unpriced message also matches that template, both branches
+      // are one message and the split is gone — whatever the prose says, and
+      // whatever it renders in the empty slot.
+      //
+      // 🔴 WHAT IT DOES NOT CATCH, STATED SO NOBODY READS IT AS COMPLETE. It sees
+      // a collapse only where every byte OUTSIDE the slot is identical. A collapse
+      // that renders the empty slot as WORDS rather than a symbol perturbs bytes
+      // next to the slot and walks past — measured, a single-template throw whose
+      // slot reads `without any price at all` keeps the suite green. So this is a
+      // wording-INDEPENDENT guard, not a collapse-COMPLETE one; the two are
+      // different claims and only the first is made here.
+      const zero = await messageFrom(zeroPriceEstimate());
+      const negative = await messageFrom(pricedAt(-3));
+      const unpriced = await messageFrom(unpricedEstimate());
+
+      const prefix = commonPrefix(zero, negative);
+      const suffix = commonSuffix(zero, negative);
+
+      // 🔴 GUARD THE GUARD — and on the right quantity. A SUM was measured to
+      // admit both degenerate modes it was meant to exclude, because it passes
+      // when either anchor alone is non-empty:
+      //   - shared EVERYTHING: if the two priced messages are byte-identical
+      //     (e.g. the price stops being interpolated) both anchors span the whole
+      //     string, the sum double-counts, and the assertion silently decays into
+      //     `unpriced !== zero` — the very inequality this block calls "nowhere
+      //     near sufficient". Silent, so nothing would ever report it.
+      //   - ONE-SIDED: with the number at the end, `suffix` is empty,
+      //     `endsWith('')` is always true, and the test reduces to a prefix
+      //     comparison — which then FALSE-ACCUSES a genuinely split implementation
+      //     that merely shares a lead-in. That is how a good guard gets deleted.
+      // Requiring both anchors non-empty AND a real slot between them makes the
+      // test say "I cannot judge this message family" instead of either.
+      expect(zero, 'the two priced messages must differ for a template to exist').not.toBe(
+        negative,
+      );
+      expect(prefix.length, 'no shared lead-in: cannot derive a template').toBeGreaterThan(0);
+      expect(suffix.length, 'no shared tail: cannot derive a template').toBeGreaterThan(0);
+      expect(
+        prefix.length + suffix.length,
+        'the anchors leave no slot between them: cannot derive a template',
+      ).toBeLessThan(Math.min(zero.length, negative.length));
+
+      expect(
+        unpriced.startsWith(prefix) && unpriced.endsWith(suffix),
+        `unpriced message is the priced template with an empty slot: ${unpriced}`,
+      ).toBe(false);
+    });
+
+    it('does not claim a reason it was not given', async () => {
+      // Negative control for the test above: with no `error` on the snapshot the
+      // message must fall back, not fabricate. Without this, a hardcoded string
+      // containing "unrecognized_keys" would pass the previous test.
+      const message = await messageFrom(unpricedEstimate());
+
+      expect(message).not.toContain('unrecognized_keys');
+      expect(message).toMatch(/rejected before it could be priced/i);
     });
   });
 
