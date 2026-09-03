@@ -273,7 +273,8 @@ export function buildChatCompletionBody(request: ChatCompletionRequest): Workflo
   // is always once the route is live. The estimate 400s, and at the time the app
   // reported that as a PRICE failure, which is why it read as a billing fault.
   //
-  // 🔴 HISTORICAL — DO NOT GREP FOR THAT STRING, IT NO LONGER EXISTS. The message
+  // 🔴 HISTORICAL — THAT STRING IS NO LONGER THROWN (it survives only in comments
+  // like this one, so a grep still finds it; nothing emits it). The message
   // was "Workflow estimate returned zero or missing cost" and the guard it tripped
   // was the price check; both were changed by the estimate-attribution split in
   // `createBridgeAdapter` below, so an unpriced estimate now reports itself as one.
@@ -427,13 +428,23 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       //
       // 🔴 THE GATE IS STRICTLY TIGHTER, NOT UNCHANGED — an earlier version of
       // this comment claimed unchanged and that was measurably false. The old
-      // test was `(cost?.total ?? 0) > 0`, which ADMITTED three classes that are
-      // not prices: `NaN`, `Infinity`, and a numeric STRING like `"5"` — each of
-      // them compared `> 0` (or, for NaN, slipped past `<= 0`) and SUBMITTED,
-      // spending Buzz on a request that had never been priced. The new test is
-      // "a finite number, greater than zero", a strict subset, so the direction
-      // is fail-closed: every input the old gate refused this one still refuses.
-      // `estimate-gate-admits-only-a-finite-positive-price` below pins it.
+      // gate was, verbatim:
+      //
+      //     const cost = estimateSnap.cost?.total ?? 0;
+      //     if (cost <= 0) { throw … }
+      //
+      // so it ADMITTED everything for which `cost <= 0` is false — and that is
+      // three classes which are not prices. `NaN` admits because EVERY NaN
+      // comparison is false, so `NaN <= 0` is false; `Infinity` admits; the
+      // string `"5"` admits by coercion. All three SUBMITTED, spending Buzz on a
+      // request that had never been priced. (Quoting the old gate as `> 0` — as
+      // this comment briefly did — gets NaN backwards, because `NaN > 0` is also
+      // false and would have REJECTED it. The `<= 0` spelling is what makes the
+      // leak follow with no exception clause.) The new test is "a finite number,
+      // greater than zero", a strict subset, so the direction is fail-closed:
+      // every input the old gate refused, this one still refuses.
+      // `estimate-gate-rejects-every-value-that-is-not-a-finite-number` below
+      // pins the rejections; the `total <= 0` branch is pinned separately.
       const total = estimateSnap.cost?.total;
 
       if (typeof total !== 'number' || !Number.isFinite(total)) {

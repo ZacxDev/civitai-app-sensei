@@ -204,18 +204,35 @@ describe('orchestrator-bridge — lifecycle contract', () => {
     // (`…zero or missing cost (undefined)` vs `…(0)`) PASSES `not.toBe`, because
     // two different renderings of one message are still two different strings.
     // So `not.toBe` is necessary and nowhere near sufficient. Two things carry
-    // the guarantee instead, and both must survive a reword of the messages:
-    //   - the `toThrow(/…/)` assertions above, which do kill the collapse; and
-    //   - `the unpriced message names no price`, below, which is the structural
-    //     half — a collapsed template has to render SOMETHING for a value that
-    //     does not exist, and every rendering of it is a tell.
-    // Relaxing the regexes without replacing that structural half removes the
-    // protection, which is exactly what the old comment invited a reader to do.
+    // the guarantee instead, and they are NOT interchangeable — an earlier
+    // version of this paragraph listed them as if they were, and said both
+    // "must survive a reword", which is false of the first by definition:
+    //   - the `toThrow(/…/)` assertions above KILL the collapse but are SPELLED:
+    //     reword either message and they must be rewritten. They are a pin on
+    //     today's wording, not an invariant.
+    //   - `the unpriced message is not the priced TEMPLATE with the price left
+    //     out`, below, is the wording-INDEPENDENT half: it derives the template
+    //     from the implementation's own two priced outputs and enumerates no
+    //     spelling, so a reword carries it along unchanged.
+    // Relax the regexes and the template test still holds the line; delete the
+    // template test and only the spellings are left.
 
     type Estimate = WorkflowHelpers['estimate'];
 
     const unpricedEstimate = (): Estimate => vi.fn().mockResolvedValue({ status: 'failed' });
-    const zeroPriceEstimate = (): Estimate => vi.fn().mockResolvedValue({ cost: { total: 0 } });
+    const pricedAt = (total: number): Estimate => vi.fn().mockResolvedValue({ cost: { total } });
+    const zeroPriceEstimate = (): Estimate => pricedAt(0);
+
+    const commonPrefix = (a: string, b: string): string => {
+      let i = 0;
+      while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+      return a.slice(0, i);
+    };
+    const commonSuffix = (a: string, b: string): string => {
+      let i = 0;
+      while (i < a.length && i < b.length && a[a.length - 1 - i] === b[b.length - 1 - i]) i += 1;
+      return a.slice(a.length - i);
+    };
 
     const messageFrom = async (estimate: Estimate): Promise<string> => {
       const adapter = createBridgeAdapter(mockWorkflowHelpers({ estimate }));
@@ -227,13 +244,20 @@ describe('orchestrator-bridge — lifecycle contract', () => {
       throw new Error('expected the estimate gate to reject, but it resolved');
     };
 
-    it('estimate-gate-admits-only-a-finite-positive-price', async () => {
+    it('estimate-gate-rejects-every-value-that-is-not-a-finite-number', async () => {
       // 🔴 THIS IS THE MONEY GATE, AND IT USED TO LEAK. The old test was
       // `(cost?.total ?? 0) > 0`. `NaN` slips past `<= 0` because every NaN
       // comparison is false; `Infinity > 0` is true; `"5" > 0` coerces. All three
       // therefore SUBMITTED — real Buzz spent on a request that was never priced.
       // Without this case the `typeof`/`Number.isFinite` half of the guard can be
       // deleted and the whole suite stays green, so the leak returns silently.
+      //
+      // 🔴 SCOPE: this pins the REJECTIONS only. The name used to say "admits only a
+      // finite positive price", which was wider than the body on both halves — it
+      // asserts no admission (that is the positive control below) and never
+      // exercises 0 or a negative (that is the `total <= 0` branch, pinned in
+      // `orchestrator-bridge.test.ts`). Deleting the `total <= 0` branch leaves
+      // this test green.
       const notPrices = [NaN, Infinity, -Infinity, '5' as unknown as number, null, undefined];
 
       for (const value of notPrices) {
@@ -279,15 +303,35 @@ describe('orchestrator-bridge — lifecycle contract', () => {
       await expect(messageFrom(estimate)).resolves.toContain('unrecognized_keys');
     });
 
-    it('the unpriced message names no price — the structural half of the split', async () => {
-      // 🔴 WORDING-INDEPENDENT BY CONSTRUCTION, which the inequality above is not.
-      // The unpriced branch has no number to report, so any implementation that
-      // reaches it through a shared "cost" template must render the missing value
-      // — `undefined`, `NaN`, `null`, or a bare `()`. Asserting the message names
-      // none of those kills the collapse however the prose is spelled.
-      const message = await messageFrom(unpricedEstimate());
+    it('the unpriced message is not the priced TEMPLATE with the price left out', async () => {
+      // 🔴 THIS DERIVES THE TEMPLATE FROM THE IMPLEMENTATION'S OWN OUTPUT AND
+      // ENUMERATES NO SPELLING — which is what the previous version of this test
+      // got wrong. It asserted the message contained none of `undefined`/`NaN`/
+      // `null`/`()`, called itself "wording-independent BY CONSTRUCTION", and was
+      // then walked straight past by a collapsed implementation that rendered the
+      // missing price as an em-dash. A hardcoded list of four spellings is a
+      // SPELLED guard; the hazard has infinitely many spellings.
+      //
+      // The real invariant has no spelling at all: two PRICED messages differ ONLY
+      // where the number goes, so their common prefix and suffix ARE the priced
+      // template. If the unpriced message also matches that template, both branches
+      // are one message and the split is gone — whatever the prose says, and
+      // whatever it renders in the empty slot.
+      const zero = await messageFrom(zeroPriceEstimate());
+      const negative = await messageFrom(pricedAt(-3));
+      const unpriced = await messageFrom(unpricedEstimate());
 
-      expect(message).not.toMatch(/undefined|NaN|null|\(\s*\)/);
+      const prefix = commonPrefix(zero, negative);
+      const suffix = commonSuffix(zero, negative);
+
+      // Guard the guard: if the two priced messages shared nothing, the template
+      // would be empty and every string would "match" it, making this vacuous.
+      expect(prefix.length + suffix.length).toBeGreaterThan(0);
+
+      expect(
+        unpriced.startsWith(prefix) && unpriced.endsWith(suffix),
+        `unpriced message is the priced template with an empty slot: ${unpriced}`,
+      ).toBe(false);
     });
 
     it('does not claim a reason it was not given', async () => {
