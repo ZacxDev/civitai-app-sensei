@@ -13,7 +13,7 @@ import {
 import type { UseAppStorage } from '@civitai/blocks-react';
 import { Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
 
-import { palette, pageStyle, token, radius, mutedText } from './theme.js';
+import { palette, pageStyle, token, brand, radius, mutedText } from './theme.js';
 import type { AppSettings, CorrectionRecord, Message, Session } from './types.js';
 import { DEFAULT_SETTINGS, migrateSettings, NO_TOOLS_NOTICE } from './types.js';
 import { AI_WRITE_BUDGETED, BUZZ_READ_SELF, hasGenerateScope } from './scopes.js';
@@ -413,6 +413,54 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   // silently computes from a pre-write snapshot and drops whatever landed in
   // between. Persist FIRST, update state only on success.
   const createSession = useCallback(async () => {
+    // ─────────────────────────────────────────────────────────────────────────
+    // 🔴 "+ New" REUSES AN UNUSED CHAT INSTEAD OF MINTING A SECOND ONE.
+    //
+    // A session is persisted the instant this runs, so every press that is not
+    // followed by a question leaves a permanent row titled "New Chat" — and
+    // they are indistinguishable from each other, so nobody ever cleans them
+    // up. A live sidebar carried FIVE, next to six rows auto-titled from the
+    // same question. That is most of what made a 15-row list unscannable, and
+    // no amount of grouping or retitling fixes it: the rows carry no
+    // information to sort, name or group BY.
+    //
+    // 🔴 IT SELECTS RATHER THAN WRITING, so this path now touches storage NOT
+    // AT ALL in the reuse case. That matters beyond tidiness on a host that
+    // cannot serve a block its own writes (see `lib/sessions.ts`): a write
+    // skipped is a stale-read hazard skipped.
+    //
+    // 🔴 THE RULE EXCLUDES THE CHAT YOU ARE LOOKING AT, AND THAT IS A PRODUCT
+    // DECISION RATHER THAN A CARVE-OUT. Pressing "+ New" while already sitting
+    // on an empty chat and having NOTHING happen is indistinguishable from a
+    // dead button — the viewer pressed it precisely because they want a fresh
+    // slate and the one on screen apparently is not it. So an unused chat is
+    // recycled only when it is somewhere else in the list, where "+ New" is
+    // unambiguously "give me a blank chat" and a blank one already exists.
+    //
+    // 🔴 WHAT THAT LEAVES OPEN, said plainly rather than implied: a viewer who
+    // presses "+ New" repeatedly without asking anything still accumulates a
+    // row per press within one visit. Bounding that needs a sweep of unused
+    // rows at load, which DELETES viewer-visible rows without being asked and
+    // was not taken in this pass — see `deferred[]` in `taste.json` for the
+    // condition that would close it.
+    //
+    // 🔴 IT SETS THE ID DIRECTLY RATHER THAN CALLING `selectSession`, and that
+    // is not a duplicated rule: `selectSession` IS `setActiveSessionId` and
+    // nothing else (see its body — the message load and the composer clear are
+    // both driven by the `[activeSessionId]` effect, which is what makes every
+    // route that moves the id equivalent). Calling it here would need it in
+    // this callback's dependency array, where it is still in its temporal dead
+    // zone — a render-time ReferenceError, not a lint nit.
+    // ─────────────────────────────────────────────────────────────────────────
+    const reusable = sessions.find(
+      (s) => s.id !== activeSessionId && sessionsLib.isUnusedSession(s),
+    );
+    if (reusable) {
+      setActiveSessionId(reusable.id);
+      depsRef.current.track('session_reuse');
+      return;
+    }
+
     const session = sessionsLib.createSessionRecord(settings.model);
     const next = [session, ...sessions];
     const ok = await persist('start a new chat', () =>
@@ -428,7 +476,8 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // same id for the same viewer-visible effect. Do not re-add a local copy:
     // a second copy is how the two drift.
     depsRef.current.track('session_create');
-  }, [settings.model, sessions, persist]);
+    // `activeSessionId` is read by the reuse test above, so it belongs here.
+  }, [settings.model, sessions, persist, activeSessionId]);
 
   const deleteSession = useCallback(async (id: string) => {
     const next = sessionsLib.without(sessions, id);
@@ -1793,24 +1842,45 @@ export function App({ deps: depsOverride }: AppProps = {}) {
           }}
         >
           <Group gap={10} align="center" wrap={false}>
+            {/*
+              🔴 THE APP'S OWN MARK, NOT AN EMOJI ON A HOST-BLUE PLATE. This is
+              `brand/icon.svg` reduced to its geometry — a diamond frame (the
+              corpus Sensei reads) around one solid core (the single distilled
+              answer). It is drawn rather than imported so it inherits the
+              app-owned accent and needs no asset request from a sandboxed
+              iframe. The plate is the brand FILL and the glyph is drawn in
+              `onPlate`; never the reverse, see `index.css` for the contrast
+              measurement that makes that split load-bearing.
+            */}
             <span
+              aria-hidden="true"
+              data-testid="app-mark"
               style={{
                 display: 'grid',
                 placeItems: 'center',
-                width: 32,
-                height: 32,
+                width: 30,
+                height: 30,
                 borderRadius: radius.md,
-                color: token.primary,
-                background: token.primaryLight,
-                border: `1px solid ${c.border}`,
+                background: brand.plate,
+                flexShrink: 0,
               }}
             >
-              ✨
+              <svg width="16" height="16" viewBox="0 0 32 32" role="presentation">
+                <path
+                  d="M16 3 L29 16 L16 29 L3 16 Z"
+                  fill="none"
+                  stroke={brand.onPlate}
+                  strokeWidth="2.5"
+                  strokeLinejoin="round"
+                />
+                <circle cx="16" cy="16" r="4.2" fill={brand.onPlate} />
+              </svg>
             </span>
-            <Stack gap={0}>
-              <strong style={{ fontSize: 16, lineHeight: 1.2 }}>Civitai Sensei</strong>
-              <span style={{ ...mutedText, fontSize: 11 }}>AI Research Assistant</span>
-            </Stack>
+            {/* 🔴 "AI Research Assistant" DELETED. It sat under the app's name,
+                inside the app, on a page the viewer reached by opening the app —
+                a label restating the thing it labels. The store listing is where
+                a category belongs. */}
+            <strong style={{ fontSize: 15, lineHeight: 1.2 }}>Civitai Sensei</strong>
           </Group>
           {/*
             🔴 EVERY HEADER CONTROL IS A SIBLING IN THIS FLEX ROW, AND THAT IS
@@ -1921,6 +1991,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             onCreate={createSession}
             onDelete={deleteSession}
             onRename={renameSession}
+            currentModel={settings.model}
           />
 
           {/* Chat area */}
@@ -2076,8 +2147,20 @@ export function App({ deps: depsOverride }: AppProps = {}) {
                   ...mutedText,
                 }}
               >
-                <span style={{ fontSize: 48 }}>✨</span>
-                <span style={{ fontSize: 16 }}>Start a new conversation with Sensei</span>
+                <svg width="44" height="44" viewBox="0 0 32 32" aria-hidden="true">
+                  <path
+                    d="M16 3 L29 16 L16 29 L3 16 Z"
+                    fill="none"
+                    stroke={brand.plate}
+                    strokeWidth="2"
+                    strokeLinejoin="round"
+                  />
+                  <circle cx="16" cy="16" r="4.2" fill={brand.plate} />
+                </svg>
+                {/* The app's one-line promise, from the manifest tagline —
+                    which is a claim about what it DOES, not a restatement of
+                    the button under it. */}
+                <span style={{ fontSize: 15 }}>Ask a question. Sensei looks it up.</span>
                 <Button onClick={createSession} data-testid="start-chat-button">
                   New Chat
                 </Button>
@@ -2087,7 +2170,11 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         </div>
 
         {/* Settings bar */}
-        <SettingsBar settings={settings} onChange={handleSettingsChange} />
+        <SettingsBar
+          settings={settings}
+          onChange={handleSettingsChange}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
 
         {/* Settings modal */}
         <SettingsModal

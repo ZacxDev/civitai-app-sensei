@@ -47,9 +47,18 @@ const A = BLOCK_GENERATION_RESOURCE as ResolvedResource;
 const B = BLOCK_GENERATION_RESOURCE_LOCON as ResolvedResource;
 
 describe('ChatArea', () => {
-  it('renders empty state', () => {
+  it('🔴 an empty conversation does not re-explain the composer beside it', () => {
+    // 🔴 REPOINTED 2026-09-02. This pinned "Ask me about AI models, checkpoints,
+    // or anything related to AI art generation." — rendered directly above a
+    // composer whose placeholder already reads "Ask Sensei anything…". The same
+    // instruction, twice, one of them inside the box you type into.
+    //
+    // The absence is asserted together with the affordance that replaced it, so
+    // a component that rendered nothing at all would still fail.
     renderChat();
-    expect(screen.getByText(/Ask me about AI models/)).toBeTruthy();
+    expect(screen.queryByText(/Ask me about AI models/)).toBeNull();
+    expect(screen.getByTestId('empty-conversation')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Ask Sensei anything…')).toBeInTheDocument();
   });
 
   it('renders messages', () => {

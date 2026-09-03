@@ -165,9 +165,37 @@ describe('sessions', () => {
     });
 
     it('truncates long titles', () => {
+      // 🔴 THE NUMBER MOVED (40 -> 48) AND THE ASSERTION IS NOW ON THE BOUND,
+      // not on an exact length. A single unbroken 60-character word has no
+      // space to cut at, so it is cut at the budget — which is the branch this
+      // case exercises. The word-boundary branch has its own case below.
       const messages: Message[] = [msg('1', 'user', 'A'.repeat(60))];
-      expect(generateTitle(messages)).toHaveLength(41);
-      expect(generateTitle(messages)).toContain('…');
+      const title = generateTitle(messages);
+      expect(title).toHaveLength(49); // 48 + the ellipsis
+      expect(title).toContain('…');
+    });
+
+    it('🔴 cuts on a WORD BOUNDARY so two long questions stay tellable apart', () => {
+      // The old rule was `slice(0, 40)`, so a sidebar of questions about one
+      // subject produced rows identical for 40 characters and then stopped
+      // mid-word. This is the row the live sidebar had six of.
+      const messages: Message[] = [
+        msg('1', 'user', 'what are the most popular anime checkpoints for illustrious right now'),
+      ];
+      const title = generateTitle(messages);
+      expect(title).toBe('what are the most popular anime checkpoints for…');
+      expect(title.length).toBeLessThanOrEqual(49);
+    });
+
+    it('🔴 collapses newlines — a pasted question titles as ONE line', () => {
+      const messages: Message[] = [msg('1', 'user', '  what is\n\n   a LoRA?  ')];
+      expect(generateTitle(messages)).toBe('what is a LoRA?');
+    });
+
+    it('a whitespace-only question falls back to the untitled name', () => {
+      // Otherwise the row is titled with an empty string and is unclickable-
+      // looking. `New Chat` also keeps `isUnusedSession` honest about it.
+      expect(generateTitle([msg('1', 'user', '   \n  ')])).toBe('New Chat');
     });
 
     it('returns New Chat when no user messages', () => {

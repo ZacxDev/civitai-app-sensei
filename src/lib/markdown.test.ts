@@ -8,6 +8,25 @@ import { parseMarkdown, parseInline, linkHref } from './markdown.js';
  */
 describe('markdown — the subset the model actually emits', () => {
   it('🔴 renders a bold link inside an ordered list — the measured real shape', () => {
+    // ─────────────────────────────────────────────────────────────────────────
+    // 🔴 THIS ASSERTION WAS REPOINTED ON 2026-09-02, AND IT IS WORTH SAYING WHY
+    // OUT LOUD RATHER THAN QUIETLY EDITING IT.
+    //
+    // It used to expect
+    //
+    //   { kind: 'bold', text: '[Popular Mix](https://civitai.com/models/1510946)' }
+    //
+    // i.e. the link's raw SOURCE, rendered in bold — with the comment above it
+    // reading "the link must survive, not be eaten by the bold rule" and the
+    // test's own name calling it "renders a bold link". The name and the comment
+    // described the contract; the expectation pinned the DEFECT, verbatim, and
+    // therefore froze it. That is not a weakened assertion being repaired — it
+    // is a test that read as coverage while providing the opposite, which is
+    // worse than no test because it stopped anyone looking. It was the reason
+    // the app's headline output shipped unreadable through twelve releases.
+    //
+    // The expectation below is the one the name always claimed.
+    // ─────────────────────────────────────────────────────────────────────────
     const src =
       'Here are some popular models:\n' +
       '1. **[Popular Mix](https://civitai.com/models/1510946)**\n' +
@@ -17,11 +36,17 @@ describe('markdown — the subset the model actually emits', () => {
     expect(blocks[0]).toEqual({ kind: 'para', spans: [{ kind: 'text', text: 'Here are some popular models:' }] });
     expect(blocks[1].kind).toBe('ol');
 
-    const first = (blocks[1] as { items: unknown[][] }).items[0];
-    // `**[text](url)**` — the link must survive, not be eaten by the bold rule.
-    expect(first).toEqual([
-      { kind: 'bold', text: '[Popular Mix](https://civitai.com/models/1510946)' },
+    const items = (blocks[1] as { items: Array<{ spans: unknown[] }> }).items;
+    expect(items[0].spans).toEqual([
+      {
+        kind: 'bold',
+        spans: [
+          { kind: 'link', text: 'Popular Mix', href: 'https://civitai.com/models/1510946' },
+        ],
+      },
     ]);
+    // Both rows are in ONE list, so the browser numbers them 1. and 2.
+    expect(items).toHaveLength(2);
   });
 
   it('renders a bare link, bold and inline code', () => {
@@ -31,7 +56,7 @@ describe('markdown — the subset the model actually emits', () => {
       { kind: 'text', text: ' now' },
     ]);
     expect(parseInline('**bold** and `code`')).toEqual([
-      { kind: 'bold', text: 'bold' },
+      { kind: 'bold', spans: [{ kind: 'text', text: 'bold' }] },
       { kind: 'text', text: ' and ' },
       { kind: 'code', text: 'code' },
     ]);
@@ -40,7 +65,7 @@ describe('markdown — the subset the model actually emits', () => {
   it('unordered lists, and a paragraph after one', () => {
     const blocks = parseMarkdown('- one\n- two\n\ntail');
     expect(blocks[0].kind).toBe('ul');
-    expect((blocks[0] as { items: unknown[][] }).items).toHaveLength(2);
+    expect((blocks[0] as { items: unknown[] }).items).toHaveLength(2);
     expect(blocks[1]).toEqual({ kind: 'para', spans: [{ kind: 'text', text: 'tail' }] });
   });
 
@@ -260,19 +285,19 @@ describe('🔴 parseMarkdown — the gate reaches every span, not just paragraph
       `1. [Realistic Vision](https://civitai.com/models/${RV})\n` +
       `2. [Deliberate](https://civitai.com/models/${DEAD})`;
     const blocks = parseMarkdown(src, new Set([RV]));
-    const items = (blocks[0] as { kind: 'ol'; items: unknown[][] }).items;
+    const items = (blocks[0] as { kind: 'ol'; items: Array<{ spans: unknown[] }> }).items;
 
-    expect(items[0]).toEqual([
+    expect(items[0].spans).toEqual([
       { kind: 'link', text: 'Realistic Vision', href: `https://civitai.com/models/${RV}` },
     ]);
     // 🔴 THE TEXT SURVIVES, THE HREF DOES NOT. The viewer still reads the name
     // the model wrote; they just cannot be sent to an unrelated model by it.
-    expect(items[1]).toEqual([{ kind: 'text', text: 'Deliberate' }]);
+    expect(items[1].spans).toEqual([{ kind: 'text', text: 'Deliberate' }]);
   });
 
   it('🔴 the UNORDERED list path is gated too', () => {
     const blocks = parseMarkdown(`- [Deliberate](https://civitai.com/models/${DEAD})`, new Set([RV]));
-    expect((blocks[0] as { kind: 'ul'; items: unknown[][] }).items[0]).toEqual([
+    expect((blocks[0] as { kind: 'ul'; items: Array<{ spans: unknown[] }> }).items[0].spans).toEqual([
       { kind: 'text', text: 'Deliberate' },
     ]);
   });
@@ -303,7 +328,9 @@ describe('🔴 parseMarkdown — the gate reaches every span, not just paragraph
     expect(gated).toEqual(ungated);
     // Positive control on that equality: it holds because there is no `link`
     // span anywhere, not because the gate is inert.
-    const kinds = (gated[0] as { items: Array<Array<{ kind: string }>> }).items.flat().map((s) => s.kind);
+    const kinds = (gated[0] as { items: Array<{ spans: Array<{ kind: string }> }> }).items
+      .flatMap((i) => i.spans)
+      .map((s) => s.kind);
     expect(kinds).not.toContain('link');
   });
 
@@ -319,8 +346,8 @@ describe('🔴 parseMarkdown — the gate reaches every span, not just paragraph
     // Without this, every refusal above is satisfied by a parser that never
     // produced a link in the first place.
     const src = `1. [Deliberate](https://civitai.com/models/${DEAD})`;
-    const items = (parseMarkdown(src, new Set([DEAD])) as Array<{ items: unknown[][] }>)[0].items;
-    expect(items[0]).toEqual([
+    const items = (parseMarkdown(src, new Set([DEAD])) as Array<{ items: Array<{ spans: unknown[] }> }>)[0].items;
+    expect(items[0].spans).toEqual([
       { kind: 'link', text: 'Deliberate', href: `https://civitai.com/models/${DEAD}` },
     ]);
   });
