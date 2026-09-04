@@ -306,6 +306,56 @@ describe('grounded citations reach the screen', () => {
     })();
   });
 
+  it('🔴 NO COMMIT EVER SHOWS THE TRANSCRIPT WITHOUT ITS LINKS', () => {
+    return (async () => {
+      // 🔴 THIS PINS COMMIT ORDERING, WHICH NO OTHER TEST HERE CAN SEE. Every
+      // other reload assertion waits for a settled DOM, so it is blind to what
+      // was on screen in between — and what was on screen was the whole
+      // transcript with its citations as PLAIN TEXT. The boot path read the
+      // session, committed `setMessages` alone, cleared `loading` in its own
+      // `finally`, and left grounding to the `[activeSessionId]` effect a tick
+      // later. A viewer saw the text, then the links appeared.
+      //
+      // 🔴 WAITING IS EXACTLY WHAT HID IT, so this test must NOT wait to observe.
+      // It records the (text, anchor) pair at EVERY DOM mutation batch during
+      // boot and asserts the half-state never occurs. `waitFor` is used only to
+      // bound the run, after the observer is already recording.
+      toolItems = [{ id: DREAMSHAPER, name: 'DreamShaper', type: 'Checkpoint' }];
+      pollQueue = [
+        toolCallSnapshot(),
+        textSnapshot(`[DreamShaper](https://civitai.com/models/${DREAMSHAPER}) is great.`),
+      ];
+      await startChat();
+      await send('what is DreamShaper?', 'is great');
+
+      cleanup();
+
+      const halfStates: number[] = [];
+      let batches = 0;
+      const observer = new MutationObserver(() => {
+        batches += 1;
+        const hasText = (document.body.textContent ?? '').includes('is great');
+        if (hasText && anchorFor(DREAMSHAPER) === null) halfStates.push(batches);
+      });
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      try {
+        render(<App />);
+        await waitFor(() => expect(anchorFor(DREAMSHAPER)).toBeTruthy());
+      } finally {
+        observer.disconnect();
+      }
+
+      // 🔴 POSITIVE CONTROL FIRST — without it a zero here is indistinguishable
+      // from an observer that was never wired to anything, which is the shape
+      // that makes a reassuring zero worthless.
+      expect(batches, 'the observer saw no DOM mutations at all — it is not measuring').toBeGreaterThan(0);
+      expect(
+        halfStates,
+        `transcript rendered without its links in mutation batch(es) ${halfStates.join(', ')} of ${batches}`,
+      ).toHaveLength(0);
+    })();
+  });
+
   it('🔴 RELOAD KEEPS THE GROUNDING — the ids ride the stored assistant turn', () => {
     return (async () => {
       // ⚠️ THIS CASE USED TO ASSERT THE OPPOSITE, and the inversion is the fix.
