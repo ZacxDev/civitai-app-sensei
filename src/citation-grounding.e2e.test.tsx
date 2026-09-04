@@ -466,6 +466,65 @@ describe('grounded citations reach the screen', () => {
     })();
   });
 
+  it('🔴 A SEND IS REFUSED WHILE THE TRANSCRIPT IS NOT THE SELECTED CHAT’S', () => {
+    return (async () => {
+      // 🔴 THIS PINS THE OTHER HALF OF THE FIX, AND WITHOUT IT THE FIX IS A
+      // REGRESSION. Keying the citation gate to the transcript on screen is
+      // right for RENDERING and wrong for SENDING: a send is written and
+      // grounded under `activeSessionId`, but appended to the displayed array
+      // and rendered against the DISPLAYED session's grounded set. While the two
+      // disagree, the new turn would be vouched for by a conversation the viewer
+      // is no longer in — a cross-conversation grounding leak, which is the exact
+      // inversion the gate exists to prevent. Found by adversarial audit of the
+      // rendering fix, measured as `anchor=false` before it and `true` after.
+      //
+      // So the send fails CLOSED in that window. Remove the guard and this test
+      // must go red; if it does not, the leak is back.
+      toolItems = [{ id: DREAMSHAPER, name: 'DreamShaper', type: 'Checkpoint' }];
+      pollQueue = [
+        toolCallSnapshot(),
+        textSnapshot(`[DreamShaper](https://civitai.com/models/${DREAMSHAPER}) is great.`),
+      ];
+      await startChat();
+      await send('what is DreamShaper?', 'is great');
+
+      fireEvent.click(screen.getByTestId('new-session-button'));
+      await waitFor(() => expect(screen.queryByText(/is great/)).toBeNull());
+      pollQueue = [textSnapshot('Nothing looked up here.')];
+      await send('hello', 'Nothing looked up here');
+
+      const rows = () => document.querySelectorAll<HTMLElement>('[data-testid^="session-item-"]');
+      fireEvent.click(rows()[rows().length - 1]);
+      await waitFor(() => expect(anchorFor(DREAMSHAPER)).toBeTruthy());
+
+      // Enter the durable disagreement: selection moves, transcript does not.
+      const storage = h.storage!.appStorage;
+      const realGet = storage.get.bind(storage);
+      storage.get = (async (key: string) => {
+        if (key.startsWith('sensei:messages:')) throw new Error('storage is unavailable');
+        return realGet(key);
+      }) as typeof storage.get;
+      fireEvent.click(rows()[0]);
+      await waitFor(() => expect(screen.getByText(/Couldn't open that chat/)).toBeTruthy());
+
+      // A send here would land in the OTHER conversation while rendering against
+      // this one's evidence. It must not happen at all.
+      const turns = () =>
+        document.querySelectorAll('[data-testid="message-user"], [data-testid="message-assistant"]')
+          .length;
+      const before = turns();
+      expect(before, 'the grounded transcript should be on screen').toBeGreaterThan(0);
+      fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'recommend something' } });
+      fireEvent.click(screen.getByTestId('send-button'));
+
+      await waitFor(() => expect(screen.getByText(/Couldn't open that chat/)).toBeTruthy());
+      expect(
+        turns(),
+        'a turn was accepted while the transcript belonged to another conversation',
+      ).toBe(before);
+    })();
+  });
+
   it('🔴 RELOAD KEEPS THE GROUNDING — the ids ride the stored assistant turn', () => {
     return (async () => {
       // ⚠️ THIS CASE USED TO ASSERT THE OPPOSITE, and the inversion is the fix.

@@ -901,6 +901,23 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const handleSend = useCallback(async (content: string, groundedWith?: ResolvedResource[]) => {
     if (!activeSessionId || isStreaming) return;
 
+    // 🔴 REFUSE WHILE THE TRANSCRIPT ON SCREEN IS NOT THE SELECTED CONVERSATION'S.
+    // A send is written under `activeSessionId` and grounded under it, but it is
+    // APPENDED to the array on screen and rendered against
+    // `groundedBySession[messagesSessionId]`. While those two disagree — the
+    // window between clicking a session and its messages arriving, and durably
+    // if that read REJECTS — the new turn would be vouched for by a conversation
+    // the viewer is no longer in. That is the exact inversion the citation gate
+    // exists to prevent ("the ids THIS conversation's tool rounds returned"), so
+    // it fails CLOSED here rather than rendering a link on someone else's
+    // evidence. Same predicate the grounded selector already computes.
+    //
+    // 🔴 THIS GUARD IS WHY THE SELECTOR MAY KEY ON `messagesSessionId` AT ALL.
+    // Without it, keying the gate to the displayed transcript turns a cosmetic
+    // fail-CLOSED bug into a fail-OPEN one on the send path. They ship together;
+    // do not remove one and keep the other.
+    if (messagesSessionId !== activeSessionId) return;
+
     // The gate is checked before the dedup here for the same reason as in
     // `ChatArea` — a silent dedup return ahead of it re-hides the whole defect.
     // This is NOT redundant with ChatArea's copy: `handleRegenerate` and
@@ -1747,6 +1764,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     }
   }, [
     activeSessionId,
+    messagesSessionId,
     isStreaming,
     messages,
     settings,
