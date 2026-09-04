@@ -59,9 +59,12 @@ export interface AppProps {
  * another conversation's key.
  *
  * Both halves have to travel together. Fixing only the key would make Stop write
- * the VIEWED session's array (already reset to `[]` by the switch) under the
- * STREAMING session's key — which is not a smaller bug than the original, it is
- * a larger one: it would delete the transcript instead of misfiling it. So the
+ * the VIEWED session's array under the STREAMING session's key — which is not a
+ * smaller bug than the original, it is a larger one: it would delete the
+ * transcript instead of misfiling it. (This used to read "already reset to `[]`
+ * by the switch". That was never true — `selectSession` does not clear
+ * `messages` — and the falsehood matters because it is the same premise that
+ * hid the switch-route half-state.) So the
  * turn carries the id it was sent in AND the array it is entitled to persist.
  *
  * A ref is the transport, not the source: every field is written from inside
@@ -490,17 +493,17 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // fix it. Both go through `applyLoadedMessages`, so neither LOADER can
         // commit a transcript without its grounding.
         //
-        // 🔴 THAT IS NOT THE SAME AS "no half-state on this route", and an
-        // earlier version of this comment claimed the wider thing. `selectSession`
-        // moves `activeSessionId` WITHOUT clearing `messages`, while
-        // `groundedModelIds` keys on the new id — so from the click until this
-        // read resolves, the PREVIOUS conversation's transcript is on screen
-        // against the NEW conversation's (empty) grounded set, and its citations
-        // render as plain text. Measured identically before and after this fix,
-        // so it is pre-existing and untouched here, not introduced. Worse, if
-        // this read REJECTS the catch below leaves that state on screen
-        // indefinitely rather than for a tick. Both are recorded as open; what
-        // this function fixes is the BOOT route's split commit.
+        // 🔴 THE SWITCH-ROUTE HALF-STATE IS NOW FIXED TOO — this comment used to
+        // say it was open, and leaving that sentence here after fixing it would
+        // read as an instruction to revert. `selectSession` still moves
+        // `activeSessionId` WITHOUT clearing `messages`, deliberately, so the
+        // outgoing conversation stays readable while this read runs. What
+        // changed is that `groundedModelIds` no longer keys on the SELECTED id:
+        // it keys on `messagesSessionId`, the session the transcript ON SCREEN
+        // belongs to, which this function sets in the same batch as the messages.
+        // So the pair cannot disagree, and the durable version — this read
+        // REJECTING and leaving the outgoing transcript stripped of its links
+        // indefinitely — cannot happen either.
         applyLoadedMessages(activeSessionId, msgs);
       })
       .catch((e: unknown) => {
