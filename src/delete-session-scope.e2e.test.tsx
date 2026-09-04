@@ -217,6 +217,125 @@ function breakMessageReads() {
   }) as typeof storage.get;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 A DELETE MID-TURN NOW HANDS THE UPDATERS AN EMPTY TRANSCRIPT.
+//
+// The clear above is what makes `messages === []` REACHABLE while a turn is
+// still settling. All three `setMessages` updaters in `handleSend` open with
+// `const last = prev[prev.length - 1]; if (last.id === …)`, which on `[]` reads
+// `undefined.id` — a TypeError raised INSIDE the reducer, so it is not a lost
+// chunk, it is the whole App tree coming down (`RootBoundary` in prod) taking
+// the in-flight, already-billed reply with it.
+//
+// 🔴 THE DEFAULT FAKE CANNOT SEE THIS, WHICH IS WHY THE 548-TEST SUITE DID NOT.
+// `fakeAppStorage.get` resolves inside a microtask, so the successor's
+// transcript replaces `[]` before the next chunk lands and `prev` is never
+// empty when an updater runs. The window only opens once the read costs real
+// time — i.e. on the deployed host, where it is a postMessage hop. The three
+// cases below buy that window with `delayMessageReads`, and the delay is the
+// ONLY variable: nothing is broken, both chats have stored transcripts, and the
+// successor read succeeds.
+//
+// Measured at `cf4a4ba` (this branch's head before the fix) — see the per-case
+// notes for what each one pins and which updater it reaches.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Put `ms` of latency on every messages READ, and record what went through it.
+ *
+ * 🔴 THE RETURNED LOG IS THE KNOB'S OWN POSITIVE CONTROL. A fixture that
+ * silently resolved instantly is exactly the blindness these cases exist to
+ * close, so each case asserts that the successor's key really was delayed —
+ * the elapsed time, not just that `get` was patched.
+ *
+ * 🔴 AND THE LATENCY IS LOAD-BEARING, MEASURED RATHER THAN ASSUMED. Take this
+ * wrapper away and run the three cases against `cf4a4ba` — the whole fix
+ * reverted — and all three PASS: 6 consecutive runs, rc=0. `fakeAppStorage`
+ * resolves the successor read inside a microtask, so `[]` is replaced before
+ * any updater can meet it. That is why 548 green tests could not see this, and
+ * why a case written on the default fixture would prove nothing. A
+ * `setTimeout(…, 0)` knob does not reproduce it either (3 runs).
+ *
+ * ⚠️ SCOPE: that is a claim about an unloaded box, not an impossibility. One
+ * heavily-loaded run DID reproduce with no delay at all — 8398 ms wall for a
+ * case that otherwise takes ~500 ms, i.e. the stall bought the same window the
+ * delay buys.
+ */
+function delayMessageReads(ms: number) {
+  const storage = h.storage!.appStorage;
+  const realGet = storage.get.bind(storage);
+  const delayed: Array<{ key: string; elapsedMs: number }> = [];
+  storage.get = (async (key: string) => {
+    if (key.startsWith('sensei:messages:')) {
+      const started = Date.now();
+      await new Promise((r) => setTimeout(r, ms));
+      delayed.push({ key, elapsedMs: Date.now() - started });
+    }
+    return realGet(key);
+  }) as typeof storage.get;
+  return delayed;
+}
+
+/** A reply of `words` words. `simulateStreaming` emits one every 20 ms. */
+function longReply(words: number): string {
+  return Array.from({ length: words }, (_, i) => `word${i}`).join(' ');
+}
+
+/**
+ * Every uncaught error raised while this is installed.
+ *
+ * React 19 reports an error thrown during render through `reportError`, which
+ * jsdom dispatches as a window `error` event; the same throw arriving on the
+ * async settle path surfaces as an unhandled rejection. Both are collected, so
+ * the assertion names the TypeError rather than timing out on a dead tree.
+ */
+function captureUncaught() {
+  const seen: string[] = [];
+  const onError = (e: ErrorEvent) => {
+    seen.push(e.error instanceof Error ? e.error.message : String(e.message));
+  };
+  const onRejection = (e: PromiseRejectionEvent) => {
+    seen.push(e.reason instanceof Error ? e.reason.message : String(e.reason));
+  };
+  window.addEventListener('error', onError);
+  window.addEventListener('unhandledrejection', onRejection);
+  return {
+    seen,
+    restore: () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onRejection);
+    },
+  };
+}
+
+/** Send without waiting for the turn to finish; resolves once it is streaming. */
+async function startTurn(question: string) {
+  fireEvent.change(screen.getByTestId('chat-input'), { target: { value: question } });
+  fireEvent.click(screen.getByTestId('send-button'));
+  await waitFor(() => expect(screen.getByTestId('streaming-indicator')).toBeTruthy());
+}
+
+/**
+ * Wait out a delete: no uncaught error, the row is gone, and the successor's
+ * transcript is on screen — i.e. the tree survived AND the delayed read landed.
+ *
+ * 🔴 THE UNCAUGHT-ERROR ASSERTION IS FIRST INSIDE THE WAIT, deliberately. A run
+ * that brings the tree down can never render the successor, so a wait ordered
+ * the other way fails as an anonymous 8 s timeout that attributes to nothing.
+ * Ordered this way `waitFor` rethrows THIS assertion, and the failure names the
+ * TypeError and the `App.tsx` line that raised it.
+ */
+async function settled(uncaught: { seen: string[] }, what: string) {
+  await waitFor(
+    () => {
+      expect(uncaught.seen.join(' | '), `${what} and threw out of the reducer`).toBe('');
+      expect(rows()).toHaveLength(1);
+      expect(screen.getByText(/Nothing looked up here/)).toBeTruthy();
+    },
+    { timeout: 8000 },
+  );
+}
+
 describe('deleting a chat takes its transcript with it', () => {
   beforeEach(() => {
     h.storage = fakeAppStorage();
@@ -360,4 +479,117 @@ describe('deleting a chat takes its transcript with it', () => {
       expect(anchorFor(DREAMSHAPER)).toBeTruthy();
     })();
   });
+
+  it('🔴 DELETING MID-REPLAY SURVIVES A SUCCESSOR READ THAT TAKES 150ms', () => {
+    return (async () => {
+      // 🔴 THE ORDINARY HAPPY PATH. Nothing is broken, the successor has a
+      // stored transcript and its read SUCCEEDS; the only variable is that it
+      // takes 150 ms. Chunks keep arriving through that window, and the first
+      // one to land after the delete is the one that used to bring the tree
+      // down. Reaches the `onChunk` updater.
+      const { grounded, other } = await twoChatsGroundedFirst();
+      const uncaught = captureUncaught();
+      try {
+        const delayed = delayMessageReads(150);
+
+        // 60 words ≈ 1.2 s of streaming, so the whole 150 ms read window sits
+        // inside the replay with room either side.
+        pollQueue = [textSnapshot(longReply(60))];
+        await startTurn('tell me more');
+        await waitFor(() => expect(document.body.textContent).toContain('word0'));
+
+        fireEvent.click(screen.getByTestId(`delete-session-${grounded}`));
+        await settled(uncaught, 'a chunk landed on the cleared transcript');
+
+        // 🔴 THE KNOB'S POSITIVE CONTROL. Without this the case passes on a
+        // fixture that resolved instantly — which is the exact shape that hid
+        // this defect from 548 green tests.
+        const successorRead = delayed.find((d) => d.key === `sensei:messages:${other}`);
+        expect(successorRead, 'the successor read never went through the delay').toBeTruthy();
+        expect(successorRead!.elapsedMs).toBeGreaterThanOrEqual(140);
+
+        // Let the orphaned turn finish before the test ends. Without this the
+        // stream is still replaying at teardown and its `finally` dispatches a
+        // `setIsStreaming` into a torn-down jsdom — an unhandled rejection that
+        // fails the RUN while every test passes.
+        await waitFor(() => expect(screen.queryByTestId('streaming-indicator')).toBeNull(), {
+          timeout: 8000,
+        });
+      } finally {
+        uncaught.restore();
+      }
+    })();
+  }, 20000);
+
+  it('🔴 A REPLY THAT COMPLETES INSIDE THE READ WINDOW LANDS ON THE CLEARED TRANSCRIPT', () => {
+    return (async () => {
+      // Same shape, different updater: the reply finishes streaming (~600 ms)
+      // while the successor read is still out (1.5 s), so it is the FINAL
+      // commit — not a chunk — that meets `[]`. Reaches the `replyText`
+      // updater, which no amount of chunk-guarding covers.
+      const { grounded, other } = await twoChatsGroundedFirst();
+      const uncaught = captureUncaught();
+      try {
+        const delayed = delayMessageReads(1500);
+
+        pollQueue = [textSnapshot(longReply(30))];
+        await startTurn('tell me more');
+        await waitFor(() => expect(document.body.textContent).toContain('word0'));
+
+        fireEvent.click(screen.getByTestId(`delete-session-${grounded}`));
+        await settled(uncaught, 'the completed reply was committed onto the cleared transcript');
+
+        const successorRead = delayed.find((d) => d.key === `sensei:messages:${other}`);
+        expect(successorRead, 'the successor read never went through the delay').toBeTruthy();
+        expect(successorRead!.elapsedMs).toBeGreaterThanOrEqual(1400);
+
+        // Let the orphaned turn finish before the test ends. Without this the
+        // stream is still replaying at teardown and its `finally` dispatches a
+        // `setIsStreaming` into a torn-down jsdom — an unhandled rejection that
+        // fails the RUN while every test passes.
+        await waitFor(() => expect(screen.queryByTestId('streaming-indicator')).toBeNull(), {
+          timeout: 8000,
+        });
+      } finally {
+        uncaught.restore();
+      }
+    })();
+  }, 20000);
+
+  it('🔴 A TURN THAT FAILS INSIDE THE READ WINDOW LANDS ON THE CLEARED TRANSCRIPT', () => {
+    return (async () => {
+      // The error exit is a third updater with the same shape. A `running`
+      // snapshot buys the bridge's 1 s poll gap to delete inside; the failure
+      // then arrives while the successor read (1.5 s) is still out, so the
+      // "Error: …" write meets `[]`. Reaches the `catch` updater.
+      const { grounded, other } = await twoChatsGroundedFirst();
+      const uncaught = captureUncaught();
+      try {
+        const delayed = delayMessageReads(1500);
+
+        pollQueue = [
+          { workflowId: 'wf-run', status: 'running' },
+          { workflowId: 'wf-run', status: 'failed', error: 'the workflow failed' },
+        ];
+        await startTurn('tell me more');
+
+        fireEvent.click(screen.getByTestId(`delete-session-${grounded}`));
+        await settled(uncaught, "the failed turn's error was committed onto the cleared transcript");
+
+        const successorRead = delayed.find((d) => d.key === `sensei:messages:${other}`);
+        expect(successorRead, 'the successor read never went through the delay').toBeTruthy();
+        expect(successorRead!.elapsedMs).toBeGreaterThanOrEqual(1400);
+
+        // Let the orphaned turn finish before the test ends. Without this the
+        // stream is still replaying at teardown and its `finally` dispatches a
+        // `setIsStreaming` into a torn-down jsdom — an unhandled rejection that
+        // fails the RUN while every test passes.
+        await waitFor(() => expect(screen.queryByTestId('streaming-indicator')).toBeNull(), {
+          timeout: 8000,
+        });
+      } finally {
+        uncaught.restore();
+      }
+    })();
+  }, 20000);
 });
