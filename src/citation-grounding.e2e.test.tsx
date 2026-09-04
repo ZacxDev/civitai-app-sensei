@@ -329,8 +329,12 @@ describe('grounded citations reach the screen', () => {
       await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
       // The transcript came back…
       await waitFor(() => expect(screen.getByText(/is great/)).toBeTruthy());
-      // …and so did its link.
-      expect(anchorFor(DREAMSHAPER)).toBeTruthy();
+      // …and so did its link. 🔴 Waited for, not sampled: the text renders before
+      // the grounded set is restored, so a synchronous anchor assertion here is
+      // the same race that was measured flaky in the sibling test below. Same
+      // shape, same fix — a timeout here still fails, so waiting cannot mask a
+      // link that never comes back.
+      await waitFor(() => expect(anchorFor(DREAMSHAPER)).toBeTruthy());
       // The full link contract, not merely the presence of an anchor — a
       // restored link that lost `rel` would be a quieter regression than a
       // missing one.
@@ -369,8 +373,20 @@ describe('grounded citations reach the screen', () => {
       render(<App />);
       await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
       await waitFor(() => expect(screen.getByText(/are great/)).toBeTruthy());
-      // The grounded one survives the reload…
-      expect(anchorFor(DREAMSHAPER)).toBeTruthy();
+      // 🔴 WAIT FOR THE ANCHOR, NOT FOR THE TEXT. The text is a PROXY, and on a
+      // reload it lands FIRST: the transcript renders as plain markdown, and the
+      // grounded id set is restored from storage a tick later, at which point the
+      // citations become anchors. Asserting the anchor synchronously after
+      // waiting for the text therefore samples a window where the words are up
+      // and the links are not — measured flaky 1 run in 12 on this exact line.
+      //
+      // 🔴 AND THE RACE ALSO MADE THE SECURITY ASSERTION BELOW VACUOUS, which is
+      // the worse half: in that same window NO anchors exist yet, so
+      // `anchorFor(CARDOS)` is null for a reason that has nothing to do with the
+      // gate refusing it. It would have passed against a build that grounded
+      // nothing at all. Waiting for the grounded anchor first is what makes the
+      // ungrounded one's absence mean something.
+      await waitFor(() => expect(anchorFor(DREAMSHAPER)).toBeTruthy());
       // …and the invented one is still refused. Its TEXT is still readable —
       // refusing a link keeps the words, it does not delete the sentence.
       expect(anchorFor(CARDOS)).toBeNull();
