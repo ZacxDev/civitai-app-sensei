@@ -167,6 +167,13 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    * them put a real render on screen showing the transcript with its citations
    * as plain text; see `applyLoadedMessages`, which is why there is exactly one
    * function performing both writes.
+   *
+   * ⚠️ SCOPE, because the sentence above is about LOADERS and reads wider than it
+   * is: a half-state is still reachable on the session-SWITCH route, where
+   * `selectSession` moves the id without clearing `messages`, so the outgoing
+   * transcript renders against the incoming session's empty set until the read
+   * resolves. Pre-existing and measured unchanged by the loader fix. See the
+   * note at the switch call site.
    */
   const [groundedBySession, setGroundedBySession] = useState<Record<string, readonly string[]>>({});
   const [loading, setLoading] = useState(true);
@@ -338,7 +345,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   // `const` declared further down the component body is in the temporal dead
   // zone when the array below is built — `ReferenceError: Cannot access
   // 'applyLoadedMessages' before initialization`, which is a blank app, not a
-  // subtle bug. Measured: moving these two down again fails 113 tests and
+  // subtle bug. Measured: moving these two down again fails 114 tests and
   // `tsc` (TS2448/TS2454). Position is load-bearing; keep them here.
   // ---- Load sessions on mount ----
   useEffect(() => {
@@ -459,8 +466,20 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // path; the boot path above is the other. Covering only one leaves the
         // symptom alive on whichever route the viewer happens to take, which is
         // the harder half to notice because switching back and forth appears to
-        // fix it. Both go through `applyLoadedMessages` so the transcript and
-        // its grounding cannot land in different commits on either route.
+        // fix it. Both go through `applyLoadedMessages`, so neither LOADER can
+        // commit a transcript without its grounding.
+        //
+        // 🔴 THAT IS NOT THE SAME AS "no half-state on this route", and an
+        // earlier version of this comment claimed the wider thing. `selectSession`
+        // moves `activeSessionId` WITHOUT clearing `messages`, while
+        // `groundedModelIds` keys on the new id — so from the click until this
+        // read resolves, the PREVIOUS conversation's transcript is on screen
+        // against the NEW conversation's (empty) grounded set, and its citations
+        // render as plain text. Measured identically before and after this fix,
+        // so it is pre-existing and untouched here, not introduced. Worse, if
+        // this read REJECTS the catch below leaves that state on screen
+        // indefinitely rather than for a tick. Both are recorded as open; what
+        // this function fixes is the BOOT route's split commit.
         applyLoadedMessages(activeSessionId, msgs);
       })
       .catch((e: unknown) => {
