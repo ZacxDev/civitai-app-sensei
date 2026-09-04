@@ -601,8 +601,78 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     if (!ok) return;
     setSessions(next);
     if (activeSessionId === id) setActiveSessionId(next[0]?.id ?? null);
+
+    // 🔴 THE TRANSCRIPT ON SCREEN IS PER-SESSION STATE TOO, AND THIS ROUTE USED
+    // TO MOVE THE LIST AND THE SELECTION WITHOUT MOVING IT. `messages` was left
+    // holding the DELETED conversation, still paired with its own
+    // `messagesSessionId`, so `groundedModelIds` kept resolving that id and the
+    // deleted chat stayed on screen with its citations as LIVE LINKS. The ids
+    // were genuinely grounded by it — the gate is not lying — but the
+    // conversation is gone from the switcher and from storage.
+    //
+    // 🔴 KEYED ON `messagesSessionId`, NOT `activeSessionId`, BECAUSE THE TWO
+    // DISAGREE ON EXACTLY THE ROUTE THAT IS HARDEST TO END. A failed switch
+    // moves the selection and deliberately leaves the outgoing transcript up, so
+    // a viewer can be looking at chat A while chat B is selected; deleting A
+    // then satisfies no `activeSessionId` test and nothing else will ever
+    // replace those messages. `messagesSessionId` is the cell that describes
+    // what is on screen, so it is the one that decides. Both routes have their
+    // own case in `delete-session-scope.e2e.test.tsx`, each watched red at
+    // `be24d6c`, and the second one also goes red against a clear keyed on
+    // `activeSessionId`.
+    //
+    // 🔴 `null` RATHER THAN THE SUCCESSOR'S ID, and that is a fail-CLOSED
+    // choice, not an omission. `createSession` pairs `[]` with the NEW id
+    // because it knows that conversation is empty. Here the successor's stored
+    // transcript is unread and may be long — pairing `[]` with its id would
+    // satisfy `handleSend`'s `messagesSessionId !== activeSessionId` guard and
+    // let a send append to an empty array that is then persisted under that
+    // key, deleting the successor's history. `null` refuses the send until the
+    // load effect commits the real pair. Measured, not reasoned: mutant M4
+    // (`next[0]?.id ?? null` here) is killed by "a send is REFUSED between the
+    // delete and the successor loading".
+    //
+    // ⚠️ WHAT IS PINNED IS THE VALUE, NOT THE LINE. Dropping
+    // `setMessagesSessionId(null)` while keeping `setMessages([])` (mutant M1b)
+    // SURVIVES the suite: with the array already empty, a stale id and `null`
+    // refuse the send identically and render identically. It stays because
+    // these two cells are documented as describing one another — leaving the id
+    // on a deleted session makes the pair state something false — not because
+    // any test can tell the two apart.
+    //
+    // It runs AFTER the `!ok` return with the rest of the state moves: a
+    // rejected `persist` means the session is still in storage and still in
+    // `sessions`, so blanking the screen for it would be the "show a state that
+    // was not saved" lie that early return exists to prevent.
+    if (messagesSessionId === id) {
+      setMessages([]);
+      setMessagesSessionId(null);
+    }
+
+    // Drop the deleted conversation's grounding. Unconditional, because the leak
+    // is not specific to the chat on screen — tidying up an old chat leaks the
+    // same entry, with nothing visible to prompt anyone to look.
+    //
+    // ⚠️ THIS HAS NO VIEWER-VISIBLE CONSEQUENCE, and saying so is the point.
+    // `groundedModelIds` reads `groundedBySession[messagesSessionId]` and
+    // nothing else, so once the pair above is cleared the deleted id is
+    // UNREACHABLE, not merely unused: no assertion over the DOM can tell this
+    // line from its absence, and the mutation report for this change records it
+    // as an unkilled mutant rather than pretending otherwise. What it buys is
+    // bounded memory in a long-lived iframe — the map is per-mount and otherwise
+    // grows for every conversation the viewer has ever opened.
+    //
+    // Returns `prev` by reference when the key is absent, so a delete of a chat
+    // that grounded nothing costs no re-render.
+    setGroundedBySession((prev) => {
+      if (!(id in prev)) return prev;
+      const rest = { ...prev };
+      delete rest[id];
+      return rest;
+    });
+
     depsRef.current.track('session_delete');
-  }, [activeSessionId, sessions, persist]);
+  }, [activeSessionId, messagesSessionId, sessions, persist]);
 
   const renameSession = useCallback(async (id: string) => {
     const title = prompt('Rename session:');
