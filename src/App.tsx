@@ -601,8 +601,87 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     if (!ok) return;
     setSessions(next);
     if (activeSessionId === id) setActiveSessionId(next[0]?.id ?? null);
+
+    // 🔴 THE TRANSCRIPT ON SCREEN IS PER-SESSION STATE TOO, AND THIS ROUTE USED
+    // TO MOVE THE LIST AND THE SELECTION WITHOUT MOVING IT. `messages` was left
+    // holding the DELETED conversation, still paired with its own
+    // `messagesSessionId`, so `groundedModelIds` kept resolving that id and the
+    // deleted chat stayed on screen with its citations as LIVE LINKS. The ids
+    // were genuinely grounded by it — the gate is not lying — but the
+    // conversation is gone from the switcher and from storage.
+    //
+    // 🔴 KEYED ON `messagesSessionId`, NOT `activeSessionId`, BECAUSE THE TWO
+    // DISAGREE ON EXACTLY THE ROUTE THAT IS HARDEST TO END. A failed switch
+    // moves the selection and deliberately leaves the outgoing transcript up, so
+    // a viewer can be looking at chat A while chat B is selected; deleting A
+    // then satisfies no `activeSessionId` test and nothing else will ever
+    // replace those messages. `messagesSessionId` is the cell that describes
+    // what is on screen, so it is the one that decides. Both routes have their
+    // own case in `delete-session-scope.e2e.test.tsx`, each watched red at
+    // `be24d6c`, and the second one also goes red against a clear keyed on
+    // `activeSessionId`.
+    //
+    // 🔴 `null` RATHER THAN THE SUCCESSOR'S ID, and that is a fail-CLOSED
+    // choice, not an omission. `createSession` pairs `[]` with the NEW id
+    // because it knows that conversation is empty. Here the successor's stored
+    // transcript is unread and may be long — pairing `[]` with its id would
+    // satisfy `handleSend`'s `messagesSessionId !== activeSessionId` guard and
+    // let a send append to an empty array that is then persisted under that
+    // key, deleting the successor's history. `null` refuses the send until the
+    // load effect commits the real pair. Measured, not reasoned: mutant M4
+    // (`next[0]?.id ?? null` here) is killed by "a send is REFUSED between the
+    // delete and the successor loading".
+    //
+    // ⚠️ WHAT IS PINNED IS THE VALUE, NOT THE LINE. Dropping
+    // `setMessagesSessionId(null)` while keeping `setMessages([])` (mutant M1b)
+    // SURVIVES the suite: with the array already empty, a stale id and `null`
+    // refuse the send identically and render identically. It stays because
+    // these two cells are documented as describing one another — leaving the id
+    // on a deleted session makes the pair state something false — not because
+    // any test can tell the two apart.
+    //
+    // It runs AFTER the `!ok` return with the rest of the state moves: a
+    // rejected `persist` means the session is still in storage and still in
+    // `sessions`, so blanking the screen for it would be the "show a state that
+    // was not saved" lie that early return exists to prevent.
+    if (messagesSessionId === id) {
+      setMessages([]);
+      setMessagesSessionId(null);
+    }
+
+    // Drop the deleted conversation's grounding. Unconditional, because the leak
+    // is not specific to the chat on screen — tidying up an old chat leaks the
+    // same entry, with nothing visible to prompt anyone to look.
+    //
+    // ⚠️ THIS HAS NO VIEWER-VISIBLE CONSEQUENCE, and saying so is the point.
+    // `groundedBySession` has TWO readers, not one — an earlier version of this
+    // note named only the first, and a note that undercounts its own readers is
+    // how the next edit misses one:
+    //   1. `groundedModelIds`, keyed on `messagesSessionId`. The clear above
+    //      sets that to `null`, so the deleted entry is unreachable from it.
+    //   2. `handleSend`'s `turnGrounded` seed, keyed on `activeSessionId` — a
+    //      DIFFERENT key, which is why it has to be checked separately. It is
+    //      unreachable too, but for its own reason: `handleSend` returns early
+    //      unless `messagesSessionId === activeSessionId`, and the clear makes
+    //      `messagesSessionId` `null` while `activeSessionId` is the successor's
+    //      id, so no send can reach the seed with the deleted id.
+    // Both readers, both unreachable — so no assertion over the DOM can tell
+    // this line from its absence, and the mutation report for this change
+    // records it as an unkilled mutant rather than pretending otherwise. What
+    // it buys is bounded memory in a long-lived iframe — the map is per-mount
+    // and otherwise grows for every conversation the viewer has ever opened.
+    //
+    // Returns `prev` by reference when the key is absent, so a delete of a chat
+    // that grounded nothing costs no re-render.
+    setGroundedBySession((prev) => {
+      if (!(id in prev)) return prev;
+      const rest = { ...prev };
+      delete rest[id];
+      return rest;
+    });
+
     depsRef.current.track('session_delete');
-  }, [activeSessionId, sessions, persist]);
+  }, [activeSessionId, messagesSessionId, sessions, persist]);
 
   const renameSession = useCallback(async (id: string) => {
     const title = prompt('Rename session:');
@@ -1265,12 +1344,36 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // was charged for. Behind the same `streamingRef` guard, so a stopped
         // turn stops accumulating at the same instant it stops rendering.
         streamedText += chunk;
+        // ─────────────────────────────────────────────────────────────────────
+        // 🔴 AN EMPTY TRANSCRIPT IS REACHABLE MID-TURN, AND `prev[prev.length -
+        // 1]` IS `undefined` ON ONE. This guard used to be `if (last.id === …)`,
+        // which reads `undefined.id` and raises a TypeError INSIDE the reducer —
+        // not a dropped chunk, but the whole App tree coming down (`RootBoundary`
+        // in prod) taking the in-flight, already-billed reply with it.
+        //
+        // 🔴 WHAT MADE IT REACHABLE IS `deleteSession`'s CLEAR, ABOVE. Deleting
+        // the chat on screen sets `messages` to `[]` and moves the selection;
+        // the successor's transcript only replaces that `[]` when its READ
+        // resolves, and on the deployed host that read is a postMessage hop.
+        // Every chunk landing inside that window meets `[]`. The three cases in
+        // `delete-session-scope.e2e.test.tsx` are the measurement — each was
+        // watched red at `cf4a4ba`, and each stops reproducing once the
+        // fixture's successor read is instant again, which is why the
+        // pre-existing 548 green tests could not see it. The control for that
+        // second half, and its one loaded-run caveat, are recorded on
+        // `delayMessageReads` in that file rather than restated here.
+        //
+        // ⚠️ SCOPE, MEASURED RATHER THAN REASONED: `!last` is the ONLY change.
+        // The `last.id !== assistantMsg.id` half is the same test as before, so
+        // a chunk belonging to a superseded turn is still dropped exactly as it
+        // was — and the empty case takes that same branch, i.e. the chunk is
+        // dropped, not appended. `streamedText` above already holds it, so Stop
+        // still files what was streamed.
+        // ─────────────────────────────────────────────────────────────────────
         setMessages((prev) => {
           const last = prev[prev.length - 1];
-          if (last.id === assistantMsg.id) {
-            return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
-          }
-          return prev;
+          if (!last || last.id !== assistantMsg.id) return prev;
+          return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
         });
       };
 
@@ -1625,20 +1728,24 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       }
 
       if (replyText) {
+        // 🔴 SAME `!last` GUARD AS `onChunk`, AND IT IS NOT REDUNDANT WITH IT.
+        // A reply short enough to finish replaying inside the successor-read
+        // window reaches THIS updater on an empty transcript with no chunk ever
+        // having done so — pinned by "A REPLY THAT COMPLETES INSIDE THE READ
+        // WINDOW LANDS ON THE CLEARED TRANSCRIPT", which goes red against this
+        // site alone.
         setMessages((prev) => {
           const last = prev[prev.length - 1];
-          if (last.id === assistantMsg.id) {
-            // 🔴 THE RENDERED MESSAGE CARRIES THE RECORD TOO, not just the
-            // persisted one. They are written from the same `correction` value
-            // here so a reload cannot disagree with the live screen about
-            // whether a round fired — two separately-derived copies of one fact
-            // is how the two drift.
-            return [
-              ...prev.slice(0, -1),
-              { ...last, content: replyText, ...(correction ? { correction } : {}) },
-            ];
-          }
-          return prev;
+          if (!last || last.id !== assistantMsg.id) return prev;
+          // 🔴 THE RENDERED MESSAGE CARRIES THE RECORD TOO, not just the
+          // persisted one. They are written from the same `correction` value
+          // here so a reload cannot disagree with the live screen about
+          // whether a round fired — two separately-derived copies of one fact
+          // is how the two drift.
+          return [
+            ...prev.slice(0, -1),
+            { ...last, content: replyText, ...(correction ? { correction } : {}) },
+          ];
         });
       }
 
@@ -1713,12 +1820,15 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       const body = withheld
         ? (e as TextOutputWithheldError).reason
         : `Error: ${e instanceof Error ? e.message : 'Failed to get response'}`;
+      // 🔴 SAME `!last` GUARD AGAIN, ON THE EXIT THAT NEEDS NO STREAM AT ALL. A
+      // turn that fails or is withheld while the successor read is still out
+      // writes its "Error: …" onto an empty transcript, so this site is
+      // reachable on a turn that never replayed a chunk — pinned by "A TURN
+      // THAT FAILS INSIDE THE READ WINDOW LANDS ON THE CLEARED TRANSCRIPT".
       setMessages((prev) => {
         const last = prev[prev.length - 1];
-        if (last.id === assistantMsg.id) {
-          return [...prev.slice(0, -1), { ...last, content: body, withheld }];
-        }
-        return prev;
+        if (!last || last.id !== assistantMsg.id) return prev;
+        return [...prev.slice(0, -1), { ...last, content: body, withheld }];
       });
       // 🔴 PERSIST THE WITHHOLD TOO. A withheld reply means the capability ran
       // and the Buzz was SPENT; leaving it unsaved made the whole exchange
@@ -2087,15 +2197,27 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             switcher may now be disabled" if that ever stops being true. So this
             decision cannot be reversed silently.
 
-            KNOWN, SEPARATE, NOT FIXED HERE: if chunks are already REPLAYING
-            when the switch happens, `onChunk`'s updater reads
-            `prev[prev.length - 1].id` against the new session's empty array and
-            throws `TypeError: Cannot read properties of undefined (reading
-            'id')`. Measured at `462b7a2` — pre-existing, unchanged by this
-            commit, and a different defect (a render crash, not a misfiled
-            write). It is not folded in here for the same reason #427 was not
-            folded into #425: it would mix a second red/green matrix into this
-            one.
+            THE EMPTY-TRANSCRIPT CRASH THIS USED TO PARK IS NOW FIXED, AND THE
+            SENTENCE THAT PARKED IT WAS FALSIFIED BY THIS PR. It read
+            "pre-existing, unchanged by this commit" and scoped the crash to the
+            session-SWITCH route. That was true at `462b7a2`; it stopped being
+            true the moment `deleteSession` above learned to clear the
+            transcript, because that clear makes `messages === []` reachable
+            mid-turn on the DELETE route as well — the very route point 1
+            argues a disabled sidebar would leave open. A leftover "pre-existing"
+            note is how a defect a change INTRODUCES gets read as inherited, so
+            it is corrected rather than left standing.
+
+            All three `setMessages` updaters in `handleSend` now open with
+            `if (!last || last.id !== assistantMsg.id) return prev;`, so an
+            updater arriving on an empty transcript drops its write instead of
+            reading `undefined.id`. All three were watched red at `cf4a4ba`, and
+            each has a mutant killed by a named case in
+            `delete-session-scope.e2e.test.tsx` — the two later sites by exactly
+            one case each, the `onChunk` site by two. What those cases do NOT
+            cover is the session-SWITCH route this paragraph used to be about:
+            they all delete. So the claim here is about the three UPDATERS, not
+            about every route that can reach them.
           */}
           <SessionList
             sessions={sessions}
