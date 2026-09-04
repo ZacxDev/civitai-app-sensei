@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { UseAppStorage } from '@civitai/blocks-react';
 import { App } from './App.js';
 import { MAX_TURN_RECORDS, TURNS_PREFIX, turnRecordKey } from './lib/turn-records.js';
+import { claimMessageWrite } from './lib/write-ownership.js';
 // @ts-expect-error - plain .mjs with no types, by design. See the file header.
 import { reconcileTurns } from '../eval/reconcile-turns.mjs';
 
@@ -108,8 +109,53 @@ const submitFn = vi.fn(async () => {
  * runs, ever) and leaves nothing behind to fire later.
  */
 const hangingPolls = new Set<string>();
+
+/**
+ * A one-shot latch every non-hanging poll waits on, so a test can act while the
+ * turn is IN FLIGHT.
+ *
+ * 🔴 THE SUPERSEDE CASES NEED A MOMENT THAT OTHERWISE DOES NOT EXIST. A turn is
+ * superseded when somebody newer claims its transcript AFTER it started and
+ * BEFORE it settles; with the poll resolving immediately there is no such
+ * moment to reach from a test. `hangingPolls` cannot serve — it removes the
+ * settle entirely, which is the case those tests are distinguishing themselves
+ * from. Holding the poll and releasing it reproduces the real ordering: the
+ * turn keeps running, and finishes into a world it no longer owns.
+ */
+let releasePolls: (() => void) | null = null;
+let pollGate: Promise<void> | null = null;
+function holdPolls() {
+  pollGate = new Promise<void>((resolve) => {
+    releasePolls = resolve;
+  });
+}
+function letPollsThrough() {
+  releasePolls?.();
+  releasePolls = null;
+  pollGate = null;
+}
+
+/**
+ * When set, every poll reports the host WITHHELD the generated text.
+ *
+ * The bridge turns this into a `TextOutputWithheldError`, which is what puts
+ * `handleSend` on its `catch` path — the second, separate pair of settle sites.
+ * A withhold rather than a transport error on purpose: the Buzz was
+ * unambiguously spent, so a reply lost here is a real charged loss.
+ */
+let withholdReason: string | null = null;
+
 const pollFn = vi.fn(async (workflowId: string) => {
   if (hangingPolls.has(workflowId)) return new Promise(() => {});
+  if (pollGate) await pollGate;
+  if (withholdReason !== null) {
+    return {
+      workflowId,
+      status: 'succeeded',
+      cost: { total: 1 },
+      textOutputWithheld: { reason: withholdReason },
+    };
+  }
   return {
     workflowId,
     status: 'succeeded',
@@ -149,6 +195,8 @@ const originalFetch = globalThis.fetch;
 beforeEach(() => {
   h.storage = makeStorage();
   hangingPolls.clear();
+  letPollsThrough();
+  withholdReason = null;
   submitCount = 0;
   submitFn.mockClear();
   pollFn.mockClear();
@@ -160,6 +208,8 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  // A gate left held would park the next file's polls forever.
+  letPollsThrough();
 });
 
 const st = () => h.storage!;
@@ -376,6 +426,159 @@ describe('the turn record is written before the send path can lose it', () => {
       'the record write rejected and nobody caught it',
     ).toEqual([]);
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 THE `discarded` OUTCOME IS THE ONE THAT KEEPS THE HEADLINE NUMBER HONEST,
+// AND UNTIL THESE CASES EXISTED NOTHING ASSERTED IT.
+//
+// `handleSend` has TWO write-ownership gates — one on the success path, one on
+// the error/withhold path — and each `else` arm settles the record `discarded`.
+// Deleting either arm's `settle` leaves the turn `pending` with a non-empty
+// `workflowIds`, which is the exact signature of `a_continuation_never_ran`. So
+// the failure direction is OVER-report: a known, deliberate, event-emitting
+// trade would be counted as a LOST ANSWER, inflating the one number this whole
+// instrument exists to produce. Measured before these cases were written: both
+// deletions survived the full suite.
+//
+// `correction-round.e2e.test.tsx` already reaches the success-path arm and
+// asserts the EVENT (`reply_discarded_superseded`). The event and the record are
+// two separate writes; asserting one says nothing about the other.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('a SUPERSEDED turn is an accepted trade, not a lost answer', () => {
+  /**
+   * Send, hold the turn open, and let a newer writer take the transcript.
+   *
+   * `claimMessageWrite` is exactly what a remounted instance does at its first
+   * send — calling it directly stages the supersede without needing a second
+   * tree, and the turn is superseded WITHOUT ever being aborted, which is the
+   * case no abort predicate can see.
+   */
+  async function sendAndSupersede(text: string) {
+    holdPolls();
+    await openNewChat();
+    send(text);
+    await waitFor(() => expect(turnRecords()[0]?.workflowIds).toEqual(['wf-1']), { timeout: 8000 });
+    const sessionId = turnRecords()[0].sessionId as string;
+    const writesBefore = st().sets.filter((s) => s.key === `sensei:messages:${sessionId}`).length;
+    claimMessageWrite(sessionId);
+    letPollsThrough();
+    return { sessionId, writesBefore };
+  }
+
+  /** Message writes issued for one session since `sendAndSupersede` ran. */
+  function messageWritesFor(sessionId: string) {
+    return st().sets.filter((s) => s.key === `sensei:messages:${sessionId}`).length;
+  }
+
+  it('🔴 SUCCESS PATH: a superseded reply settles `discarded`, and reconciles as ZERO loss', async () => {
+    const { sessionId, writesBefore } = await sendAndSupersede('what should I try next?');
+
+    // The reply is generated and reaches the screen — the loss is at the WRITE,
+    // which is what makes this a charged loss rather than a failed turn.
+    await waitFor(() => expect(screen.getByText('reply for wf-1')).toBeTruthy(), { timeout: 8000 });
+    await waitFor(
+      () =>
+        expect(
+          turnRecords()[0]?.outcome,
+          'a superseded reply must settle `discarded`; left `pending` it is counted as a lost answer',
+        ).toBe('discarded'),
+      { timeout: 8000 },
+    );
+
+    // The write really was refused, so this record genuinely has no matching
+    // message — the predicate that would otherwise read as (a).
+    expect(messageWritesFor(sessionId)).toBe(writesBefore);
+    const record = turnRecords()[0];
+    expect(storedMessages(sessionId).some((m) => m.id === record.messageId)).toBe(false);
+
+    // 🔴 THE CONSEQUENCE, MEASURED. Without the settle these three numbers read
+    // 0 / 1 / 1 — a deliberate trade reported as the defect being hunted.
+    const out = reconcileTurns(kvRows(), { now: (record.submittedAt as number) + 3_600_000 });
+    expect(out.acceptedDiscarded).toBe(1);
+    expect(out.lostAnswers).toBe(0);
+    expect(out.aContinuationNeverRan).toBe(0);
+    // 🔴 20 s, ABOVE EVERY `waitFor` BELOW IT. At the 5 s default a `waitFor`
+    // given 8 s can never report its own assertion — the RUN dies first and the
+    // failure reads `Test timed out`, which names no guard. Measured while
+    // mutating the settle site this case exists to kill.
+  }, 20_000);
+
+  it('🔴 WITHHOLD PATH: a superseded WITHHELD turn settles `discarded` too', async () => {
+    // A separate `settle` site on a separate code path: the `catch` arm, reached
+    // only when the turn threw. Nothing about the success-path case above
+    // exercises it, and the Buzz was spent here just as certainly.
+    withholdReason = 'This reply was withheld.';
+    const { sessionId, writesBefore } = await sendAndSupersede('something the host will refuse');
+
+    await waitFor(() => expect(screen.getByText('This reply was withheld.')).toBeTruthy(), {
+      timeout: 8000,
+    });
+    await waitFor(
+      () =>
+        expect(
+          turnRecords()[0]?.outcome,
+          'a superseded WITHHELD reply must settle `discarded`; left `pending` it is counted as a lost answer',
+        ).toBe('discarded'),
+      { timeout: 8000 },
+    );
+
+    expect(messageWritesFor(sessionId)).toBe(writesBefore);
+    const record = turnRecords()[0];
+    const out = reconcileTurns(kvRows(), { now: (record.submittedAt as number) + 3_600_000 });
+    expect(out.acceptedDiscarded).toBe(1);
+    expect(out.lostAnswers).toBe(0);
+    expect(out.aContinuationNeverRan).toBe(0);
+  }, 20_000);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 THE MECHANISM SPLIT ON THE PATH WHERE THE MONEY WENT MISSING.
+//
+// The error/withhold path reads `persist`'s verdict exactly as the success path
+// does, and only that read separates (b) "the write was issued and REJECTED"
+// from (c) "it was written and later overwritten". `lost_answers` is the same
+// either way, so nothing about the headline number can see this — which is why
+// hardcoding this site to `'saved'` left the whole suite green. The split is the
+// entire reason the record carries an `outcome` at all.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('a withheld turn whose write REJECTS is reported as a rejection', () => {
+  it('🔴 settles `write-failed`, not `saved` — the split, not the total', async () => {
+    withholdReason = 'This reply was withheld.';
+    await openNewChat();
+    // Fail only the write carrying the withheld reply: the user-message write
+    // holds one element, this one holds two.
+    st().setFailSet(
+      (key, value) =>
+        key.startsWith('sensei:messages:') && Array.isArray(value) && value.length >= 2,
+    );
+    send('something the host will refuse');
+
+    await waitFor(
+      () =>
+        expect(
+          turnRecords()[0]?.outcome,
+          'a withheld reply whose write REJECTED must settle `write-failed`, or (b) is reported as (c)',
+        ).toBe('write-failed'),
+      { timeout: 8000 },
+    );
+
+    const record = turnRecords()[0];
+    // A real loss, not a bookkeeping difference: the reply is not in the
+    // transcript, and the viewer was charged for it.
+    expect(record.workflowIds).toEqual(['wf-1']);
+    expect(storedMessages(record.sessionId as string).some((m) => m.id === record.messageId)).toBe(
+      false,
+    );
+
+    // 🔴 THE DECOMPOSITION IS THE ASSERTION. `lostAnswers` is 1 whichever
+    // outcome is written, so it cannot distinguish the two; these three
+    // columns are the only thing that can.
+    const out = reconcileTurns(kvRows(), { now: (record.submittedAt as number) + 3_600_000 });
+    expect(out.lostAnswers).toBe(1);
+    expect(out.bWriteRejected).toBe(1);
+    expect(out.cOverwritten).toBe(0);
+  }, 20_000);
 });
 
 describe('the boot sweep keeps the store bounded', () => {

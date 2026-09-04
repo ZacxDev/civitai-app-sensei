@@ -45,8 +45,23 @@ import type { UseAppStorage } from '@civitai/blocks-react';
 // 🔴 WHAT IT CANNOT DISCRIMINATE, STATED RATHER THAN GLOSSED. The outcome
 // update travels over the SAME `appStorage` as the write it reports on. If the
 // transcript write fails AND this record's own update also fails, the record
-// stays `pending` and (b) is misread as (a). The `pending`/`workflowIds` half is
-// unaffected — it was already written before either.
+// stays `pending` and (b) is misread as (a).
+//
+// 🔴 AND THE WIDER CASE, WHICH THAT PARAGRAPH USED TO UNDERSTATE. It held only
+// for a store that starts failing AFTER submit; the `pending`/`workflowIds` half
+// survives that because it was written first. If `appStorage.set` is rejecting
+// AT SUBMIT — quota, the host's per-value ceiling, an anonymous viewer — then
+// the FIRST write fails too and NO record exists. The reconciliation then
+// reports `lost_answers = 0`, which is also what a perfectly healthy app
+// reports: a store-wide write failure is the one shape this instrument renders
+// as good news.
+//
+// The discriminator exists and is not in the loss columns: `turn_records`
+// COLLAPSING below the number of questions the app is known to have received,
+// together with the `storage_error` event on the analytics stream (emitted by
+// `persist`, over a channel that is not `appStorage`). Read the record COUNT
+// before reading any zero in the loss columns. `eval/reconcile-turns.sql`'s
+// header says the same thing at the other end of the pipeline.
 //
 // 🔴 A STOPPED TURN IS NOT A LOST ANSWER AND DOES NOT NEED AN OUTCOME OF ITS
 // OWN. `handleSend`'s two abort exits return without settling, so a stopped turn

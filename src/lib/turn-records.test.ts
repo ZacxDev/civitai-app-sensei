@@ -139,6 +139,65 @@ describe('retention keeps `sensei:turns:*` bounded', () => {
     expect(storage.store.has('sensei:sessions')).toBe(true);
     expect(storage.store.has('sensei:messages:session-1')).toBe(true);
   });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 🔴 THE SORT IS NUMERIC, AND THE CASES ABOVE CANNOT SEE THAT.
+  //
+  // `seedRecords` gives every record ONE sessionId and a uniform-width
+  // `submittedAt`, and under exactly those two conditions lexicographic order
+  // over the whole key and numeric order over its `submittedAt` segment agree.
+  // So replacing the comparator with a bare `sort()` leaves every case above
+  // green — measured, not assumed.
+  //
+  // The two cases below are the two ways production breaks that agreement, and
+  // each one INVERTS which record is dropped. They are what makes the
+  // comparator's presence a tested fact rather than a stated one.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** One record, addressed by the fields the key is built from. */
+  function record(sessionId: string, submittedAt: number, messageId: string) {
+    const s = { sessionId, messageId, submittedAt };
+    return [turnRecordKey(s), { ...s, workflowIds: [], outcome: 'saved' }] as const;
+  }
+
+  it('🔴 ACROSS SESSIONS the oldest TURN goes, not the lowest session id', async () => {
+    // An old chat carrying a NEW turn, against a new chat carrying an OLDER
+    // one. Lexicographically the key's leading segment is the sessionId, so a
+    // string sort ranks these by which conversation started first — which is
+    // not what "oldest" means and, here, is the exact opposite of it.
+    const newTurnInOldChat = record('session-1786000000000-aaa', 1_788_600_000_000, 'msg-a');
+    const oldTurnInNewChat = record('session-1788000000000-bbb', 1_788_116_400_000, 'msg-b');
+    const storage = fakeAppStorage(
+      Object.fromEntries([newTurnInOldChat, oldTurnInNewChat]) as Record<string, unknown>,
+    );
+
+    expect(await pruneTurnRecords(storage.appStorage, 1)).toBe(1);
+
+    const left = [...storage.store.values()] as Array<{ sessionId: string }>;
+    expect(left).toHaveLength(1);
+    expect(
+      left[0].sessionId,
+      'the surviving record must be the NEWER TURN, whichever chat it belongs to',
+    ).toBe('session-1786000000000-aaa');
+  });
+
+  it('🔴 WITHIN one session a SHORTER `submittedAt` is smaller, not larger', async () => {
+    // Epoch-ms is not a fixed-width field: it was 12 digits until 2001-09-09 and
+    // is 13 until 2286, and a record can carry a truncated or clock-skewed value
+    // at any time. A string sort reads '9…' as greater than '1…', so the older
+    // of these two is ranked NEWEST and the sweep drops the wrong one.
+    const older = record('session-1', 999_999_999_999, 'msg-c');
+    const newer = record('session-1', 1_700_000_000_000, 'msg-d');
+    const storage = fakeAppStorage(Object.fromEntries([older, newer]) as Record<string, unknown>);
+
+    expect(await pruneTurnRecords(storage.appStorage, 1)).toBe(1);
+
+    const left = [...storage.store.values()] as Array<{ submittedAt: number }>;
+    expect(left).toHaveLength(1);
+    expect(left[0].submittedAt, 'the survivor must be the numerically NEWER record').toBe(
+      1_700_000_000_000,
+    );
+  });
 });
 
 describe('purgeSessionTurnRecords is scoped to one conversation', () => {
