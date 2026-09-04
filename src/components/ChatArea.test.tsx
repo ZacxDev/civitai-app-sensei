@@ -26,6 +26,10 @@ function renderChat(props: Partial<ChatAreaProps> = {}) {
     <ChatArea
       sendGate={null}
       onGatedSend={vi.fn()}
+      // `null` = the transcript on screen IS the selected conversation's, which
+      // is the state every case here is about. The paused states are driven
+      // through the real app in `composer-pending-transcript.e2e.test.tsx`.
+      sendPaused={null}
       messages={[]}
       isStreaming={false}
       onSend={vi.fn()}
@@ -270,6 +274,7 @@ describe('the mention affordance in the composer (clawgate #434, criterion 3)', 
       onPickMention,
       onRemoveMention: vi.fn(),
       groundedModelIds: new Set<string>(),
+      sendPaused: null,
     };
     const { rerender } = render(<ChatArea sendGate={null} {...props} />);
     fireEvent.click(screen.getByTestId('add-mention-button'));
@@ -294,6 +299,7 @@ describe('the mention affordance in the composer (clawgate #434, criterion 3)', 
       onPickMention: vi.fn(),
       onRemoveMention: vi.fn(),
       groundedModelIds: new Set<string>(),
+      sendPaused: null,
     };
     const { rerender } = render(<ChatArea isStreaming={false} {...props} />);
     fireEvent.click(screen.getByTestId('add-mention-button'));
