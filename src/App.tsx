@@ -27,6 +27,7 @@ import type { ResolvedResource } from './lib/mentions.js';
 import { generateMessageId, withSystemPrompt } from './lib/chat.js';
 import { generateTitle } from './lib/sessions.js';
 import { claimMessageWrite, ownsMessageWrite } from './lib/write-ownership.js';
+import * as turnRecordsLib from './lib/turn-records.js';
 import {
   groundedIdsFromToolResult,
   mergeGroundedIds,
@@ -421,6 +422,15 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         }
       } finally {
         if (!cancelled) setLoading(false);
+        // 🔴 BOUNDED GROWTH FOR `sensei:turns:*`. The per-turn detection records
+        // are never read by the app, so nothing else would ever remove them, and
+        // the host's KV is a shared app-wide budget (50 MB / ~1M rows) rather
+        // than local disk. Swept here — after the load, never awaited by it, and
+        // with its rejection swallowed — because a diagnostic sweep must not be
+        // able to delay or fail the boot it rides on. See `MAX_TURN_RECORDS`.
+        if (!cancelled) {
+          void turnRecordsLib.pruneTurnRecords(depsRef.current.appStorage).catch(() => {});
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -700,6 +710,23 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       delete rest[id];
       return rest;
     });
+
+    // 🔴 DROP THIS CONVERSATION'S TURN RECORDS, OR THE DETECTOR INVENTS LOSSES.
+    // A turn record is reconciled by looking for its `messageId` in its own
+    // session's stored transcript; the `deleteMessages` above removes that
+    // transcript entirely, so every surviving record for `id` would read as
+    // "generated, charged, never persisted". Left in, the instrument would
+    // manufacture false positives at exactly the rate people tidy their chat
+    // list. The purge-versus-tombstone choice is argued in
+    // `lib/turn-records.ts`; the invariant is pinned in
+    // `turn-records.e2e.test.tsx`.
+    //
+    // Not awaited and its rejection swallowed, like every other write in this
+    // module: a diagnostic must never decide whether a delete succeeds. It runs
+    // after the `!ok` return, so a delete that did NOT happen keeps its records.
+    void turnRecordsLib
+      .purgeSessionTurnRecords(depsRef.current.appStorage, id)
+      .catch(() => {});
 
     depsRef.current.track('session_delete');
   }, [activeSessionId, messagesSessionId, sessions, persist]);
@@ -1182,6 +1209,34 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // read-back-and-merge is not available instead. (clawgate #425.)
     const myWrite = claimMessageWrite(activeSessionId);
 
+    // ── THE TURN'S OWN DURABLE RECORD, WRITTEN BEFORE THE FIRST `await`. ──────
+    //
+    // 🔴 THE POSITION IS THE WHOLE INSTRUMENT. Two production questions were
+    // generated, charged and never persisted, and nothing in this app could see
+    // it: the only per-turn artefact it leaves is the transcript, which is the
+    // thing that goes missing. One of the three rival mechanisms is "the
+    // post-completion continuation never ran" — so a record written from that
+    // continuation would be suppressed by the exact failure it exists to detect.
+    // This line runs on the same synchronous stack as the send that starts the
+    // turn — the first `await` in this function is the `persist` immediately
+    // below — and `startTurnRecord` issues its `set` from its own body rather
+    // than from a `.then`.
+    //
+    // 🔴 THE ASSISTANT MESSAGE ID IS MINTED HERE, NOT AT `assistantMsg` BELOW,
+    // for the same reason: the record has to carry the id of the message that
+    // will go missing, and `assistantMsg` is built after the first `await`.
+    //
+    // Fire-and-forget, rejections swallowed, and deliberately NOT routed through
+    // `persist` — a diagnostic that can delay a send, fail a send, or put a
+    // "Couldn't …" banner on screen is worse than the defect it detects.
+    // `turn-records.e2e.test.tsx` pins both halves.
+    const assistantMsgId = generateMessageId();
+    const turnRecord = turnRecordsLib.startTurnRecord(depsRef.current.appStorage, {
+      sessionId: activeSessionId,
+      messageId: assistantMsgId,
+      submittedAt: now,
+    });
+
     await persist('save your message', async () => {
       await sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, updatedMessages);
       await sessionsLib.saveSessions(depsRef.current.appStorage, nextSessions);
@@ -1244,7 +1299,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     const mine = ++turnSeqRef.current;
 
     const assistantMsg: Message = {
-      id: generateMessageId(),
+      // Minted above, with the turn record that names it. Do not re-generate it
+      // here: the record would then point at a message id that never exists and
+      // every turn would reconcile as a lost answer.
+      id: assistantMsgId,
       role: 'assistant',
       content: '',
       timestamp: Date.now(),
@@ -1451,6 +1509,21 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         });
       };
 
+      // 🔴 THE WORKFLOW IDS ARE RECORDED IN THE ONE PLACE EVERY ROUND GOES
+      // THROUGH. There are three `await submit()` call sites — the first round,
+      // the tool loop, and the correction round — and a turn is charged once per
+      // round, so the id set is per-turn rather than per-call. Recording at each
+      // call site would be the same predicate copied three times, and the copy
+      // that gets forgotten is silent: the record would under-report what the
+      // viewer paid for.
+      //
+      // 🔴 THE ID IS TAKEN FROM THE CALLBACK, NOT FROM THE RESOLVED RESPONSE,
+      // AND THAT IS THE TWO-PHASE HALF OF THE DESIGN. `ChatCompletionResponse
+      // .id` carries the same value, but only once the workflow has settled —
+      // and a turn charged and then never settled for this client is exactly the
+      // failure being recorded, so reading it there would file an id only for
+      // the turns that did not fail. The bridge invokes `onWorkflow` at the
+      // line where the submit is accepted, i.e. where the Buzz goes.
       const submit = () =>
         orchestrator.submitChatCompletion(
           {
@@ -1462,6 +1535,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
           },
           onChunk,
           controller.signal,
+          (workflowId) => turnRecord.workflow(workflowId),
         );
 
       let response = await submit();
@@ -1851,12 +1925,18 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // message permanently. Losing this reply is the lesser harm and the trade
       // is argued in `lib/write-ownership.ts`.
       if (ownsMessageWrite(activeSessionId, myWrite)) {
-        await persist('save the reply', () =>
+        // 🔴 THE OUTCOME IS THE `persist` RESULT, NOT "WE GOT HERE". `persist`
+        // returns whether the write resolved, and that boolean is exactly what
+        // separates mechanism (b) — issued and rejected — from mechanism (c),
+        // written and later overwritten. Reading it is what makes the record's
+        // `write-failed` value mean anything.
+        const saved = await persist('save the reply', () =>
           sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, [
             ...updatedMessages,
             finalMsg,
           ]),
         );
+        turnRecord.settle(saved ? 'saved' : 'write-failed');
       } else {
         // 🔴 THE ACCEPTED LOSS, MADE OBSERVABLE. Discarding this reply is the
         // deliberate trade — the alternative is deleting the viewer's newer
@@ -1868,6 +1948,12 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // serve a block its own write (civitai #4456) and a merge becomes
         // possible. A silent accepted cost is how an accepted cost stops being
         // reviewed.
+        //
+        // Recorded on the turn as well as on the event stream: this is the one
+        // unpersisted-reply outcome that is DELIBERATE, so the reconciliation
+        // has to be able to take it out of the lost-answer count rather than
+        // report a known trade as a new defect.
+        turnRecord.settle('discarded');
         depsRef.current.track('reply_discarded_superseded');
       }
     } catch (e) {
@@ -1914,15 +2000,20 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // withhold arriving after a remount would otherwise write a transcript
       // built before the new instance's messages existed.
       if (ownsMessageWrite(activeSessionId, myWrite)) {
-        await persist('save the reply', () =>
+        // Same read of `persist`'s verdict as the success path, for the same
+        // reason: a withheld or errored turn was charged too, and a write that
+        // rejects here loses it exactly as thoroughly.
+        const saved = await persist('save the reply', () =>
           sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, [
             ...updatedMessages,
             { ...assistantMsg, content: body, ...(withheld ? { withheld: true } : {}) },
           ]),
         );
+        turnRecord.settle(saved ? 'saved' : 'write-failed');
       } else {
         // Same accepted loss as the success path above, same reason for
         // counting it. A withhold reaching here was still CHARGED.
+        turnRecord.settle('discarded');
         depsRef.current.track('reply_discarded_superseded');
       }
       if (withheld) depsRef.current.track('completion_withheld');

@@ -6,6 +6,18 @@ export interface OrchestratorAdapter {
     request: ChatCompletionRequest,
     onChunk?: (chunk: string) => void,
     signal?: AbortSignal,
+    /**
+     * Called with the workflow id AS SOON AS THE SUBMIT IS ACCEPTED — before the
+     * poll loop, not when the completion resolves.
+     *
+     * 🔴 THE TIMING IS THE REASON THIS PARAMETER EXISTS. The returned
+     * `ChatCompletionResponse.id` already carries the same value, but it only
+     * arrives once the workflow has settled — and a turn that is charged and
+     * then never settles for this client is exactly the failure the caller is
+     * trying to record. Reading the id off the resolved response would file it
+     * only for the turns that did not fail.
+     */
+    onWorkflow?: (workflowId: string) => void,
   ): Promise<ChatCompletionResponse>;
   cancel?(workflowId?: string): Promise<void>;
 }
