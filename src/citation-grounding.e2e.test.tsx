@@ -411,6 +411,61 @@ describe('grounded citations reach the screen', () => {
     })();
   });
 
+  it('🔴 A FAILED SWITCH KEEPS THE OUTGOING TRANSCRIPT’S LINKS', () => {
+    return (async () => {
+      // 🔴 THE DURABLE HALF-STATE, and the reason this is worth a state cell.
+      // `selectSession` moves `activeSessionId` and deliberately does NOT clear
+      // `messages`, so the outgoing conversation stays readable while the next
+      // one loads. The grounded set used to key on `activeSessionId`, so during
+      // that read the outgoing transcript was rendered against the INCOMING
+      // session's empty set and its citations turned to plain text. Usually a
+      // tick — but if the read FAILS there is nothing to end it, and the viewer
+      // is left looking at a real transcript whose links have silently been
+      // refused, next to an error about a DIFFERENT chat.
+      //
+      // The failure arm is what makes this deterministic: no timing, no
+      // observer, just a rejected read and a DOM that must still be correct.
+      toolItems = [{ id: DREAMSHAPER, name: 'DreamShaper', type: 'Checkpoint' }];
+      pollQueue = [
+        toolCallSnapshot(),
+        textSnapshot(`[DreamShaper](https://civitai.com/models/${DREAMSHAPER}) is great.`),
+      ];
+      await startChat();
+      await send('what is DreamShaper?', 'is great');
+
+      fireEvent.click(screen.getByTestId('new-session-button'));
+      await waitFor(() => expect(screen.queryByText(/is great/)).toBeNull());
+      pollQueue = [textSnapshot('Nothing looked up here.')];
+      await send('hello', 'Nothing looked up here');
+
+      // Back to the grounded conversation, so IT is the transcript on screen.
+      const rows = () => document.querySelectorAll<HTMLElement>('[data-testid^="session-item-"]');
+      expect(rows()).toHaveLength(2);
+      fireEvent.click(rows()[rows().length - 1]);
+      await waitFor(() => expect(anchorFor(DREAMSHAPER)).toBeTruthy());
+
+      // Now make the NEXT switch's read fail.
+      const storage = h.storage!.appStorage;
+      const realGet = storage.get.bind(storage);
+      storage.get = (async (key: string) => {
+        if (key.startsWith('sensei:messages:')) throw new Error('storage is unavailable');
+        return realGet(key);
+      }) as typeof storage.get;
+
+      fireEvent.click(rows()[0]);
+      await waitFor(() => expect(screen.getByText(/Couldn't open that chat/)).toBeTruthy());
+
+      // 🔴 The transcript on screen is still the grounded conversation's — so its
+      // links must still be links. Before this fix they were plain text, and
+      // stayed that way, because the grounded set had already moved on.
+      expect(screen.getByText(/is great/)).toBeTruthy();
+      expect(
+        anchorFor(DREAMSHAPER),
+        'the visible transcript lost its links to a failed load of a DIFFERENT chat',
+      ).toBeTruthy();
+    })();
+  });
+
   it('🔴 RELOAD KEEPS THE GROUNDING — the ids ride the stored assistant turn', () => {
     return (async () => {
       // ⚠️ THIS CASE USED TO ASSERT THE OPPOSITE, and the inversion is the fix.

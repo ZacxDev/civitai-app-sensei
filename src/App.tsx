@@ -175,6 +175,26 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    * resolves. Pre-existing and measured unchanged by the loader fix. See the
    * note at the switch call site.
    */
+  /**
+   * WHICH session the transcript currently in `messages` belongs to.
+   *
+   * 🔴 THE GROUNDED SET MUST FOLLOW THE TRANSCRIPT ON SCREEN, NOT THE SELECTED
+   * ID. `selectSession` is `setActiveSessionId` and nothing else — `messages` is
+   * deliberately NOT cleared, so the outgoing conversation stays readable while
+   * the next one loads. But `groundedModelIds` used to key on
+   * `activeSessionId`, so for the length of that read the OUTGOING transcript
+   * was rendered against the INCOMING session's (empty) grounded set and every
+   * citation in it turned to plain text. Measured on both arms of #45, so it
+   * predates that fix and was not caused by it.
+   *
+   * 🔴 THE REJECT CASE IS THE ONE THAT MADE THIS WORTH FIXING: if that read
+   * FAILS, the catch shows an error and leaves the outgoing transcript on
+   * screen — previously with its links refused INDEFINITELY, not for a tick.
+   *
+   * Keyed here, both flip in the SAME batch (`applyLoadedMessages` writes both),
+   * so the pair can never disagree.
+   */
+  const [messagesSessionId, setMessagesSessionId] = useState<string | null>(null);
   const [groundedBySession, setGroundedBySession] = useState<Record<string, readonly string[]>>({});
   const [loading, setLoading] = useState(true);
   // 🔴 A REJECTED STORAGE CALL MUST NOT BE INDISTINGUISHABLE FROM SUCCESS. Every
@@ -335,6 +355,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const applyLoadedMessages = useCallback(
     (sessionId: string, msgs: Message[]) => {
       setMessages(msgs);
+      setMessagesSessionId(sessionId);
       recordGrounded(sessionId, sessionsLib.groundedIdsFromMessages(msgs));
     },
     [recordGrounded],
@@ -456,7 +477,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
   // ---- Load messages when session changes ----
   useEffect(() => {
-    if (!activeSessionId) { setMessages([]); return; }
+    if (!activeSessionId) { setMessages([]); setMessagesSessionId(null); return; }
     let cancelled = false;
     sessionsLib
       .getMessages(depsRef.current.appStorage, activeSessionId)
@@ -555,6 +576,9 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setSessions(next);
     setActiveSessionId(session.id);
     setMessages([]);
+    // The empty transcript BELONGS to the new session — pairing it here keeps
+    // the invariant true for the window before the load effect resolves.
+    setMessagesSessionId(session.id);
     // 🔴 THE COMPOSER CLEAR USED TO LIVE HERE AND HAS MOVED to the
     // `[activeSessionId]` effect above — one rule, one place. It was correct
     // here and absent from `selectSession` and `deleteSession`, which move the
@@ -841,8 +865,8 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    * `linkHref`.
    */
   const groundedModelIds = useMemo(
-    () => new Set(activeSessionId ? (groundedBySession[activeSessionId] ?? []) : []),
-    [groundedBySession, activeSessionId],
+    () => new Set(messagesSessionId ? (groundedBySession[messagesSessionId] ?? []) : []),
+    [groundedBySession, messagesSessionId],
   );
 
   const selectSession = useCallback(async (id: string) => {
