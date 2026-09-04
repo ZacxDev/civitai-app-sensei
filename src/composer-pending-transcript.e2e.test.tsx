@@ -172,6 +172,13 @@ function type(text: string) {
   fireEvent.change(input(), { target: { value: text } });
 }
 
+/** Every rendered turn, both roles — what the viewer can actually see. */
+function turns(): number {
+  return document.querySelectorAll(
+    '[data-testid="message-user"], [data-testid="message-assistant"]',
+  ).length;
+}
+
 /** Let every already-scheduled microtask and timer-0 continuation run. */
 async function settle(ms = 20) {
   await act(async () => {
@@ -356,5 +363,141 @@ describe('the composer says so while the selected chat is not the one on screen'
     expect(screen.queryByTestId('transcript-loading-notice')).toBeNull();
     type('which is better for anime?');
     expect(sendButton().disabled).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REGENERATE IS A SEND, AND IT IS THE ONE THAT NEVER TOUCHES THE COMPOSER.
+//
+// 🔴 THIS IS WHERE `App.handleSend`'s TRANSCRIPT REFUSAL IS ACTUALLY PINNED.
+// Every assertion in the block above is satisfied by the composer alone: Send is
+// `disabled` and `ChatArea.handleSend` returns on `sendPaused`, each
+// independently, so deleting `handleSend`'s `if (transcriptPending) return;`
+// leaves all of them — and `citation-grounding.e2e.test.tsx`'s send case —
+// GREEN. Measured, both directions, in #49's round-1 audit and again here.
+// `handleRegenerate` calls `handleSend` directly and renders its button in the
+// message list, so this is the only route left that reaches that guard.
+//
+// 🔴 AND THE ROUTE HAD ITS OWN HOLE. Until this round `handleRegenerate` removed
+// the reply from view BEFORE calling `handleSend`, and it asked `sendGate` and
+// `!activeSessionId || isStreaming` but never the transcript question — so one
+// click in the durable window took visible turns 2 → 1 with the submit count
+// unmoved. The remedy was to stop DESTROYING rather than to copy the predicate:
+// a copy in `handleRegenerate` would have shadowed the App guard exactly as the
+// composer does, closing the last route that can see it. See the block at the
+// top of `handleRegenerate`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Two chats with one real exchange in the FIRST, which is the one left on
+ * screen. A caller enters a window by setting `readMode[second]` and switching
+ * to it, so the transcript on screen — and the Regenerate button rendered in it
+ * — belongs to `first` while `activeSessionId` is `second`.
+ */
+async function transcriptWithAReply() {
+  await boot();
+  const first = await newSession();
+  const second = await newSession();
+  switchTo(first);
+  await settle();
+
+  type('what is DreamShaper?');
+  fireEvent.click(sendButton());
+  await waitFor(() => expect(screen.getByText('an answer')).toBeTruthy(), { timeout: 8000 });
+  await waitFor(() => expect(screen.queryByTestId('streaming-indicator')).toBeNull());
+  await waitFor(() => expect(screen.getByTestId('send-button')).toBeTruthy());
+  expect(turns(), 'the fixture did not produce a transcript to regenerate').toBe(2);
+  expect(submitFn, 'the first exchange never reached the orchestrator').toHaveBeenCalledTimes(1);
+
+  return { first, second };
+}
+
+/**
+ * None of the checks that run BEFORE the transcript refusal is what stopped the
+ * press — so the state under test is genuinely the one reached.
+ *
+ * `handleRegenerate` refuses on `sendGate` and on `!activeSessionId ||
+ * isStreaming`; `handleSend` then refuses on `!activeSessionId || isStreaming`,
+ * on the transcript, and on `sendGate`, in that order. This asserts every one of
+ * those EXCEPT the transcript check is false.
+ */
+function expectNothingElseRefusedIt() {
+  expect(screen.getByTestId('chat-input'), 'no session is selected').toBeTruthy();
+  expect(screen.queryByTestId('streaming-indicator'), 'a turn is in flight').toBeNull();
+  expect(screen.queryByTestId('consent-notice'), 'the capability gate is what fired').toBeNull();
+  expect(screen.queryByTestId('signin-notice'), 'the capability gate is what fired').toBeNull();
+  expect(requestConsentFn).not.toHaveBeenCalled();
+  expect(requestSignInFn).not.toHaveBeenCalled();
+  // The button really is offered — a refusal proved by an absent control would
+  // be a fact about the render, not about the guard.
+  const btn = screen.getByTestId('regenerate-button') as HTMLButtonElement;
+  expect(btn.disabled, 'Regenerate was disabled, so this press never reached the app').toBe(false);
+}
+
+describe('Regenerate while the selected chat is not the one on screen', () => {
+  it('🔴 DURABLE: Regenerate destroys nothing and sends nothing', async () => {
+    const { second } = await transcriptWithAReply();
+    readMode[second] = 'reject';
+    switchTo(second);
+    await settle();
+    expect(screen.queryByTestId('transcript-failed-notice')).toBeTruthy();
+
+    expectNothingElseRefusedIt();
+    fireEvent.click(screen.getByTestId('regenerate-button'));
+    await settle();
+
+    // 🔴 THE LEAK FIRST, THEN THE LOSS. The two directions fail this case for
+    // different reasons and each must say which: an accepted turn is the
+    // cross-conversation grounding leak `handleSend`'s guard exists to refuse; a
+    // missing turn is the reply destroyed ahead of a refusal.
+    expect(
+      submitFn,
+      'Regenerate sent a turn into the selected chat while the transcript on ' +
+        'screen — and the grounded set it renders against — belonged to another chat',
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      turns(),
+      'the transcript on screen MOVED on a Regenerate the app refuses: fewer turns ' +
+        'means the reply was destroyed ahead of the refusal, with nothing on this ' +
+        'screen to bring it back; more means the turn was accepted into the wrong chat',
+    ).toBe(2);
+    expect(
+      screen.queryByText('an answer'),
+      'the reply Regenerate could not re-send was taken off the screen anyway',
+    ).toBeTruthy();
+  });
+
+  it('🔴 TRANSIENT: the same, while the read is still in flight', async () => {
+    const { second } = await transcriptWithAReply();
+    readMode[second] = 'park';
+    switchTo(second);
+    await settle();
+    expect(screen.queryByTestId('transcript-loading-notice')).toBeTruthy();
+
+    expectNothingElseRefusedIt();
+    fireEvent.click(screen.getByTestId('regenerate-button'));
+    await settle();
+
+    expect(
+      submitFn,
+      'Regenerate sent a turn while the transcript on screen belonged to another chat',
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      turns(),
+      'the transcript on screen MOVED on a Regenerate the app refuses — destroyed ' +
+        'ahead of the refusal, or accepted into the wrong chat',
+    ).toBe(2);
+  });
+
+  it('POSITIVE CONTROL: Regenerate DOES re-send once the two agree', async () => {
+    // 🔴 Without this, both cases above are satisfied by a Regenerate that never
+    // sends anything under any conditions — and by a fixture whose second submit
+    // was never reachable. Same fixture, same button, no window entered.
+    await transcriptWithAReply();
+    expect(screen.queryByTestId('transcript-failed-notice')).toBeNull();
+    expect(screen.queryByTestId('transcript-loading-notice')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('regenerate-button'));
+    await waitFor(() => expect(submitFn).toHaveBeenCalledTimes(2), { timeout: 8000 });
   });
 });

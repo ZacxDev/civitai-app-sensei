@@ -478,8 +478,25 @@ describe('grounded citations reach the screen', () => {
       // inversion the gate exists to prevent. Found by adversarial audit of the
       // rendering fix, measured as `anchor=false` before it and `true` after.
       //
-      // So the send fails CLOSED in that window. Remove the guard and this test
-      // must go red; if it does not, the leak is back.
+      // So the send fails CLOSED in that window.
+      //
+      // ⚠️ THIS CASE NO LONGER ISOLATES THAT GUARD, AND THE SENTENCE THAT STOOD
+      // HERE — "remove the guard and this test must go red; if it does not, the
+      // leak is back" — WAS MEASURED FALSE (#49, round-1 audit). The press below
+      // is a click on `send-button`, and #49 gave the composer two shadows of
+      // the same predicate: the button is `disabled` while the transcript is
+      // pending, and `ChatArea.handleSend` returns on `sendPaused` ahead of the
+      // clear. Either stops this click on its own, so deleting
+      // `App.handleSend`'s `if (transcriptPending) return;` leaves this case
+      // GREEN — measured here against the round-1 fix, and reported the same way
+      // by that round's audit against `19745fb`.
+      //
+      // What this case still pins is the OUTCOME, which is worth pinning: a
+      // press in that window must not produce a turn, whichever layer refuses
+      // it. The guard ITSELF is isolated by the REGENERATE route — Regenerate
+      // calls `handleSend` directly and never touches the composer — in
+      // `composer-pending-transcript.e2e.test.tsx`, where deleting it turns two
+      // cases red.
       toolItems = [{ id: DREAMSHAPER, name: 'DreamShaper', type: 'Checkpoint' }];
       pollQueue = [
         toolCallSnapshot(),

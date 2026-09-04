@@ -982,6 +982,15 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // turn and the wrong conversation's evidence. (It is the ONLY such caller
     // today — grepped, not remembered: `handleInsertResearch`, which the gate
     // comment below still names, was deleted with the research panel.)
+    //
+    // 🔴 THAT SHADOWING IS ALSO WHY THE COMPOSER CANNOT TEST THIS ANY MORE, so
+    // do not read a green composer case as coverage. Measured: deleting this
+    // line leaves every case in `citation-grounding.e2e.test.tsx` and every
+    // composer case in `composer-pending-transcript.e2e.test.tsx` GREEN, and
+    // turns the two REGENERATE cases in that same file red — a submit reaches
+    // the orchestrator under a session whose transcript is another chat's.
+    // Regenerate is the last route that can see this guard; `handleRegenerate`
+    // carries a note saying not to copy the predicate into it.
     if (transcriptPending) return;
 
     // The gate is checked before the dedup here for the same reason as in
@@ -1926,22 +1935,46 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   }, [orchestrator, persist]);
 
   const handleRegenerate = useCallback(async (messageId: string) => {
-    // 🔴 GATE BEFORE THE DESTRUCTIVE SLICE. The slice below removes the
-    // assistant reply from view, and `handleSend` may then refuse — which used
-    // to leave the viewer with their reply deleted and nothing sent. Asking
-    // first means a refused Regenerate changes nothing at all.
+    // 🔴 THIS FUNCTION DESTROYS NOTHING, AND THAT — NOT THE ORDER OF THE CHECKS
+    // BELOW — IS WHAT MAKES A REFUSED REGENERATE FREE. It used to run
+    // `setMessages(prev.slice(0, msgIdx))` before calling `handleSend`, so
+    // every refusal `handleSend` makes left the viewer with the reply removed
+    // and nothing re-sent. Two checks were added here to race ahead of that
+    // slice, and a third refusal — the transcript one — was never added at all,
+    // so a Regenerate pressed while the transcript on screen was not the
+    // selected chat's still took the reply away: measured at `19745fb`, one
+    // click took visible turns 2 → 1 with the submit count unmoved. "Every
+    // refusal must be asked BEFORE anything is destroyed" is now structural
+    // rather than an ordering to maintain.
+    //
+    // 🔴 THE SLICE WAS NEVER THE REPLACE IT READ AS, so removing it changes
+    // nothing a viewer sees on an ACCEPTED regenerate. Measured at `19745fb`:
+    // `handleSend` builds `[...messages, userMsg]` from the PRE-slice closure
+    // and commits it in the same tick, so an accepted regenerate stored
+    // `[u, a, u, a]` — the slice overwritten — with the slice in place. Its only
+    // surviving effect was on the paths where nothing is sent (both refusals
+    // above, `handleSend`'s three, and its silent dedup), where it was pure
+    // loss. Regenerate therefore APPENDS rather than replaces; that is a
+    // separate and older defect, and it is NOT fixed here.
+    //
+    // 🔴 DO NOT ADD A `transcriptPending` COPY TO THIS FUNCTION. Regenerate is
+    // the only send path that does not go through the composer, so
+    // `handleSend`'s transcript refusal is reachable — and therefore testable —
+    // only from here. A copy of the predicate in this function would shadow it
+    // exactly as the composer's `disabled` and `ChatArea.handleSend` already
+    // do, which is how #49's round-1 audit found that guard had silently
+    // stopped being covered by anything. The regenerate case in
+    // `composer-pending-transcript.e2e.test.tsx` is what pins it.
+    //
+    // The two checks below are kept, unchanged. They are not the transcript
+    // refusal and they no longer protect a slice; what they still do is a
+    // control-flow fact rather than a tested one: `handleSend` asks
+    // `isStreaming` before `sendGate`, so dropping them would swallow a gated
+    // Regenerate pressed mid-stream instead of asking for the scope.
     if (sendGate) {
       raiseGate();
       return;
     }
-    // 🔴 AND EVERY OTHER REASON `handleSend` CAN REFUSE, for the same reason.
-    // Gating only on `sendGate` closed half the hole: the slice below also ran
-    // ahead of `handleSend`'s own `!activeSessionId || isStreaming` refusal.
-    // Clicking Regenerate on a reply that is still streaming therefore removed
-    // that reply from view, re-sent nothing, and let the in-flight completion
-    // finish and persist — so the viewer paid Buzz for an answer that vanished
-    // from the screen and came back only on reload. Every refusal must be
-    // asked BEFORE anything is destroyed.
     if (!activeSessionId || isStreaming) return;
 
     // Find the last user message before this assistant message
@@ -1949,8 +1982,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     if (msgIdx < 0) return;
     const lastUserMsg = [...messages.slice(0, msgIdx)].reverse().find((m) => m.role === 'user');
     if (lastUserMsg) {
-      // Remove the assistant message and resend
-      setMessages((prev) => prev.slice(0, msgIdx));
+      // Re-send that message. Nothing is removed from view first — see the
+      // block at the top of this function for why the removal that used to
+      // stand here was loss on every path where it survived at all.
+      //
       // 🔴 RE-ATTACH WHAT THAT MESSAGE WAS GROUNDED IN. Re-sending the CONTENT
       // alone drops the `mentions` stored on the turn, so the model either
       // answers ungrounded or spends a REAL charged round looking up what it had
