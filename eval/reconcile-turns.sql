@@ -38,16 +38,68 @@
 -- record stays `pending` and (b) is reported as (a). The (a) column is therefore
 -- an upper bound on (a), not a measurement of it.
 --
+-- 🔴 A ZERO HERE HAS TWO CAUSES, AND ONLY ONE OF THEM IS GOOD NEWS. The limit
+-- above is about a store that starts failing AFTER submit. If `appStorage.set`
+-- is rejecting AT submit — quota, the host's 64 KB per-value ceiling, an
+-- anonymous viewer — then NO record is written at all, and a store-wide write
+-- failure produces exactly the same `lost_answers = 0` as a healthy app. The
+-- discriminator is not in these columns: it is `turn_records` collapsing below
+-- the number of questions the app is known to have received, together with the
+-- `storage_error` event on the analytics stream. Read `turn_records` FIRST; a
+-- zero in the loss columns means nothing until that count looks plausible.
+--
 -- 🔴 TIMESTAMP CAST. `Message.timestamp` and `TurnRecord.submittedAt` are both
 -- epoch MILLISECONDS (`Date.now()`, `number`). `(x)::timestamptz` on those
 -- ERRORS OUT — the correct read is `to_timestamp(x::bigint / 1000.0)`, which is
 -- what this file uses everywhere.
 --
--- 🔴 DELETED SESSIONS ARE NOT IN HERE, BY CONSTRUCTION. `deleteSession` purges
--- `sensei:turns:<sessionId>:*` alongside the transcript, so a tidied-up chat
--- leaves no records to reconcile. If that purge ever regresses, this query's
+-- 🔴 A MALFORMED `submittedAt` IS TREATED AS OLD, SO THE RECORD STAYS VISIBLE.
+-- The cast is guarded by a digits-only test rather than applied directly, and
+-- the age filter admits a NULL result. Both halves are load-bearing and neither
+-- is defensive boilerplate:
+--   - applied directly, `(value->>'submittedAt')::bigint` RAISES on a
+--     non-numeric value and aborts the whole report — the instrument fails
+--     closed on one bad row;
+--   - without `IS NULL OR`, a row whose cast yielded NULL makes the age
+--     predicate NULL and is dropped, so a loss disappears behind a malformed
+--     field. That is the failure this instrument exists to hunt, hidden by the
+--     instrument itself.
+-- The digit bound also keeps a 30-digit value from overflowing bigint and
+-- raising in its own right. This matches `eval/reconcile-turns.mjs`, which
+-- treats a non-finite `submittedAt` as old for the same stated reason: for a
+-- detector, a spurious row is caught the moment someone reads it, while a
+-- suppressed one is invisible by construction.
+--
+-- 🔴 DELETED SESSIONS ARE ALMOST NEVER IN HERE — "BY CONSTRUCTION" WAS TOO
+-- STRONG. `deleteSession` purges `sensei:turns:<sessionId>:*` alongside the
+-- transcript, so a tidied-up chat normally leaves no records to reconcile. But
+-- the purge is not gated on an in-flight turn, and `deleteSession` does not take
+-- the write-ownership ticket, so a turn that was running keeps `ownsMessageWrite`
+-- and its continuation re-creates the record after the purge. That does NOT by
+-- itself manufacture a loss: the same continuation's `saveMessages` re-creates
+-- `sensei:messages:<sessionId>` carrying the very `messageId` the record names,
+-- so record and transcript come back together and the join still matches. It is
+-- a strong tendency, not a construction — which matters only because the two
+-- read the same way until they don't. If the purge ever regresses, this query's
 -- (a) column climbs at the rate people delete chats — read query A2's
 -- `session_transcript_exists` column before believing a spike.
+--
+-- ⚠️ TWO COPIES OF ONE PREDICATE, AND WHAT ACTUALLY HOLDS THEM TOGETHER.
+-- `eval/reconcile-turns.mjs` is this predicate in JavaScript so the unit suite
+-- can execute it. They are checked against ONE shared fixture set,
+-- `eval/reconcile-fixtures.mjs`: `src/reconcile-turns.seam.test.ts` regenerates
+-- section B's fixture rows and its `EXPECTED:` line from that file and asserts
+-- this file contains them verbatim, so a fixture added on one side goes red.
+-- 🔴 THAT PINS THE INPUTS AND THE DECLARED ANSWER — IT DOES NOT PIN THE SQL'S
+-- SEMANTICS. Postgres is not available in CI, so nothing executes this file; a
+-- wrong predicate here that still declares the right numbers passes every test.
+-- The only thing that settles it is a human running section B and comparing:
+--
+--   psql "$APPS_DB" -f eval/reconcile-turns.sql   # then read section B's row
+--                                                 # against its EXPECTED line
+--
+-- Do that whenever either copy's predicate changes. It needs no production data
+-- — section B is literal fixtures — so it is a safe read on any database.
 -- ============================================================================
 
 \echo '== A. PRODUCTION =='
@@ -59,7 +111,10 @@ WITH turn AS (
     k.key,
     k.value ->> 'sessionId'                    AS session_id,
     k.value ->> 'messageId'                    AS message_id,
-    (k.value ->> 'submittedAt')::bigint        AS submitted_at_ms,
+    CASE
+      WHEN (k.value ->> 'submittedAt') ~ '^-?[0-9]{1,18}$'
+        THEN (k.value ->> 'submittedAt')::bigint
+    END                                        AS submitted_at_ms,
     COALESCE(k.value ->> 'outcome', 'pending') AS outcome,
     CASE
       WHEN jsonb_typeof(k.value -> 'workflowIds') = 'array'
@@ -94,8 +149,10 @@ graded AS (
   FROM turn t
   -- A turn still in flight is not a loss. The bridge's poll deadline is 60 s and
   -- the reply is then replayed to the screen before it is written, so five
-  -- minutes is comfortably past any turn that is going to land.
-  WHERE to_timestamp(t.submitted_at_ms / 1000.0) < now() - interval '5 minutes'
+  -- minutes is comfortably past any turn that is going to land. A record with no
+  -- usable timestamp counts as old rather than being dropped — see the header.
+  WHERE t.submitted_at_ms IS NULL
+     OR to_timestamp(t.submitted_at_ms / 1000.0) < now() - interval '5 minutes'
 )
 SELECT
   count(*)                                                                          AS turn_records,
@@ -120,7 +177,10 @@ WITH turn AS (
     k.user_id,
     k.value ->> 'sessionId'                    AS session_id,
     k.value ->> 'messageId'                    AS message_id,
-    (k.value ->> 'submittedAt')::bigint        AS submitted_at_ms,
+    CASE
+      WHEN (k.value ->> 'submittedAt') ~ '^-?[0-9]{1,18}$'
+        THEN (k.value ->> 'submittedAt')::bigint
+    END                                        AS submitted_at_ms,
     COALESCE(k.value ->> 'outcome', 'pending') AS outcome,
     CASE
       WHEN jsonb_typeof(k.value -> 'workflowIds') = 'array'
@@ -158,7 +218,11 @@ SELECT
       AND s.key               = 'sensei:messages:' || t.session_id
   ) AS session_transcript_exists
 FROM turn t
-WHERE to_timestamp(t.submitted_at_ms / 1000.0) < now() - interval '5 minutes'
+-- Same age rule as query A, including the malformed-timestamp arm. A NULL
+-- `submitted_at` sorts first under `DESC`, which puts any malformed record at
+-- the top of the listing where it will be noticed.
+WHERE (t.submitted_at_ms IS NULL
+       OR to_timestamp(t.submitted_at_ms / 1000.0) < now() - interval '5 minutes')
   AND NOT EXISTS (
     SELECT 1 FROM msg m
     WHERE m.block_instance_id = t.block_instance_id
@@ -175,27 +239,33 @@ LIMIT 100;
 -- 🔴 A ZERO FROM QUERY A IS INDISTINGUISHABLE FROM A QUERY WIRED TO NOTHING
 -- until this has been watched return a NON-ZERO count. It is query A's grading
 -- body with the two source CTEs replaced by literal fixtures and nothing else
--- changed, so it exercises the same joins, the same `to_timestamp` cast and the
--- same FILTER predicates against a store that is known to contain exactly one
--- lost answer.
+-- changed, so it exercises the same joins, the same guarded cast, the same
+-- `to_timestamp` and the same FILTER predicates against a store that is known to
+-- contain exactly three lost answers.
 --
--- EXPECTED: turn_records = 4, lost_answers = 1, a_continuation_never_ran = 1,
---           accepted_discarded = 1, lost_never_submitted = 1, everything else 0.
+-- 🔴 IT IS ALSO THE CROSS-CHECK AGAINST THE JAVASCRIPT COPY. The fixture rows
+-- and the EXPECTED line below are GENERATED from `eval/reconcile-fixtures.mjs`
+-- and asserted verbatim by `src/reconcile-turns.seam.test.ts`, which runs
+-- `eval/reconcile-turns.mjs` over the same rows and requires the same numbers.
+-- Editing either block by hand fails that test. Running THIS query and reading
+-- its row against the EXPECTED line is the step no test can perform, because
+-- Postgres is not available in CI — it is the only check on the SQL's semantics.
 --
--- The four fixture turns are, in order: one that landed (must NOT count), one
--- charged and never persisted (the loss), one refused before any submit (no
--- workflow id — must not count as an answer), and one discarded by the
--- write-ownership gate (a known trade, counted apart).
---
--- ⚠️ A IS THE QUERY THAT RUNS IN PRODUCTION AND B IS A COPY OF ITS BODY. Editing
--- one without the other silently makes the control stop controlling anything;
--- change them together.
+-- The last two fixture turns carry a malformed `submittedAt` (absent, and
+-- non-numeric). Against the pre-2026-09-04 form of this query the first was
+-- silently dropped and the second RAISED, so they are the negative control for
+-- the guarded cast as well as fixtures.
 -- ============================================================================
 
-\echo '== B. POSITIVE CONTROL (expect lost_answers = 1) =='
+\echo '== B. POSITIVE CONTROL (expect lost_answers = 3) =='
+
+-- >>> SHARED FIXTURE EXPECTATION (generated from eval/reconcile-fixtures.mjs)
+-- EXPECTED: turn_records=6 lost_answers=3 a_continuation_never_ran=2 b_write_rejected=1 c_overwritten=0 accepted_discarded=1 lost_never_submitted=1
+-- <<< SHARED FIXTURE EXPECTATION
 
 WITH kv(block_instance_id, user_id, key, value) AS (
   VALUES
+-- >>> SHARED FIXTURE ROWS (generated from eval/reconcile-fixtures.mjs)
     ('bi', 1, 'sensei:turns:session-A:1000000000000:msg-landed',
        '{"sessionId":"session-A","messageId":"msg-landed","submittedAt":1000000000000,"workflowIds":["wf-1"],"outcome":"saved"}'::jsonb),
     ('bi', 1, 'sensei:turns:session-A:1000000001000:msg-lost',
@@ -204,8 +274,13 @@ WITH kv(block_instance_id, user_id, key, value) AS (
        '{"sessionId":"session-A","messageId":"msg-never-sent","submittedAt":1000000002000,"workflowIds":[],"outcome":"pending"}'::jsonb),
     ('bi', 1, 'sensei:turns:session-A:1000000003000:msg-superseded',
        '{"sessionId":"session-A","messageId":"msg-superseded","submittedAt":1000000003000,"workflowIds":["wf-3"],"outcome":"discarded"}'::jsonb),
+    ('bi', 1, 'sensei:turns:session-A:1000000004000:msg-no-timestamp',
+       '{"sessionId":"session-A","messageId":"msg-no-timestamp","workflowIds":["wf-4"],"outcome":"pending"}'::jsonb),
+    ('bi', 1, 'sensei:turns:session-A:1000000005000:msg-bad-timestamp',
+       '{"sessionId":"session-A","messageId":"msg-bad-timestamp","submittedAt":"not-a-number","workflowIds":["wf-5"],"outcome":"write-failed"}'::jsonb),
     ('bi', 1, 'sensei:messages:session-A',
        '[{"id":"msg-user","role":"user","timestamp":1000000000000},{"id":"msg-landed","role":"assistant","timestamp":1000000000500}]'::jsonb)
+-- <<< SHARED FIXTURE ROWS
 ),
 turn AS (
   SELECT
@@ -214,7 +289,10 @@ turn AS (
     k.key,
     k.value ->> 'sessionId'                    AS session_id,
     k.value ->> 'messageId'                    AS message_id,
-    (k.value ->> 'submittedAt')::bigint        AS submitted_at_ms,
+    CASE
+      WHEN (k.value ->> 'submittedAt') ~ '^-?[0-9]{1,18}$'
+        THEN (k.value ->> 'submittedAt')::bigint
+    END                                        AS submitted_at_ms,
     COALESCE(k.value ->> 'outcome', 'pending') AS outcome,
     CASE
       WHEN jsonb_typeof(k.value -> 'workflowIds') = 'array'
@@ -247,7 +325,8 @@ graded AS (
         AND m.message_id        = t.message_id
     ) AS lost
   FROM turn t
-  WHERE to_timestamp(t.submitted_at_ms / 1000.0) < now() - interval '5 minutes'
+  WHERE t.submitted_at_ms IS NULL
+     OR to_timestamp(t.submitted_at_ms / 1000.0) < now() - interval '5 minutes'
 )
 SELECT
   count(*)                                                                          AS turn_records,
