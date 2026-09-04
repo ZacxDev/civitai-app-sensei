@@ -329,8 +329,12 @@ describe('grounded citations reach the screen', () => {
       await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
       // The transcript came back…
       await waitFor(() => expect(screen.getByText(/is great/)).toBeTruthy());
-      // …and so did its link.
-      expect(anchorFor(DREAMSHAPER)).toBeTruthy();
+      // …and so did its link. 🔴 Waited for, not sampled: the text renders before
+      // the grounded set is restored, so a synchronous anchor assertion here is
+      // the same race that was measured flaky in the sibling test below. Same
+      // shape, same fix — a timeout here still fails, so waiting cannot mask a
+      // link that never comes back.
+      await waitFor(() => expect(anchorFor(DREAMSHAPER)).toBeTruthy());
       // The full link contract, not merely the presence of an anchor — a
       // restored link that lost `rel` would be a quieter regression than a
       // missing one.
@@ -369,8 +373,27 @@ describe('grounded citations reach the screen', () => {
       render(<App />);
       await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
       await waitFor(() => expect(screen.getByText(/are great/)).toBeTruthy());
-      // The grounded one survives the reload…
-      expect(anchorFor(DREAMSHAPER)).toBeTruthy();
+      // 🔴 WAIT FOR THE ANCHOR, NOT FOR THE TEXT. The text is a PROXY, and on a
+      // reload it lands FIRST. The cause is not "restored a tick later" — it is
+      // that the session is loaded TWICE: `App.tsx`'s mount path commits
+      // `setMessages` carrying NO grounding, and the `[activeSessionId]` effect
+      // then does the same read PLUS `recordGrounded`. `app-loading` clears in
+      // between, so a real committed render exists at `msgs=2 grounded=0
+      // loading=false` and BOTH preceding waits can resolve inside it. Measured
+      // flaky 1 run in 12 here, and independently 1 in 15 at the sibling site.
+      //
+      // 🔴 WHAT THIS DOES AND DOES NOT BUY, because an earlier version of this
+      // comment overstated it and was refuted by measurement. It claimed the
+      // CARDOS assertion below "would have passed against a build that grounded
+      // nothing at all". IT WOULD NOT: the DREAMSHAPER assertion sat immediately
+      // above it and threw FIRST, so CARDOS was never reached — the race made
+      // this test flaky RED, never silently green, and both mutants (gate
+      // disabled, restore grounding nothing) killed the old CARDOS line too.
+      // What is true is narrower and still worth the wait: CARDOS is not
+      // SELF-SUFFICIENT — "no anchor" only means "the gate refused it" once
+      // something establishes that anchors render here at all. That guarantee is
+      // the line below, and before the wait it was racy rather than reliable.
+      await waitFor(() => expect(anchorFor(DREAMSHAPER)).toBeTruthy());
       // …and the invented one is still refused. Its TEXT is still readable —
       // refusing a link keeps the words, it does not delete the sentence.
       expect(anchorFor(CARDOS)).toBeNull();
