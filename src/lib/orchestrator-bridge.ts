@@ -409,6 +409,7 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       request: ChatCompletionRequest,
       onChunk?: (chunk: string) => void,
       signal?: AbortSignal,
+      onWorkflow?: (workflowId: string) => void,
     ): Promise<ChatCompletionResponse> {
       const body = buildChatCompletionBody(request);
 
@@ -467,6 +468,23 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       }
 
       lastWorkflowId = workflowId;
+
+      // 🔴 REPORTED HERE — AT THE CHARGE, NOT AT THE RESOLUTION. The submit
+      // above is the moment Buzz is spent; everything below it is polling that
+      // may never finish for this client. A caller recording what the viewer
+      // paid for has to learn the id at this line, because the returned
+      // response only reaches it on the turns that succeeded.
+      //
+      // 🔴 ITS FAILURE IS SWALLOWED, AND ON THIS PATH THAT IS NOT DEFENSIVE
+      // BOILERPLATE. This is the money path with a charge already made: a
+      // diagnostic callback that threw here would abandon a workflow the viewer
+      // has been billed for, converting a bookkeeping bug into a lost paid
+      // answer — the precise failure the callback was added to measure.
+      try {
+        onWorkflow?.(workflowId);
+      } catch {
+        // Nothing to report to: the caller IS the reporter.
+      }
 
       // 🔴 THE SUBMIT REPLY NEVER CARRIES `textOutputs` — the step submit passes
       // no `wait`, so it is a freshly-queued workflow, and only the POLL is
