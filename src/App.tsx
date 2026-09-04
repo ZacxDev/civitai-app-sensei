@@ -209,6 +209,17 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   // 0.1.4 consent bug and takes a session of measurement to tell apart. Now every
   // one of them goes through `persist` and lands here.
   const [storageError, setStorageError] = useState<string | null>(null);
+  // Whether the LAST message read issued for `activeSessionId` rejected.
+  //
+  // 🔴 IT IS NOT "IS THE TRANSCRIPT PENDING" — that question is already answered
+  // by `messagesSessionId !== activeSessionId` and must keep exactly one answer
+  // (see `transcriptPending`). This cell answers only WHY the pair disagrees, so
+  // the viewer can be told "still opening" or "could not be opened" rather than
+  // one sentence that is false on one of the two paths. Written in one place,
+  // the `[activeSessionId]` load effect: cleared as that effect starts a read,
+  // set in that read's `catch`. A second writer is how it would drift out of
+  // step with the pair it annotates.
+  const [transcriptLoadFailed, setTranscriptLoadFailed] = useState(false);
   // Attaching a model can fail for reasons that are NOT storage and NOT the
   // send: the host declined to open the picker, the resolve 429'd, or the clamp
   // withheld the resource. Given its own cell so the sentence can be accurate —
@@ -481,6 +492,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
   // ---- Load messages when session changes ----
   useEffect(() => {
+    // Cleared for EVERY run of this effect, including the no-session branch
+    // below: this cell describes the read this effect is about to issue, so a
+    // verdict from the previous session must not survive into the next one.
+    setTranscriptLoadFailed(false);
     if (!activeSessionId) { setMessages([]); setMessagesSessionId(null); return; }
     let cancelled = false;
     sessionsLib
@@ -511,6 +526,12 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         if (cancelled) return;
         const detail = e instanceof Error && e.message ? e.message : 'storage is unavailable';
         setStorageError(`Couldn't open that chat — ${detail}.`);
+        // 🔴 THE BANNER ALONE IS NOT ENOUGH, AND IT IS DISMISSIBLE. `storageError`
+        // is app-level: `persist` writes it from eight call sites, the boot load
+        // writes it, and the banner's own Dismiss clears it. So the composer
+        // cannot read it to learn that THIS session failed to open. This cell
+        // can be, and it outlives the banner.
+        setTranscriptLoadFailed(true);
       });
     return () => { cancelled = true; };
   }, [activeSessionId, applyLoadedMessages]);
@@ -952,6 +973,42 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     [groundedBySession, messagesSessionId],
   );
 
+  /**
+   * The transcript on screen is NOT the selected conversation's.
+   *
+   * 🔴 ONE PLACE, READ BY BOTH THE REFUSAL AND THE CONTROL. `handleSend`'s guard
+   * below open-coded this comparison, and the composer needed the same question
+   * answered to stop offering a send that guard will refuse. Two spellings of
+   * one predicate drift — the composer-clear effect above carries the same
+   * lesson from the same file — so the predicate is named here and neither
+   * reader re-derives it. Deriving it (rather than storing it) also means it
+   * cannot fall out of step with `messagesSessionId`, which is the pair
+   * `applyLoadedMessages` writes in one batch.
+   */
+  const transcriptPending = messagesSessionId !== activeSessionId;
+
+  /**
+   * What to TELL the viewer about a paused send, or `null` when it is not paused.
+   *
+   * 🔴 THE TWO WINDOWS READ DIFFERENTLY BECAUSE THEY ARE DIFFERENT FACTS, and
+   * one sentence covering both would be false on one of them. 'loading' is the
+   * switch window — one storage read long, and it ends by itself. 'failed' is the
+   * read having REJECTED, which ends only when the viewer opens another
+   * conversation; telling them it is "still opening" would be the same class of
+   * lie the gate banner's own note refuses ("say only what is true on every
+   * path"). Both disable the control, because unlike `sendGate` there is nothing
+   * here for the viewer to grant — asking the host for something would be a
+   * request nobody can satisfy.
+   *
+   * Derived, never stored, for the reason `sendGate` is: the moment the read
+   * lands this is `null` again with no bookkeeping and no banner to clear.
+   */
+  const sendPaused: null | 'loading' | 'failed' = !transcriptPending
+    ? null
+    : transcriptLoadFailed
+      ? 'failed'
+      : 'loading';
+
   const selectSession = useCallback(async (id: string) => {
     // The `[activeSessionId]` effect above loads the messages; doing it here too
     // was a second concurrent read of the same key for no benefit. Setting the id
@@ -990,13 +1047,30 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // the viewer is no longer in. That is the exact inversion the citation gate
     // exists to prevent ("the ids THIS conversation's tool rounds returned"), so
     // it fails CLOSED here rather than rendering a link on someone else's
-    // evidence. Same predicate the grounded selector already computes.
+    // evidence. `transcriptPending` is that comparison, named once above.
     //
     // 🔴 THIS GUARD IS WHY THE SELECTOR MAY KEY ON `messagesSessionId` AT ALL.
     // Without it, keying the gate to the displayed transcript turns a cosmetic
     // fail-CLOSED bug into a fail-OPEN one on the send path. They ship together;
     // do not remove one and keep the other.
-    if (messagesSessionId !== activeSessionId) return;
+    //
+    // 🔴 THE COMPOSER NOW DISABLES ON THE SAME VALUE, AND THAT DOES NOT MAKE
+    // THIS REDUNDANT. `disabled` is an affordance on ONE control;
+    // `handleRegenerate` calls this function directly and never touches the
+    // composer, so on that path this is again the only thing standing between a
+    // turn and the wrong conversation's evidence. (It is the ONLY such caller
+    // today — grepped, not remembered: `handleInsertResearch`, which the gate
+    // comment below still names, was deleted with the research panel.)
+    //
+    // 🔴 THAT SHADOWING IS ALSO WHY THE COMPOSER CANNOT TEST THIS ANY MORE, so
+    // do not read a green composer case as coverage. Measured: deleting this
+    // line leaves every case in `citation-grounding.e2e.test.tsx` and every
+    // composer case in `composer-pending-transcript.e2e.test.tsx` GREEN, and
+    // turns the two REGENERATE cases in that same file red — a submit reaches
+    // the orchestrator under a session whose transcript is another chat's.
+    // Regenerate is the last route that can see this guard; `handleRegenerate`
+    // carries a note saying not to copy the predicate into it.
+    if (transcriptPending) return;
 
     // The gate is checked before the dedup here for the same reason as in
     // `ChatArea` — a silent dedup return ahead of it re-hides the whole defect.
@@ -1875,7 +1949,11 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     }
   }, [
     activeSessionId,
-    messagesSessionId,
+    // Replaces `messagesSessionId`, which this callback no longer reads: the
+    // refusal above now reads the named predicate, and this is the value it
+    // depends on. Derived from `messagesSessionId` and `activeSessionId`, both
+    // of which move it, so nothing is lost.
+    transcriptPending,
     isStreaming,
     messages,
     settings,
@@ -1967,22 +2045,46 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   }, [orchestrator, persist]);
 
   const handleRegenerate = useCallback(async (messageId: string) => {
-    // 🔴 GATE BEFORE THE DESTRUCTIVE SLICE. The slice below removes the
-    // assistant reply from view, and `handleSend` may then refuse — which used
-    // to leave the viewer with their reply deleted and nothing sent. Asking
-    // first means a refused Regenerate changes nothing at all.
+    // 🔴 THIS FUNCTION DESTROYS NOTHING, AND THAT — NOT THE ORDER OF THE CHECKS
+    // BELOW — IS WHAT MAKES A REFUSED REGENERATE FREE. It used to run
+    // `setMessages(prev.slice(0, msgIdx))` before calling `handleSend`, so
+    // every refusal `handleSend` makes left the viewer with the reply removed
+    // and nothing re-sent. Two checks were added here to race ahead of that
+    // slice, and a third refusal — the transcript one — was never added at all,
+    // so a Regenerate pressed while the transcript on screen was not the
+    // selected chat's still took the reply away: measured at `19745fb`, one
+    // click took visible turns 2 → 1 with the submit count unmoved. "Every
+    // refusal must be asked BEFORE anything is destroyed" is now structural
+    // rather than an ordering to maintain.
+    //
+    // 🔴 THE SLICE WAS NEVER THE REPLACE IT READ AS, so removing it changes
+    // nothing a viewer sees on an ACCEPTED regenerate. Measured at `19745fb`:
+    // `handleSend` builds `[...messages, userMsg]` from the PRE-slice closure
+    // and commits it in the same tick, so an accepted regenerate stored
+    // `[u, a, u, a]` — the slice overwritten — with the slice in place. Its only
+    // surviving effect was on the paths where nothing is sent (both refusals
+    // above, `handleSend`'s three, and its silent dedup), where it was pure
+    // loss. Regenerate therefore APPENDS rather than replaces; that is a
+    // separate and older defect, and it is NOT fixed here.
+    //
+    // 🔴 DO NOT ADD A `transcriptPending` COPY TO THIS FUNCTION. Regenerate is
+    // the only send path that does not go through the composer, so
+    // `handleSend`'s transcript refusal is reachable — and therefore testable —
+    // only from here. A copy of the predicate in this function would shadow it
+    // exactly as the composer's `disabled` and `ChatArea.handleSend` already
+    // do, which is how #49's round-1 audit found that guard had silently
+    // stopped being covered by anything. The regenerate case in
+    // `composer-pending-transcript.e2e.test.tsx` is what pins it.
+    //
+    // The two checks below are kept, unchanged. They are not the transcript
+    // refusal and they no longer protect a slice; what they still do is a
+    // control-flow fact rather than a tested one: `handleSend` asks
+    // `isStreaming` before `sendGate`, so dropping them would swallow a gated
+    // Regenerate pressed mid-stream instead of asking for the scope.
     if (sendGate) {
       raiseGate();
       return;
     }
-    // 🔴 AND EVERY OTHER REASON `handleSend` CAN REFUSE, for the same reason.
-    // Gating only on `sendGate` closed half the hole: the slice below also ran
-    // ahead of `handleSend`'s own `!activeSessionId || isStreaming` refusal.
-    // Clicking Regenerate on a reply that is still streaming therefore removed
-    // that reply from view, re-sent nothing, and let the in-flight completion
-    // finish and persist — so the viewer paid Buzz for an answer that vanished
-    // from the screen and came back only on reload. Every refusal must be
-    // asked BEFORE anything is destroyed.
     if (!activeSessionId || isStreaming) return;
 
     // Find the last user message before this assistant message
@@ -1990,8 +2092,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     if (msgIdx < 0) return;
     const lastUserMsg = [...messages.slice(0, msgIdx)].reverse().find((m) => m.role === 'user');
     if (lastUserMsg) {
-      // Remove the assistant message and resend
-      setMessages((prev) => prev.slice(0, msgIdx));
+      // Re-send that message. Nothing is removed from view first — see the
+      // block at the top of this function for why the removal that used to
+      // stand here was loss on every path where it survived at all.
+      //
       // 🔴 RE-ATTACH WHAT THAT MESSAGE WAS GROUNDED IN. Re-sending the CONTENT
       // alone drops the `mentions` stored on the turn, so the model either
       // answers ungrounded or spends a REAL charged round looking up what it had
@@ -2276,6 +2380,44 @@ export function App({ deps: depsOverride }: AppProps = {}) {
                     </Button>
                   </div>
                 )}
+                {sendPaused && (
+                  // Rendered from the DERIVED value for the same reason as the
+                  // gate banner above: the switch window ends by itself, and
+                  // nothing has to remember to take this down.
+                  //
+                  // 🔴 NO ACTION BUTTON, DELIBERATELY, AND THAT IS THE
+                  // DIFFERENCE FROM THE GATE BANNER. The gate offers "Sign in" /
+                  // "Grant permission" because the viewer can supply what is
+                  // missing. Here they cannot: 'loading' resolves on its own,
+                  // and the only route out of 'failed' is opening a
+                  // conversation — which the sidebar beside this already is. A
+                  // button that re-issues the read would be a second way to
+                  // reach the same state and a second thing to keep in step
+                  // with it; not taken here.
+                  <div
+                    data-testid={
+                      sendPaused === 'failed'
+                        ? 'transcript-failed-notice'
+                        : 'transcript-loading-notice'
+                    }
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 12,
+                      padding: '10px 16px',
+                      borderBottom: `1px solid ${token.border}`,
+                      background: token.primaryLight,
+                      fontSize: 13,
+                      flexShrink: 0,
+                    }}
+                  >
+                    <span>
+                      {sendPaused === 'failed'
+                        ? "This chat didn't open, so sending is paused. Pick a chat from the list to carry on."
+                        : 'Opening this chat…'}
+                    </span>
+                  </div>
+                )}
                 {mentionError && (
                   <div
                     data-testid="mention-error"
@@ -2361,6 +2503,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
                   onSend={handleSend}
                   sendGate={sendGate}
                   onGatedSend={raiseGate}
+                  sendPaused={sendPaused}
                   onStopStream={handleStopStream}
                   onRegenerate={handleRegenerate}
                   pendingMentions={pendingMentions}

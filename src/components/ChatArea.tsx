@@ -55,6 +55,29 @@ export interface ChatAreaProps {
   /** Ask the host for whatever `sendGate` says is missing. Required for the same reason. */
   onGatedSend: () => void;
   /**
+   * Non-null when the parent will REFUSE a send because the transcript on screen
+   * is not the selected conversation's — `'loading'` while that read is in
+   * flight, `'failed'` once it has rejected.
+   *
+   * 🔴 THIS IS THE PARENT'S REFUSAL MADE VISIBLE, NOT A SECOND COPY OF IT.
+   * `App.handleSend` refuses on exactly this state and keeps doing so; without
+   * this prop the composer had no way to know, so it stayed live, cleared the
+   * box on press, and the parent then returned — the viewer's question vanished
+   * with no bubble, no banner and no Buzz spent. That is the same "Send is dead"
+   * signature the `sendGate` comments below are about, reached through a
+   * different door.
+   *
+   * 🔴 UNLIKE `sendGate` THIS DISABLES RATHER THAN ASKING. The gate has
+   * something the viewer can supply; this does not — so a control that asks for
+   * nothing and does nothing would be worse than a greyed one.
+   *
+   * 🔴 REQUIRED, like `sendGate` and `groundedModelIds`. The safe-looking
+   * default is `null` ("sending is fine"), which is precisely the silent
+   * discard, so a caller who forgets it must fail to compile rather than ship it
+   * back.
+   */
+  sendPaused: 'loading' | 'failed' | null;
+  /**
    * The model ids THIS conversation's tool rounds have returned, accumulated
    * across turns. Forwarded to every bubble; see `lib/grounding.ts`.
    *
@@ -74,6 +97,7 @@ export function ChatArea({
   onRegenerate,
   sendGate,
   onGatedSend,
+  sendPaused,
   pendingMentions,
   onPickMention,
   onRemoveMention,
@@ -118,6 +142,14 @@ export function ChatArea({
       return;
     }
 
+    // 🔴 BEFORE THE CLEAR, FOR THE SAME REASON THE GATE IS, AND IT COVERS THE
+    // KEYBOARD. Send is `disabled` while this is set, but `disabled` is not on
+    // the Enter path — `handleKeyDown` calls straight into here. Without this,
+    // Enter still cleared the box and handed the parent a send it refuses, which
+    // is the whole defect with the mouse taken out of it. The viewer keeps their
+    // text and the notice above the composer says why nothing happened.
+    if (sendPaused) return;
+
     const lastMsg = messages[messages.length - 1];
     if (lastMsg?.role === 'user' && lastMsg.content === trimmed) return;
 
@@ -127,7 +159,7 @@ export function ChatArea({
     // Reset after a tick so the next event-loop turn sees the guard cleared
     // (isStreaming will take over as the primary guard once the request starts)
     setTimeout(() => { sendingRef.current = false; }, 0);
-  }, [input, isStreaming, messages, onSend, sendGate, onGatedSend]);
+  }, [input, isStreaming, messages, onSend, sendGate, onGatedSend, sendPaused]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -327,7 +359,12 @@ export function ChatArea({
           ) : (
             <Button
               onClick={handleSend}
-              disabled={!input.trim() || isStreaming}
+              // 🔴 `sendPaused` DISABLES; `sendGate` DOES NOT. See that prop's
+              // note — the difference is whether the viewer has anything to
+              // supply. This is the affordance; the refusal itself lives in
+              // `handleSend` here and in `App.handleSend`, both of which still
+              // stand if this attribute is ever dropped.
+              disabled={!input.trim() || isStreaming || sendPaused !== null}
               data-testid="send-button"
             >
               Send

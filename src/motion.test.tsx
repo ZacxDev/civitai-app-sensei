@@ -86,6 +86,7 @@ describe('🔴 prefers-reduced-motion is honoured, not merely declared', () => {
       onRemoveMention: vi.fn(),
       sendGate: null,
       onGatedSend: vi.fn(),
+      sendPaused: null,
       groundedModelIds: new Set<string>(),
     };
 
@@ -137,6 +138,7 @@ describe('🔴 prefers-reduced-motion is honoured, not merely declared', () => {
         onRemoveMention: vi.fn(),
         sendGate: null,
         onGatedSend: vi.fn(),
+        sendPaused: null,
         groundedModelIds: new Set<string>(),
       };
 
