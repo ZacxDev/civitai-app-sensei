@@ -59,9 +59,12 @@ export interface AppProps {
  * another conversation's key.
  *
  * Both halves have to travel together. Fixing only the key would make Stop write
- * the VIEWED session's array (already reset to `[]` by the switch) under the
- * STREAMING session's key — which is not a smaller bug than the original, it is
- * a larger one: it would delete the transcript instead of misfiling it. So the
+ * the VIEWED session's array under the STREAMING session's key — which is not a
+ * smaller bug than the original, it is a larger one: it would delete the
+ * transcript instead of misfiling it. (This used to read "already reset to `[]`
+ * by the switch". That was never true — `selectSession` does not clear
+ * `messages` — and the falsehood matters because it is the same premise that
+ * hid the switch-route half-state.) So the
  * turn carries the id it was sent in AND the array it is entitled to persist.
  *
  * A ref is the transport, not the source: every field is written from inside
@@ -175,6 +178,26 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    * resolves. Pre-existing and measured unchanged by the loader fix. See the
    * note at the switch call site.
    */
+  /**
+   * WHICH session the transcript currently in `messages` belongs to.
+   *
+   * 🔴 THE GROUNDED SET MUST FOLLOW THE TRANSCRIPT ON SCREEN, NOT THE SELECTED
+   * ID. `selectSession` is `setActiveSessionId` and nothing else — `messages` is
+   * deliberately NOT cleared, so the outgoing conversation stays readable while
+   * the next one loads. But `groundedModelIds` used to key on
+   * `activeSessionId`, so for the length of that read the OUTGOING transcript
+   * was rendered against the INCOMING session's (empty) grounded set and every
+   * citation in it turned to plain text. Measured on both arms of #45, so it
+   * predates that fix and was not caused by it.
+   *
+   * 🔴 THE REJECT CASE IS THE ONE THAT MADE THIS WORTH FIXING: if that read
+   * FAILS, the catch shows an error and leaves the outgoing transcript on
+   * screen — previously with its links refused INDEFINITELY, not for a tick.
+   *
+   * Keyed here, both flip in the SAME batch (`applyLoadedMessages` writes both),
+   * so the pair can never disagree.
+   */
+  const [messagesSessionId, setMessagesSessionId] = useState<string | null>(null);
   const [groundedBySession, setGroundedBySession] = useState<Record<string, readonly string[]>>({});
   const [loading, setLoading] = useState(true);
   // 🔴 A REJECTED STORAGE CALL MUST NOT BE INDISTINGUISHABLE FROM SUCCESS. Every
@@ -335,6 +358,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const applyLoadedMessages = useCallback(
     (sessionId: string, msgs: Message[]) => {
       setMessages(msgs);
+      setMessagesSessionId(sessionId);
       recordGrounded(sessionId, sessionsLib.groundedIdsFromMessages(msgs));
     },
     [recordGrounded],
@@ -456,7 +480,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
   // ---- Load messages when session changes ----
   useEffect(() => {
-    if (!activeSessionId) { setMessages([]); return; }
+    if (!activeSessionId) { setMessages([]); setMessagesSessionId(null); return; }
     let cancelled = false;
     sessionsLib
       .getMessages(depsRef.current.appStorage, activeSessionId)
@@ -469,17 +493,17 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // fix it. Both go through `applyLoadedMessages`, so neither LOADER can
         // commit a transcript without its grounding.
         //
-        // 🔴 THAT IS NOT THE SAME AS "no half-state on this route", and an
-        // earlier version of this comment claimed the wider thing. `selectSession`
-        // moves `activeSessionId` WITHOUT clearing `messages`, while
-        // `groundedModelIds` keys on the new id — so from the click until this
-        // read resolves, the PREVIOUS conversation's transcript is on screen
-        // against the NEW conversation's (empty) grounded set, and its citations
-        // render as plain text. Measured identically before and after this fix,
-        // so it is pre-existing and untouched here, not introduced. Worse, if
-        // this read REJECTS the catch below leaves that state on screen
-        // indefinitely rather than for a tick. Both are recorded as open; what
-        // this function fixes is the BOOT route's split commit.
+        // 🔴 THE SWITCH-ROUTE HALF-STATE IS NOW FIXED TOO — this comment used to
+        // say it was open, and leaving that sentence here after fixing it would
+        // read as an instruction to revert. `selectSession` still moves
+        // `activeSessionId` WITHOUT clearing `messages`, deliberately, so the
+        // outgoing conversation stays readable while this read runs. What
+        // changed is that `groundedModelIds` no longer keys on the SELECTED id:
+        // it keys on `messagesSessionId`, the session the transcript ON SCREEN
+        // belongs to, which this function sets in the same batch as the messages.
+        // So the pair cannot disagree, and the durable version — this read
+        // REJECTING and leaving the outgoing transcript stripped of its links
+        // indefinitely — cannot happen either.
         applyLoadedMessages(activeSessionId, msgs);
       })
       .catch((e: unknown) => {
@@ -555,6 +579,9 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setSessions(next);
     setActiveSessionId(session.id);
     setMessages([]);
+    // The empty transcript BELONGS to the new session — pairing it here keeps
+    // the invariant true for the window before the load effect resolves.
+    setMessagesSessionId(session.id);
     // 🔴 THE COMPOSER CLEAR USED TO LIVE HERE AND HAS MOVED to the
     // `[activeSessionId]` effect above — one rule, one place. It was correct
     // here and absent from `selectSession` and `deleteSession`, which move the
@@ -841,8 +868,8 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    * `linkHref`.
    */
   const groundedModelIds = useMemo(
-    () => new Set(activeSessionId ? (groundedBySession[activeSessionId] ?? []) : []),
-    [groundedBySession, activeSessionId],
+    () => new Set(messagesSessionId ? (groundedBySession[messagesSessionId] ?? []) : []),
+    [groundedBySession, messagesSessionId],
   );
 
   const selectSession = useCallback(async (id: string) => {
@@ -873,6 +900,23 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    */
   const handleSend = useCallback(async (content: string, groundedWith?: ResolvedResource[]) => {
     if (!activeSessionId || isStreaming) return;
+
+    // 🔴 REFUSE WHILE THE TRANSCRIPT ON SCREEN IS NOT THE SELECTED CONVERSATION'S.
+    // A send is written under `activeSessionId` and grounded under it, but it is
+    // APPENDED to the array on screen and rendered against
+    // `groundedBySession[messagesSessionId]`. While those two disagree — the
+    // window between clicking a session and its messages arriving, and durably
+    // if that read REJECTS — the new turn would be vouched for by a conversation
+    // the viewer is no longer in. That is the exact inversion the citation gate
+    // exists to prevent ("the ids THIS conversation's tool rounds returned"), so
+    // it fails CLOSED here rather than rendering a link on someone else's
+    // evidence. Same predicate the grounded selector already computes.
+    //
+    // 🔴 THIS GUARD IS WHY THE SELECTOR MAY KEY ON `messagesSessionId` AT ALL.
+    // Without it, keying the gate to the displayed transcript turns a cosmetic
+    // fail-CLOSED bug into a fail-OPEN one on the send path. They ship together;
+    // do not remove one and keep the other.
+    if (messagesSessionId !== activeSessionId) return;
 
     // The gate is checked before the dedup here for the same reason as in
     // `ChatArea` — a silent dedup return ahead of it re-hides the whole defect.
@@ -1720,6 +1764,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     }
   }, [
     activeSessionId,
+    messagesSessionId,
     isStreaming,
     messages,
     settings,
