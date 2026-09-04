@@ -146,16 +146,27 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    * would refuse every follow-up question — which is most of what this app is
    * for.
    *
-   * ⚠️ IN MEMORY ONLY, AND THE CONSEQUENCE IS DELIBERATE RATHER THAN OVERLOOKED.
-   * Tool results are not persisted (see `types.ts`: `role:'tool'` is a
-   * transcript role, not a stored one), so a RELOADED conversation starts with
-   * an empty set and its stored model links render as plain text. That is the
-   * conservative direction — a link we can no longer prove is refused rather
-   * than trusted — and it is pinned by a test so it cannot change silently. The
-   * fix, if the lost affordance turns out to matter, is to carry the ids on the
-   * stored assistant message (they would ride the write that already happens,
-   * so it costs no extra storage call); it is not done here because it widens a
-   * mechanical guard into a serialization change.
+   * ⚠️ IN MEMORY, BUT REBUILT FROM STORAGE ON LOAD — and this paragraph used to
+   * say the opposite, in three separate sentences, long after they stopped being
+   * true. It read: a reloaded conversation "starts with an empty set and its
+   * stored model links render as plain text", that this was "pinned by a test so
+   * it cannot change silently", and that carrying the ids on the stored
+   * assistant message "is not done here". **All three are false.** That remedy
+   * WAS taken (#39): `Message.grounded` persists the ids, and
+   * `groundedIdsFromMessages` rebuilds the set on every load, so a reloaded
+   * conversation keeps its links. The test that "pinned" the old behaviour now
+   * asserts the inverse.
+   *
+   * 🔴 WHAT IS STILL TRUE, and it is the part worth keeping: tool RESULTS are
+   * not persisted (`types.ts` — `role:'tool'` is a transcript role, not a stored
+   * one). Only the ids ride the assistant turn. So the conservative direction is
+   * intact — an id no conversation ever grounded is still refused — while an id
+   * this conversation did ground survives a reload.
+   *
+   * 🔴 BOTH LOADERS MUST COMMIT THIS WITH THE MESSAGES, IN ONE BATCH. Splitting
+   * them put a real render on screen showing the transcript with its citations
+   * as plain text; see `applyLoadedMessages`, which is why there is exactly one
+   * function performing both writes.
    */
   const [groundedBySession, setGroundedBySession] = useState<Record<string, readonly string[]>>({});
   const [loading, setLoading] = useState(true);
