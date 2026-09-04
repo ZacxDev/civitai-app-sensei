@@ -306,6 +306,111 @@ describe('grounded citations reach the screen', () => {
     })();
   });
 
+  it('🔴 NO COMMIT EVER SHOWS THE TRANSCRIPT WITHOUT ITS LINKS', () => {
+    return (async () => {
+      // 🔴 THIS PINS COMMIT ORDERING, WHICH NO OTHER TEST HERE CAN SEE. Every
+      // other reload assertion waits for a settled DOM, so it is blind to what
+      // was on screen in between — and what was on screen was the whole
+      // transcript with its citations as PLAIN TEXT. The boot path read the
+      // session, committed `setMessages` alone, cleared `loading` in its own
+      // `finally`, and left grounding to the `[activeSessionId]` effect a tick
+      // later. A viewer saw the text, then the links appeared.
+      //
+      // 🔴 WAITING IS EXACTLY WHAT HID IT, so this test must NOT wait to observe.
+      // It records the (text, anchor) pair at EVERY DOM mutation batch during
+      // boot and asserts the half-state never occurs. `waitFor` is used only to
+      // bound the run, after the observer is already recording.
+      //
+      // ⚠️ WHAT THIS ORACLE CANNOT SEE, so nobody reads it as a general one:
+      // `MutationObserver` delivers ONE callback per microtask checkpoint and the
+      // callback reads the CURRENT DOM, not a snapshot per mutation. Two commits
+      // landing inside a single checkpoint would coalesce into one callback that
+      // sees only the final, linked state — a false green. It is sound HERE
+      // because the two commits are separated by an awaited storage read (red
+      // 5/5 at base, verified independently), and the separation is larger
+      // against the real host's postMessage round trip. It is not a general
+      // "no half-state ever" assertion.
+      toolItems = [{ id: DREAMSHAPER, name: 'DreamShaper', type: 'Checkpoint' }];
+      pollQueue = [
+        toolCallSnapshot(),
+        textSnapshot(`[DreamShaper](https://civitai.com/models/${DREAMSHAPER}) is great.`),
+      ];
+      await startChat();
+      await send('what is DreamShaper?', 'is great');
+
+      cleanup();
+
+      const halfStates: number[] = [];
+      let batches = 0;
+      const observer = new MutationObserver(() => {
+        batches += 1;
+        const hasText = (document.body.textContent ?? '').includes('is great');
+        if (hasText && anchorFor(DREAMSHAPER) === null) halfStates.push(batches);
+      });
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+      try {
+        render(<App />);
+        await waitFor(() => expect(anchorFor(DREAMSHAPER)).toBeTruthy());
+      } finally {
+        observer.disconnect();
+      }
+
+      // 🔴 POSITIVE CONTROL FIRST — without it a zero here is indistinguishable
+      // from an observer that was never wired to anything, which is the shape
+      // that makes a reassuring zero worthless.
+      expect(batches, 'the observer saw no DOM mutations at all — it is not measuring').toBeGreaterThan(0);
+      expect(
+        halfStates,
+        `transcript rendered without its links in mutation batch(es) ${halfStates.join(', ')} of ${batches}`,
+      ).toHaveLength(0);
+    })();
+  });
+
+  it('🔴 THE SWITCH LOADER IS PINNED TOO — boot into one chat, switch to another', () => {
+    return (async () => {
+      // 🔴 THIS EXISTS BECAUSE CONSOLIDATION SILENTLY UN-PINNED A CALL SITE.
+      // Both loaders now route through `applyLoadedMessages`, which is the fix —
+      // but every other reload test boots STRAIGHT INTO the grounded chat, so the
+      // BOOT loader alone satisfies all of them. Measured: replacing the SWITCH
+      // site with a bare `setMessages` left the whole suite green, where the
+      // equivalent deletion before the consolidation killed two tests. The fix
+      // improved the product and weakened the suite about one of the two routes
+      // its own comment names.
+      //
+      // The discriminator is a chat you did NOT boot into: boot loads the newest
+      // session, so reaching the grounded one goes through the switch path, and
+      // its grounding can only come from that call site.
+      toolItems = [{ id: DREAMSHAPER, name: 'DreamShaper', type: 'Checkpoint' }];
+      pollQueue = [
+        toolCallSnapshot(),
+        textSnapshot(`[DreamShaper](https://civitai.com/models/${DREAMSHAPER}) is great.`),
+      ];
+      await startChat();
+      await send('what is DreamShaper?', 'is great');
+
+      // A second, NEWER conversation, so boot lands here and not on the grounded one.
+      fireEvent.click(screen.getByTestId('new-session-button'));
+      await waitFor(() => expect(screen.queryByText(/is great/)).toBeNull());
+      pollQueue = [textSnapshot('Nothing looked up here.')];
+      await send('hello', 'Nothing looked up here');
+
+      cleanup();
+      render(<App />);
+      await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+      // Booted into the ungrounded chat, as designed — if this ever boots into the
+      // grounded one the test silently stops exercising the switch path.
+      await waitFor(() => expect(screen.getByText(/Nothing looked up here/)).toBeTruthy());
+      expect(anchorFor(DREAMSHAPER), 'booted into the wrong session').toBeNull();
+
+      const rows = document.querySelectorAll<HTMLElement>('[data-testid^="session-item-"]');
+      expect(rows, 'expected both conversations in the switcher').toHaveLength(2);
+      fireEvent.click(rows[rows.length - 1]);
+
+      await waitFor(() => expect(screen.getByText(/is great/)).toBeTruthy());
+      await waitFor(() => expect(anchorFor(DREAMSHAPER)).toBeTruthy());
+    })();
+  });
+
   it('🔴 RELOAD KEEPS THE GROUNDING — the ids ride the stored assistant turn', () => {
     return (async () => {
       // ⚠️ THIS CASE USED TO ASSERT THE OPPOSITE, and the inversion is the fix.

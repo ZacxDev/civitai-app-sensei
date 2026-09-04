@@ -146,16 +146,34 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    * would refuse every follow-up question — which is most of what this app is
    * for.
    *
-   * ⚠️ IN MEMORY ONLY, AND THE CONSEQUENCE IS DELIBERATE RATHER THAN OVERLOOKED.
-   * Tool results are not persisted (see `types.ts`: `role:'tool'` is a
-   * transcript role, not a stored one), so a RELOADED conversation starts with
-   * an empty set and its stored model links render as plain text. That is the
-   * conservative direction — a link we can no longer prove is refused rather
-   * than trusted — and it is pinned by a test so it cannot change silently. The
-   * fix, if the lost affordance turns out to matter, is to carry the ids on the
-   * stored assistant message (they would ride the write that already happens,
-   * so it costs no extra storage call); it is not done here because it widens a
-   * mechanical guard into a serialization change.
+   * ⚠️ IN MEMORY, BUT REBUILT FROM STORAGE ON LOAD — and this paragraph used to
+   * say the opposite, in three separate sentences, long after they stopped being
+   * true. It read: a reloaded conversation "starts with an empty set and its
+   * stored model links render as plain text", that this was "pinned by a test so
+   * it cannot change silently", and that carrying the ids on the stored
+   * assistant message "is not done here". **All three are false.** That remedy
+   * WAS taken (#39): `Message.grounded` persists the ids, and
+   * `groundedIdsFromMessages` rebuilds the set on every load, so a reloaded
+   * conversation keeps its links. The test that "pinned" the old behaviour now
+   * asserts the inverse.
+   *
+   * 🔴 WHAT IS STILL TRUE, and it is the part worth keeping: tool RESULTS are
+   * not persisted (`types.ts` — `role:'tool'` is a transcript role, not a stored
+   * one). Only the ids ride the assistant turn. So the conservative direction is
+   * intact — an id no conversation ever grounded is still refused — while an id
+   * this conversation did ground survives a reload.
+   *
+   * 🔴 BOTH LOADERS MUST COMMIT THIS WITH THE MESSAGES, IN ONE BATCH. Splitting
+   * them put a real render on screen showing the transcript with its citations
+   * as plain text; see `applyLoadedMessages`, which is why there is exactly one
+   * function performing both writes.
+   *
+   * ⚠️ SCOPE, because the sentence above is about LOADERS and reads wider than it
+   * is: a half-state is still reachable on the session-SWITCH route, where
+   * `selectSession` moves the id without clearing `messages`, so the outgoing
+   * transcript renders against the incoming session's empty set until the read
+   * resolves. Pre-existing and measured unchanged by the loader fix. See the
+   * note at the switch call site.
    */
   const [groundedBySession, setGroundedBySession] = useState<Record<string, readonly string[]>>({});
   const [loading, setLoading] = useState(true);
@@ -275,6 +293,60 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     [],
   );
 
+  /**
+   * Record ids the catalog returned, against the session the TURN belongs to.
+   *
+   * Total and idempotent: an empty list, or a list of ids already recorded,
+   * returns the previous state object by reference so React skips the update.
+   * `mergeGroundedIds` does the de-duplication and returns the original array
+   * unchanged when nothing is new — that reference equality is what makes the
+   * short-circuit here correct rather than merely cheap.
+   */
+  const recordGrounded = useCallback((sessionId: string, ids: readonly string[]) => {
+    if (ids.length === 0) return;
+    setGroundedBySession((prev) => {
+      const before = prev[sessionId];
+      const after = mergeGroundedIds(before, ids);
+      return after === before ? prev : { ...prev, [sessionId]: after };
+    });
+  }, []);
+
+  /**
+   * Commit a loaded transcript AND its grounding TOGETHER, in one batch.
+   *
+   * 🔴 THE TWO WRITES MUST NOT BE SPLIT ACROSS COMMITS, AND SPLITTING THEM WAS A
+   * REAL, VIEWER-VISIBLE DEFECT. The boot path used to `setMessages` on its own
+   * and leave the grounding to the `[activeSessionId]` effect. `loading` clears
+   * in the boot block's `finally`, so a render genuinely committed at
+   * `msgs=N grounded=0 loading=false` — the transcript on screen with every
+   * citation as PLAIN TEXT, links appearing a tick later. Traced on the reload
+   * path, and the only thing that ever surfaced it was a flaky test, which was
+   * then made deterministic (#44) — removing the observer without removing the
+   * defect.
+   *
+   * 🔴 ONE RULE, ONE PLACE — AND THAT IS THIS FUNCTION, NOT ONE CALL SITE. The
+   * previous comment argued the boot path must NOT seed grounding because the
+   * effect already did, calling a second seed "a second copy of a rule". The
+   * principle is right and the application was wrong: the duplicated thing would
+   * have been the PREDICATE (`groundedIdsFromMessages` + `recordGrounded`), and
+   * the cure for that is to name it once, not to let one of the two loads commit
+   * a half-state. Both loaders call this; neither open-codes it.
+   */
+  const applyLoadedMessages = useCallback(
+    (sessionId: string, msgs: Message[]) => {
+      setMessages(msgs);
+      recordGrounded(sessionId, sessionsLib.groundedIdsFromMessages(msgs));
+    },
+    [recordGrounded],
+  );
+
+  // 🔴 DECLARED ABOVE BOTH LOAD EFFECTS, NOT BESIDE THE OTHER GROUNDING
+  // HELPERS. A hook's DEPENDENCY ARRAY is evaluated during RENDER, so a
+  // `const` declared further down the component body is in the temporal dead
+  // zone when the array below is built — `ReferenceError: Cannot access
+  // 'applyLoadedMessages' before initialization`, which is a blank app, not a
+  // subtle bug. Measured: moving these two down again fails 114 tests and
+  // `tsc` (TS2448/TS2454). Position is load-bearing; keep them here.
   // ---- Load sessions on mount ----
   useEffect(() => {
     if (!ready) return;
@@ -292,13 +364,14 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         if (loaded.length > 0) {
           setActiveSessionId(loaded[0].id);
           const msgs = await sessionsLib.getMessages(depsRef.current.appStorage, loaded[0].id);
-          // 🔴 NO `recordGrounded` HERE, DELIBERATELY. Setting `activeSessionId`
-          // above makes the load effect run for this same session, and that is
-          // where the grounded set is rebuilt — for BOTH boot and session
-          // switch, from one call site. Seeding here as well was measurably
-          // dead: removing it broke no test precisely because the effect had
-          // already done it, which is the definition of a second copy of a rule.
-          if (!cancelled) setMessages(msgs);
+          // 🔴 GROUNDING LANDS WITH THE MESSAGES, NOT A TICK AFTER THEM. This
+          // used to be a bare `setMessages`, on the reasoning that the
+          // `[activeSessionId]` effect would rebuild the grounded set anyway —
+          // true, but LATER, and `loading` clears in this block's `finally`, so
+          // the viewer got a committed render of the whole transcript with every
+          // citation as plain text before the links appeared. See
+          // `applyLoadedMessages`, which owns both writes for both loaders.
+          if (!cancelled) applyLoadedMessages(loaded[0].id, msgs);
         }
       } catch (e) {
         // 🔴 NOT SWALLOWED ANY MORE. A failed load leaves the app showing an
@@ -315,7 +388,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       }
     })();
     return () => { cancelled = true; };
-  }, [ready]);
+  }, [ready, applyLoadedMessages]);
 
   // ---- Composer state belongs to ONE conversation ----
   //
@@ -389,13 +462,25 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       .getMessages(depsRef.current.appStorage, activeSessionId)
       .then((msgs) => {
         if (cancelled) return;
-        setMessages(msgs);
         // 🔴 BOTH LOAD SITES, NOT JUST THE FIRST. This is the session-SWITCH
-        // path; the boot path above is the other. Seeding only one leaves the
+        // path; the boot path above is the other. Covering only one leaves the
         // symptom alive on whichever route the viewer happens to take, which is
         // the harder half to notice because switching back and forth appears to
-        // fix it.
-        recordGrounded(activeSessionId, sessionsLib.groundedIdsFromMessages(msgs));
+        // fix it. Both go through `applyLoadedMessages`, so neither LOADER can
+        // commit a transcript without its grounding.
+        //
+        // 🔴 THAT IS NOT THE SAME AS "no half-state on this route", and an
+        // earlier version of this comment claimed the wider thing. `selectSession`
+        // moves `activeSessionId` WITHOUT clearing `messages`, while
+        // `groundedModelIds` keys on the new id — so from the click until this
+        // read resolves, the PREVIOUS conversation's transcript is on screen
+        // against the NEW conversation's (empty) grounded set, and its citations
+        // render as plain text. Measured identically before and after this fix,
+        // so it is pre-existing and untouched here, not introduced. Worse, if
+        // this read REJECTS the catch below leaves that state on screen
+        // indefinitely rather than for a tick. Both are recorded as open; what
+        // this function fixes is the BOOT route's split commit.
+        applyLoadedMessages(activeSessionId, msgs);
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -403,7 +488,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         setStorageError(`Couldn't open that chat — ${detail}.`);
       });
     return () => { cancelled = true; };
-  }, [activeSessionId]);
+  }, [activeSessionId, applyLoadedMessages]);
 
   // ---- Actions ----
   //
@@ -743,24 +828,6 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
   const handleRemoveMention = useCallback((versionId: number) => {
     setPendingMentions((prev) => prev.filter((r) => r.versionId !== versionId));
-  }, []);
-
-  /**
-   * Record ids the catalog returned, against the session the TURN belongs to.
-   *
-   * Total and idempotent: an empty list, or a list of ids already recorded,
-   * returns the previous state object by reference so React skips the update.
-   * `mergeGroundedIds` does the de-duplication and returns the original array
-   * unchanged when nothing is new — that reference equality is what makes the
-   * short-circuit here correct rather than merely cheap.
-   */
-  const recordGrounded = useCallback((sessionId: string, ids: readonly string[]) => {
-    if (ids.length === 0) return;
-    setGroundedBySession((prev) => {
-      const before = prev[sessionId];
-      const after = mergeGroundedIds(before, ids);
-      return after === before ? prev : { ...prev, [sessionId]: after };
-    });
   }, []);
 
   /**
