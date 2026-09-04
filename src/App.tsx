@@ -14,6 +14,7 @@ import type { UseAppStorage } from '@civitai/blocks-react';
 import { Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
 
 import { palette, pageStyle, token, brand, radius, mutedText } from './theme.js';
+import { paintTheme } from './bootTheme.js';
 import type { AppSettings, CorrectionRecord, Message, Session } from './types.js';
 import { DEFAULT_SETTINGS, migrateSettings, NO_TOOLS_NOTICE } from './types.js';
 import { AI_WRITE_BUDGETED, BUZZ_READ_SELF, hasGenerateScope } from './scopes.js';
@@ -1917,7 +1918,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   // ---- Render ----
   if (!ready) {
     return (
-      <div ref={rootRef} data-theme={theme} style={pageStyle(c)}>
+      <div ref={rootRef} data-theme={paintTheme(ready, theme)} style={pageStyle(c)}>
         <Stack align="center" gap={12} style={{ margin: 'auto' }} data-testid="app-loading">
           <Loader />
           <span style={mutedText}>Loading Sensei…</span>
@@ -1928,7 +1929,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
   if (loading) {
     return (
-      <div ref={rootRef} data-theme={theme} style={pageStyle(c)}>
+      <div ref={rootRef} data-theme={paintTheme(ready, theme)} style={pageStyle(c)}>
         <Stack align="center" gap={12} style={{ margin: 'auto' }} data-testid="app-loading">
           <Loader />
           <span style={mutedText}>Loading sessions…</span>
@@ -1938,7 +1939,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   }
 
   return (
-    <div ref={rootRef} data-theme={theme} style={pageStyle(c)}>
+    <div ref={rootRef} data-theme={paintTheme(ready, theme)} style={pageStyle(c)}>
       <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100dvh' }}>
         {/* Header */}
         <Group
