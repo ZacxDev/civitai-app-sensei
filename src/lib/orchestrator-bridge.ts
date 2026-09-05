@@ -1,10 +1,14 @@
-import type { ChatCompletionRequest, ChatCompletionResponse } from './completion-types.js';
+import type { ChatCompletionRequest, ChatCompletionResult } from './completion-types.js';
 import type { ToolCall } from './tools.js';
 import type { OrchestratorAdapter } from './orchestrator.js';
 import { simulateStreaming } from './streaming.js';
 import type { WorkflowBody, WorkflowBodyStep, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks';
 
-export type { ChatCompletionRequest, ChatCompletionResponse } from './completion-types.js';
+export type {
+  ChatCompletionRequest,
+  ChatCompletionResponse,
+  ChatCompletionResult,
+} from './completion-types.js';
 
 /** The subset of useBuzzWorkflow's return we need. */
 export interface WorkflowHelpers {
@@ -393,6 +397,11 @@ function delay(ms: number): Promise<void> {
  * replaying the completed, released text through `simulateStreaming`; the
  * `stream` field on the request is ignored.
  *
+ * 🔴 THAT REPLAY IS COSMETIC AND IS NOT AWAITED BEFORE RESOLVING. It is handed
+ * back as `result.replay` instead, so a caller can persist the reply and then
+ * await the animation. See the block at the `replay` assignment for the
+ * measurement that forced it.
+ *
  * 🔴 TOOL CALLS ARE CARRIED, and the finish reason distinguishes them. The
  * step accepts `tools`/`tool_choice` and the host publishes a `tool_calls`
  * reply on a verdict-gated `toolCalls` snapshot field — released only when the
@@ -410,7 +419,7 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       onChunk?: (chunk: string) => void,
       signal?: AbortSignal,
       onWorkflow?: (workflowId: string) => void,
-    ): Promise<ChatCompletionResponse> {
+    ): Promise<ChatCompletionResult> {
       const body = buildChatCompletionBody(request);
 
       const estimateSnap = await workflow.estimate(body);
@@ -541,16 +550,45 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
         throw new Error('Chat completion returned empty response');
       }
 
-      // Only stream real prose. A tool round has nothing to show the viewer yet.
-      if (onChunk && content) {
-        await simulateStreaming(content, onChunk);
-      }
+      // ── THE COSMETIC REPLAY: STARTED HERE, DELIBERATELY NOT AWAITED. ───────
+      //
+      // 🔴 AWAITING IT PUT DURABILITY BEHIND AN ANIMATION, AND IN A HIDDEN TAB
+      // THAT IS MINUTES. `simulateStreaming` is one `setTimeout(20 ms)` per
+      // word and Chrome throttles `setTimeout` in a background tab, so this
+      // call did not resolve — and the caller's continuation, which is where
+      // the reply is WRITTEN TO STORAGE, did not run — until the typewriter
+      // finished. Measured against the deployed build on 2026-09-04: a reply
+      // sent at 23:10:44 was persisted at 23:14:14, 3 m 30 s later, with the
+      // finished text on screen and zero assistant messages in storage at the
+      // same instant. A short one still took 45 s. An agent-driven send runs in
+      // a hidden tab by construction, which is what both production lost
+      // answers had in common.
+      //
+      // 🔴 NOTHING ABOUT MODERATION MOVES. `content` is the released text from
+      // `extractReleasedText`, reached only past the withhold check above — the
+      // step is non-streaming precisely so the scan can run on the whole reply,
+      // and this line neither changes what is scanned nor when. It changes only
+      // whether the CALLER has to wait for a typewriter to learn the reply
+      // exists.
+      //
+      // 🔴 THE HANDLE NEVER REJECTS. A chunk sink that throws used to reject
+      // this whole call, so a rendering fault destroyed a paid-for reply the
+      // caller had not been given yet. Swallowing ends the replay early and
+      // leaves the resolved reply intact; a caller awaiting `replay` after it
+      // has already persisted cannot be thrown back into an error path that
+      // overwrites its own write. Both halves are pinned in
+      // `orchestrator-bridge.test.ts`.
+      const replay =
+        onChunk && content
+          ? simulateStreaming(content, onChunk).catch(() => {})
+          : Promise.resolve();
 
       const promptTokens = request.messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
       const completionTokens = estimateTokens(content);
 
       return {
         id: workflowId,
+        replay,
         choices: [
           {
             index: 0,

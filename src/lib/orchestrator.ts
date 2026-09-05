@@ -1,7 +1,15 @@
-import type { ChatCompletionRequest, ChatCompletionResponse } from './completion-types.js';
+import type { ChatCompletionRequest, ChatCompletionResult } from './completion-types.js';
 import { createBridgeAdapter, type WorkflowHelpers } from './orchestrator-bridge.js';
 
 export interface OrchestratorAdapter {
+  /**
+   * 🔴 RESOLVES AS SOON AS THE REPLY EXISTS, NOT WHEN `onChunk` HAS FINISHED
+   * REPLAYING IT. The replay is cosmetic and comes back on `result.replay` for
+   * the caller to await AFTER it has made the reply durable. Awaiting it here
+   * instead was the measured defect: a hidden tab throttles the replay's
+   * timers, so a charged reply lived only in memory for minutes and was lost
+   * outright if the tab closed.
+   */
   submitChatCompletion(
     request: ChatCompletionRequest,
     onChunk?: (chunk: string) => void,
@@ -18,7 +26,7 @@ export interface OrchestratorAdapter {
      * only for the turns that did not fail.
      */
     onWorkflow?: (workflowId: string) => void,
-  ): Promise<ChatCompletionResponse>;
+  ): Promise<ChatCompletionResult>;
   cancel?(workflowId?: string): Promise<void>;
 }
 
