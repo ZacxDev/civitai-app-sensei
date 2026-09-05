@@ -126,19 +126,40 @@ interface StreamingTurn {
    *
    * 🔴 THE FIX IS THE STATE, NOT THE WRITE SITE, and that is the whole point.
    * `handleSend` is not the only thing that will ever derive a write from
-   * `messages`; patching it would leave every future write path inheriting the
-   * defect. Settling the bubble on this value means `messages` never HOLDS an
-   * abandoned partial once the reply is durable, so there is nothing for a later
-   * write to re-serialise.
+   * `messages`. Settling the bubble on this value means `messages` never HOLDS
+   * an abandoned partial once the reply is durable, so a later write derived
+   * from it cannot re-serialise one.
    *
-   * 🔴 SETTLING IS CORRECT, NOT MERELY CONVENIENT. Stop pressed after the reply
+   * 🔴 SETTLING IS A CHOICE, NOT A NECESSITY — AN EARLIER REVISION OF THIS
+   * PARAGRAPH CLAIMED OTHERWISE AND WAS WRONG. Durability alone is reachable
+   * WITHOUT touching the screen: record the written reply in a
+   * `persistedRepliesRef: Map<id, Message>` and reconcile it once at the point a
+   * write is serialised, which repairs storage and leaves the frozen bubble
+   * visible. That alternative is real, so this docstring must not argue the
+   * visible change was forced by the fix.
+   *
+   * **It was an explicit product decision (operator, 2026-09-05) to settle, and
+   * the reasoning is the UX, not the mechanics.** Stop pressed after the reply
    * has landed cancels nothing: the workflow already succeeded and the Buzz was
    * already spent, and the replay is a cosmetic typewriter over text the app is
-   * holding in full. So "stop the animation" can only mean "show the final text
-   * now" — the skip every chat UI performs — and the alternative is a viewer left
-   * looking at a truncated answer they paid for, one reload away from the whole
-   * one. A Stop during POLLING is the case where cancelling is real, and it
-   * leaves this `undefined` and Stop's rescue write armed exactly as before.
+   * holding in full. So the alternative leaves a viewer looking at a truncated
+   * answer they paid for, one reload away from the whole one. A Stop during
+   * POLLING is the case where cancelling is real, and it leaves this `undefined`
+   * and Stop's rescue write armed exactly as before.
+   *
+   * ⚠ **Known consequence, accepted:** Stop now carries two meanings with one
+   * affordance — cancel (during polling) and reveal-everything (during replay) —
+   * and the control is still labelled "Stop". Renaming it was considered and
+   * deliberately left out of this change as a separate design call.
+   *
+   * 🔴 AND THE CLASS CLAIM HAS A KNOWN HOLE, MEASURED: if Stop *and* the next
+   * send both land inside the window where turn 1's reply write is still
+   * in flight, turn 1's late write still clobbers the second exchange —
+   * `ownsMessageWrite` is evaluated BEFORE its `await`, so a claim taken
+   * afterwards cannot revoke it. That ordering is **byte-identical on
+   * `origin/trunk`**, i.e. pre-existing and not introduced here, and the
+   * monotonicity ledger does NOT catch it (the sequence grows rather than
+   * shortens). Do not read this field as closing that case.
    */
   persistedReply?: Message;
 }

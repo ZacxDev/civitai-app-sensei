@@ -26,11 +26,24 @@ import { fakeAppStorage } from './test-helpers.js';
  *
  * A test that drives the exact production sequence and checks the final row
  * closes that sequence and leaves the CLASS open: the harm is not "Stop is
- * mishandled", it is "a committed transcript write can hold less of an
- * assistant message than a committed write already held". Any future write path
- * derived from `messages` — a retry, an edit, a session merge, a rename that
- * re-serialises — reintroduces it through a door no case-specific test is
- * watching.
+ * mishandled", it is "a committed transcript write can hold a SHORTER `content`
+ * for an assistant message than a committed write already held". Any future
+ * write path derived from `messages` — a retry, an edit, a session merge, a
+ * rename that re-serialises — reintroduces it through a door no case-specific
+ * test is watching.
+ *
+ * 🔴 READ THAT SENTENCE NARROWLY: THIS LEDGER MEASURES `content.length` AND
+ * NOTHING ELSE. An earlier revision said "can hold less of an assistant
+ * message", which is WIDER than what the body checks and would let a reader
+ * conclude that assistant-message loss is pinned in general. It is not.
+ * FIELD-level loss is invisible here and is REAL and PRE-EXISTING: an ordinary
+ * second send re-serialises React's copy of turn 1's reply, whose `grounded`
+ * array is `undefined`, so a turn's citation evidence is silently dropped from
+ * storage while `content.length` is unchanged and this ledger stays green.
+ * Measured against this PR's head on a tool-round fixture. Widening the ledger
+ * to compare `grounded` would go RED on `origin/trunk` behaviour, i.e. it is a
+ * separate defect and not this PR's to fix — but do not mistake this guard for
+ * covering it.
  *
  * So the assertion below runs over the WHOLE committed write log, per assistant
  * message id, and fails on any strictly-shortening write regardless of which
@@ -478,21 +491,27 @@ describe('a durable assistant reply never shrinks across committed writes', () =
   /**
    * ⚠️ WHAT THIS FILE DOES NOT PIN, STATED RATHER THAN LEFT AS A GAP.
    *
-   * The case above asserts the SCREEN and stops there. An earlier draft carried
-   * a second half — switch to S2, then send in S2, and assert S2's committed
-   * writes never contain S1's reply — and it goes RED. It also goes red on
-   * `origin/trunk` with none of this change applied, measured by running that
-   * draft against a pristine `src/App.tsx`: identical failure, identical
-   * message. So it is a PRE-EXISTING leak, not a regression this settle
-   * introduces, and `withSettledReply`'s guard is not what governs it — the
-   * screen assertion above is the half this change owns and the half a mutation
-   * of that guard actually moves.
+   * The case above asserts the SCREEN and stops there. It does NOT assert that a
+   * switched-to session's committed writes are free of the previous session's
+   * reply.
    *
-   * It is deliberately not fixed here: it is a different defect on a different
-   * path (S2's own send serialising a transcript it inherited across the
-   * switch), and folding it in would make the red→green matrix for F5
-   * unreadable. Recorded here rather than filed, because a shipped red test
-   * teaches everyone to ignore the suite.
+   * 🔴 AN EARLIER REVISION OF THIS COMMENT CLAIMED A MEASURED RED HERE, AND THAT
+   * CLAIM IS WITHDRAWN. It said a draft of that second half "goes RED, and goes
+   * red on `origin/trunk` too — identical failure, identical message", and
+   * recorded it as a confirmed pre-existing leak. A round-1 audit rebuilt that
+   * draft and could NOT reproduce it: four runs — this head and a
+   * behaviourally-trunk tree, each with an immediate send and with a 200 ms
+   * settle window — all reported `S2 acquired S1 reply: false`, with S1's writes
+   * intact at full length. `createSession` calls `setMessages([])` synchronously,
+   * so S2 starts empty and has nothing to inherit.
+   *
+   * ⚠ **That is a failure to reproduce, NOT proof the leak does not exist** — an
+   * empty result cannot separate "no such defect" from "the draft used a
+   * discriminating step this comment omits" (a sidebar switch rather than
+   * `+ New`, or a read that had not resolved). What IS established: the sequence
+   * as described here is not a route to it, so nobody should spend time on this
+   * paragraph as written. If you can build a case that reproduces, that case is
+   * the finding — this comment is not evidence for one.
    */
 });
 
