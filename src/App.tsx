@@ -85,6 +85,31 @@ interface StreamingTurn {
    * turn started with.
    */
   transcript: () => Message[];
+  /**
+   * Set once this turn's COMPLETE reply has been durably written, and only on a
+   * `persist` that RESOLVED — never merely on having reached the write.
+   *
+   * 🔴 IT EXISTS TO STOP STOP FROM DOWNGRADING A STORED REPLY. `handleSend` now
+   * persists the moment the reply arrives, while the cosmetic replay is still
+   * running — and the Stop button is still on screen for the whole of that
+   * replay. Without this flag a Stop pressed mid-animation would write
+   * `transcript()` — the user turn plus however much prose has typed out so far
+   * — over a complete reply that is already in storage. That is a second write
+   * of the same key with strictly less content in it.
+   *
+   * 🔴 `false` MUST STILL MEAN "WRITE IT". A Stop before the reply arrives, a
+   * failed `persist` and a refused ownership ticket all leave this false, and in
+   * each of those Stop's write is the only one there is. Setting it
+   * optimistically before awaiting would suppress the rescue write in exactly
+   * the case it exists for.
+   *
+   * ⚠️ ONE WINDOW IS NOT CLOSED, AND IT IS THE HONEST COST OF THAT ORDER: a
+   * Stop landing after the write is issued but before it resolves reads false,
+   * so both writes go out. The issue order is fixed — the reply first, Stop's
+   * partial second — so the worst case is what the code did before this change,
+   * and the window is one storage round trip rather than the whole animation.
+   */
+  replyPersisted?: boolean;
 }
 
 export function App({ deps: depsOverride }: AppProps = {}) {
@@ -1524,8 +1549,33 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // failure being recorded, so reading it there would file an id only for
       // the turns that did not fail. The bridge invokes `onWorkflow` at the
       // line where the submit is accepted, i.e. where the Buzz goes.
-      const submit = () =>
-        orchestrator.submitChatCompletion(
+      //
+      // ── THE COSMETIC REPLAY IS TRACKED HERE, NOT AWAITED BY THE BRIDGE. ────
+      //
+      // 🔴 `replay` IS WHAT MAKES THE PERSIST BELOW INDEPENDENT OF THE
+      // ANIMATION. The bridge resolves as soon as the moderated reply exists
+      // and hands the typewriter back on `result.replay`; this turn stores the
+      // reply first and awaits the animation afterwards, purely for display.
+      //
+      // 🔴 ONE REPLAY AT A TIME, ENFORCED BY IDENTITY RATHER THAN BY WAITING.
+      // A round that returns interim prose alongside its tool calls starts a
+      // replay that can still be running when the next round's begins, and two
+      // replays appending to the same bubble interleave word by word. Waiting
+      // for the previous replay before the next submit would prevent that and
+      // would put the animation back on the turn's critical path — which is the
+      // defect, for every round but the last. So a round's chunks stop landing
+      // the moment the NEXT SUBMIT IS ISSUED. The visible cost is that an
+      // interim round's prose can be cut short on screen; the `setMessages`
+      // after the loop replaces the bubble with the complete text either way.
+      //
+      // ⚠️ STRUCTURAL, NOT PINNED. No test in this repo produces interim prose
+      // alongside tool calls, so nothing here goes red if this guard is deleted
+      // — read it as a description of the code, not as covered behaviour.
+      let replayRound = 0;
+      let replay: Promise<void> = Promise.resolve();
+      const submit = async () => {
+        const round = ++replayRound;
+        const result = await orchestrator.submitChatCompletion(
           {
             model: settings.model,
             messages: apiMessages,
@@ -1533,10 +1583,16 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             max_tokens: settings.maxTokens,
             ...(toolsAvailable ? { tools: declarations, toolChoice: 'auto' as const } : {}),
           },
-          onChunk,
+          (chunk) => {
+            if (round !== replayRound) return;
+            onChunk(chunk);
+          },
           controller.signal,
           (workflowId) => turnRecord.workflow(workflowId),
         );
+        replay = result.replay;
+        return result;
+      };
 
       let response = await submit();
       let rounds = 0;
@@ -1875,28 +1931,6 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         });
       }
 
-      if (replyText) {
-        // 🔴 SAME `!last` GUARD AS `onChunk`, AND IT IS NOT REDUNDANT WITH IT.
-        // A reply short enough to finish replaying inside the successor-read
-        // window reaches THIS updater on an empty transcript with no chunk ever
-        // having done so — pinned by "A REPLY THAT COMPLETES INSIDE THE READ
-        // WINDOW LANDS ON THE CLEARED TRANSCRIPT", which goes red against this
-        // site alone.
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last || last.id !== assistantMsg.id) return prev;
-          // 🔴 THE RENDERED MESSAGE CARRIES THE RECORD TOO, not just the
-          // persisted one. They are written from the same `correction` value
-          // here so a reload cannot disagree with the live screen about
-          // whether a round fired — two separately-derived copies of one fact
-          // is how the two drift.
-          return [
-            ...prev.slice(0, -1),
-            { ...last, content: replyText, ...(correction ? { correction } : {}) },
-          ];
-        });
-      }
-
       // Persist the WHOLE conversation, built from the array this send already
       // owns — never from a read-back. `updatedMessages` already contains the
       // user turn, so both halves of the exchange land in one write and neither
@@ -1924,18 +1958,39 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // has since taken the key — and that write deletes the viewer's newer
       // message permanently. Losing this reply is the lesser harm and the trade
       // is argued in `lib/write-ownership.ts`.
+      // ── DURABILITY FIRST; THE ANIMATION IS BELOW AND IS ONLY DISPLAY. ───────
+      //
+      // 🔴 THIS WRITE USED TO SIT BEHIND `simulateStreaming`. The bridge awaited
+      // its own typewriter before returning, so this line — the only thing that
+      // makes a charged reply survive a closed tab — did not run until the
+      // replay had finished. `setTimeout` is throttled in a background tab, so
+      // that wait was ~2.4 s foregrounded and MINUTES hidden. Measured against
+      // the deployed build on 2026-09-04: 45 s for a short reply, 3 m 30 s for a
+      // long one, with the finished text on screen and zero assistant messages
+      // in storage at the same instant. Both production lost answers were
+      // agent-driven sends, which run in a hidden tab by construction.
+      //
+      // Nothing below this write is required for the reply to be safe.
+      // `persist-before-replay.e2e.test.tsx` asserts that ordering directly —
+      // the write lands while the replay still has words left to type.
       if (ownsMessageWrite(activeSessionId, myWrite)) {
         // 🔴 THE OUTCOME IS THE `persist` RESULT, NOT "WE GOT HERE". `persist`
         // returns whether the write resolved, and that boolean is exactly what
         // separates mechanism (b) — issued and rejected — from mechanism (c),
         // written and later overwritten. Reading it is what makes the record's
-        // `write-failed` value mean anything.
+        // `write-failed` value mean anything. Moving the write earlier does not
+        // touch this: it is the same call, at the same site, and the settle
+        // still reads what it returned.
         const saved = await persist('save the reply', () =>
           sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, [
             ...updatedMessages,
             finalMsg,
           ]),
         );
+        // 🔴 ONLY ON A RESOLVED WRITE. This is what tells Stop there is nothing
+        // left to rescue — see {@link StreamingTurn.replyPersisted}. A failed
+        // write must leave it false, because then Stop's write is the only one.
+        if (saved) turn.replyPersisted = true;
         turnRecord.settle(saved ? 'saved' : 'write-failed');
       } else {
         // 🔴 THE ACCEPTED LOSS, MADE OBSERVABLE. Discarding this reply is the
@@ -1955,6 +2010,63 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // report a known trade as a new defect.
         turnRecord.settle('discarded');
         depsRef.current.track('reply_discarded_superseded');
+      }
+
+      // ── PRESENTATION, AFTER THE FACT. ──────────────────────────────────────
+      //
+      // 🔴 THE FINAL REPLACE MUST NOT OVERTAKE THE TYPEWRITER. It rewrites the
+      // bubble to the whole reply, and `onChunk` APPENDS — so replacing while
+      // the replay still had words left would duplicate the tail. Awaiting the
+      // replay here keeps what the viewer sees exactly as it was: words arrive
+      // one at a time, then the bubble settles on the final text. What changed
+      // is only that the write above no longer waits for any of it.
+      //
+      // 🔴 `replay` NEVER REJECTS (the bridge swallows a throwing sink), which
+      // is what keeps this line from being able to throw the turn into the
+      // `catch` below AFTER it has already persisted and settled — a second
+      // write of the same key, with `Error: …` in it, over a stored reply.
+      await replay;
+
+      // 🔴 A STOP THAT LANDED DURING THE REPLAY MUST NOT RENDER THE FINAL TEXT,
+      // AND THE POST-LOOP GUARD NO LONGER COVERS THIS. It used to: the bridge
+      // awaited its own typewriter, so `aborted()` above was evaluated AFTER the
+      // whole replay and a mid-replay Stop was already caught there. Moving the
+      // replay to this side of the write moved the Stop window with it, so the
+      // question has to be asked again on THIS side. Measured, not reasoned —
+      // without this line `stop-stream.e2e.test.tsx`'s "chunks arriving after
+      // Stop do not extend the transcript" goes red on `word59`: `onChunk`
+      // correctly drops every chunk after the Stop and then this replace puts
+      // the whole reply on screen anyway.
+      //
+      // 🔴 IT GUARDS THE RENDER ONLY. The write above is deliberately on the
+      // other side of it: the reply was CHARGED and is complete, and stopping
+      // the animation stops the rendering, not the billing. So a stopped turn
+      // now keeps its bubble as the viewer left it and still has the whole
+      // answer on reload — where before, Stop's own write replaced storage with
+      // the half-typed copy. `handleStopStream`'s `replyPersisted` check is the
+      // other half of that, and the two must move together.
+      if (aborted()) return;
+
+      if (replyText) {
+        // 🔴 SAME `!last` GUARD AS `onChunk`, AND IT IS NOT REDUNDANT WITH IT.
+        // A reply short enough to finish replaying inside the successor-read
+        // window reaches THIS updater on an empty transcript with no chunk ever
+        // having done so — pinned by "A REPLY THAT COMPLETES INSIDE THE READ
+        // WINDOW LANDS ON THE CLEARED TRANSCRIPT", which goes red against this
+        // site alone.
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last || last.id !== assistantMsg.id) return prev;
+          // 🔴 THE RENDERED MESSAGE CARRIES THE RECORD TOO, not just the
+          // persisted one. They are written from the same `correction` value
+          // here so a reload cannot disagree with the live screen about
+          // whether a round fired — two separately-derived copies of one fact
+          // is how the two drift.
+          return [
+            ...prev.slice(0, -1),
+            { ...last, content: replyText, ...(correction ? { correction } : {}) },
+          ];
+        });
       }
     } catch (e) {
       // 🔴 A USER STOP IS NOT AN ERROR, AND MUST NOT OVERWRITE ITS OWN WRITE.
@@ -2124,6 +2236,22 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // what ends up stored.
     const turn = streamingTurnRef.current;
     if (!turn) return;
+    // 🔴 NOTHING LEFT TO RESCUE ONCE THE COMPLETE REPLY IS ALREADY STORED, AND
+    // WRITING ANYWAY WOULD DOWNGRADE IT. `handleSend` now persists as soon as
+    // the reply arrives and then awaits the cosmetic replay — during which this
+    // button is still on screen. `transcript()` at that moment is the user turn
+    // plus however much prose has typed out so far, i.e. a strict subset of what
+    // storage already holds, so this write could only take text away. Skipping
+    // is also what stops the reordered persist from creating a second write of
+    // the same key.
+    //
+    // 🔴 IT DOES NOT WEAKEN STOP'S RESCUE, because the flag is set only on a
+    // `persist` that RESOLVED. A Stop during polling, during a tool POST, on a
+    // refused ownership ticket, on a failed write, or in the window while that
+    // write is still in flight all read `false` and write exactly as before —
+    // which is every case the rescue was built for. The abort and the cancel
+    // above are unconditional and run either way.
+    if (turn.replyPersisted) return;
     const current = turn.transcript();
     if (current.length > 0) {
       void persist('save the stopped reply', () =>

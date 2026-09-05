@@ -73,3 +73,31 @@ export interface ChatCompletionResponse {
    */
   toolCalls?: ToolCall[];
 }
+
+/**
+ * What the ADAPTER hands back: the response above, plus a handle on the
+ * cosmetic replay it started.
+ *
+ * 🔴 A SEPARATE TYPE BECAUSE `ChatCompletionResponse` IS A WIRE SHAPE. Every
+ * field above mirrors something the host actually sends; a promise does not,
+ * and putting one there would invite the next reader to look for it on the
+ * snapshot.
+ *
+ * 🔴 REQUIRED, NOT OPTIONAL, AND THAT IS THE POINT OF ADDING IT TO A TYPE AT
+ * ALL. The caller persists the reply and THEN awaits this, so an adapter that
+ * silently omitted it would leave the caller awaiting `undefined` — which
+ * resolves immediately and skips the animation rather than failing. Required
+ * makes a new adapter say what its replay is instead of inheriting a
+ * plausible-looking no-op.
+ */
+export interface ChatCompletionResult extends ChatCompletionResponse {
+  /**
+   * Resolves when the `onChunk` replay of this reply has finished, or
+   * immediately when there was nothing to replay.
+   *
+   * 🔴 IT NEVER REJECTS — see `createBridgeAdapter`, which owns that guarantee.
+   * A caller that awaits it AFTER persisting must not be able to be thrown back
+   * into an error path that overwrites a reply it has already stored.
+   */
+  replay: Promise<void>;
+}

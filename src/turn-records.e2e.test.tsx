@@ -602,6 +602,15 @@ describe('deleting a chat takes its turn records with it', () => {
     await openNewChat();
     send('first question');
     await waitFor(() => expect(turnRecords()[0]?.outcome).toBe('saved'));
+    // 🔴 `saved` NO LONGER MEANS "THE TURN IS OVER", AND THAT IS THE FIX IT IS
+    // REPORTING ON. The reply is now written the instant it arrives, while the
+    // cosmetic replay is still typing it out — so the record settles a beat
+    // BEFORE the composer reopens, and a Send clicked in that window finds the
+    // Stop button and throws `Unable to find send-button`. Waiting for the
+    // composer is what this step always meant; the record's outcome was a proxy
+    // for it that has stopped being one. Nothing asserted here is relaxed — a
+    // wait is added, not an expectation removed.
+    await waitFor(() => expect(screen.getByTestId('send-button')).toBeTruthy());
     const first = turnRecords()[0].sessionId as string;
 
     fireEvent.click(screen.getByTestId('new-session-button'));
@@ -611,6 +620,8 @@ describe('deleting a chat takes its turn records with it', () => {
     await waitFor(() =>
       expect(turnRecords().every((r) => r.outcome === 'saved')).toBe(true),
     );
+    // Same reason as above: the delete below must not race turn 2's replay.
+    await waitFor(() => expect(screen.getByTestId('send-button')).toBeTruthy());
     const second = turnRecords().map((r) => r.sessionId as string).find((s) => s !== first)!;
 
     fireEvent.click(screen.getByTestId(`delete-session-${first}`));

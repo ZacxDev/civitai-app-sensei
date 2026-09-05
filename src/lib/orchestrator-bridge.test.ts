@@ -366,13 +366,67 @@ describe('orchestrator-bridge', () => {
       const adapter = createBridgeAdapter(mockWorkflowHelpers());
       const chunks: string[] = [];
 
-      await adapter.submitChatCompletion(
+      // 🔴 THE REPLAY IS AWAITED HERE, NOT BY THE CALL. `submitChatCompletion`
+      // resolves as soon as the moderated reply exists and hands the typewriter
+      // back on `result.replay` — see the ordering case below for why. This
+      // assertion is unchanged in what it claims; only where the wait lives.
+      const result = await adapter.submitChatCompletion(
+        { model: MODEL, messages: [{ role: 'user', content: 'hi' }] },
+        (c) => chunks.push(c),
+      );
+      await result.replay;
+
+      expect(chunks.length).toBeGreaterThan(0);
+      expect(chunks.join('')).toContain('Hello from the bridge!');
+    });
+
+    // ── THE ORDERING THE HIDDEN-TAB DEFECT TURNS ON. ─────────────────────────
+    //
+    // The reply reaching the caller used to be gated on a `setTimeout`-per-word
+    // replay, which Chrome throttles in a background tab. Measured against the
+    // deployed build on 2026-09-04: a reply was on screen at 23:10:44 and in
+    // storage at 23:14:14. This is that gate, at its narrowest.
+    it('🔴 resolves BEFORE the replay has finished typing', async () => {
+      const words = Array.from({ length: 40 }, (_, i) => `w${i}`);
+      const poll = vi.fn().mockResolvedValue(succeededSnapshot([words.join(' ')]));
+      const adapter = createBridgeAdapter(mockWorkflowHelpers({ poll }));
+      const chunks: string[] = [];
+
+      const result = await adapter.submitChatCompletion(
         { model: MODEL, messages: [{ role: 'user', content: 'hi' }] },
         (c) => chunks.push(c),
       );
 
-      expect(chunks.length).toBeGreaterThan(0);
-      expect(chunks.join('')).toContain('Hello from the bridge!');
+      // 40 words at 20 ms is ~800 ms of replay; resolution must not have waited
+      // for it. The number is deliberately far from 40 rather than `< 40`, so a
+      // resolve that waited for all but the last word still fails here.
+      expect(
+        chunks.length,
+        `the call did not resolve until ${chunks.length} of ${words.length} words had replayed`,
+      ).toBeLessThan(5);
+      expect(result.choices[0].message.content).toBe(words.join(' '));
+
+      // 🔴 POSITIVE CONTROL: the replay is real and does finish. Without this,
+      // "fewer than 5 chunks" is equally satisfied by a replay that never ran.
+      await result.replay;
+      expect(chunks.length).toBe(words.length);
+    });
+
+    it('🔴 a throwing chunk sink neither rejects the call nor rejects the replay', async () => {
+      // The caller awaits `replay` AFTER it has persisted the reply. A rejection
+      // there would throw it into its error path and overwrite a reply it has
+      // already stored — so the handle must swallow, and the reply must survive.
+      const adapter = createBridgeAdapter(mockWorkflowHelpers());
+
+      const result = await adapter.submitChatCompletion(
+        { model: MODEL, messages: [{ role: 'user', content: 'hi' }] },
+        () => {
+          throw new Error('the renderer blew up');
+        },
+      );
+
+      expect(result.choices[0].message.content).toBe('Hello from the bridge!');
+      await expect(result.replay).resolves.toBeUndefined();
     });
 
     describe('a withheld reply', () => {
