@@ -110,6 +110,86 @@ interface StreamingTurn {
    * and the window is one storage round trip rather than the whole animation.
    */
   replyPersisted?: boolean;
+  /**
+   * The exact assistant message this turn durably wrote, set beside
+   * {@link replyPersisted} and only on a `persist` that RESOLVED.
+   *
+   * 🔴 IT EXISTS BECAUSE `replyPersisted` FIXED STORAGE AND LEFT REACT STALE,
+   * WHICH IS A DURABILITY BUG WEARING A RENDERING BUG'S CLOTHES. `simulateStreaming`
+   * emits one word per `setTimeout` and `onChunk` bails on `!streamingRef.current`,
+   * so a Stop mid-replay freezes the bubble in `messages` at whatever word it had
+   * reached. Storage is fine — `replyPersisted` stops Stop's own downgrade write —
+   * but nothing repairs `messages`, and the NEXT send serialises
+   * `[...messages, userMsg]` straight over the complete stored reply. Measured in
+   * production: 210 of 953 characters survived, byte-exactly
+   * `words.slice(0, 33).join(' ') + ' '` — the accumulator, frozen at word 33.
+   *
+   * 🔴 THE FIX IS THE STATE, NOT THE WRITE SITE, and that is the whole point.
+   * `handleSend` is not the only thing that will ever derive a write from
+   * `messages`. Settling the bubble on this value means `messages` never HOLDS
+   * an abandoned partial once the reply is durable, so a later write derived
+   * from it cannot re-serialise one.
+   *
+   * 🔴 SETTLING IS A CHOICE, NOT A NECESSITY — AN EARLIER REVISION OF THIS
+   * PARAGRAPH CLAIMED OTHERWISE AND WAS WRONG. Durability alone is reachable
+   * WITHOUT touching the screen: record the written reply in a
+   * `persistedRepliesRef: Map<id, Message>` and reconcile it once at the point a
+   * write is serialised, which repairs storage and leaves the frozen bubble
+   * visible. That alternative is real, so this docstring must not argue the
+   * visible change was forced by the fix.
+   *
+   * **It was an explicit product decision (operator, 2026-09-05) to settle, and
+   * the reasoning is the UX, not the mechanics.** Stop pressed after the reply
+   * has landed cancels nothing: the workflow already succeeded and the Buzz was
+   * already spent, and the replay is a cosmetic typewriter over text the app is
+   * holding in full. So the alternative leaves a viewer looking at a truncated
+   * answer they paid for, one reload away from the whole one. A Stop during
+   * POLLING is the case where cancelling is real, and it leaves this `undefined`
+   * and Stop's rescue write armed exactly as before.
+   *
+   * ⚠ **Known consequence, accepted:** Stop now carries two meanings with one
+   * affordance — cancel (during polling) and reveal-everything (during replay) —
+   * and the control is still labelled "Stop". Renaming it was considered and
+   * deliberately left out of this change as a separate design call.
+   *
+   * 🔴 AND THE CLASS CLAIM HAS A KNOWN HOLE, MEASURED: if Stop *and* the next
+   * send both land inside the window where turn 1's reply write is still
+   * in flight, turn 1's late write still clobbers the second exchange —
+   * `ownsMessageWrite` is evaluated BEFORE its `await`, so a claim taken
+   * afterwards cannot revoke it. That ordering is **byte-identical on
+   * `origin/trunk`**, i.e. pre-existing and not introduced here, and the
+   * monotonicity ledger does NOT catch it (the sequence grows rather than
+   * shortens). Do not read this field as closing that case.
+   */
+  persistedReply?: Message;
+}
+
+/**
+ * Settle a stopped turn's bubble on the reply that is already in storage.
+ *
+ * 🔴 THE LAST-ELEMENT IDENTITY TEST IS THE SESSION GUARD, and it is the same one
+ * `onChunk` and both post-turn updaters use. `handleStopStream` deliberately
+ * cannot see `activeSessionId` (clawgate #427), so it must not assume the
+ * transcript on screen is the one this turn was sent in — a viewer who switched
+ * chats mid-stream is looking at somebody else's array, and replacing its tail
+ * would put one conversation's reply into another. If the last message is not
+ * this turn's assistant message, the turn no longer owns the screen and the
+ * repair is skipped; storage is already correct either way.
+ *
+ * Exported so both refusals can be pinned directly rather than only through a
+ * timing-dependent e2e — see the `withSettledReply` block in
+ * `App.reply-monotonicity.e2e.test.tsx`.
+ */
+export function withSettledReply(prev: Message[], reply: Message): Message[] {
+  // 🔴 NO `last.content === reply.content` SHORT-CIRCUIT. It reads as prudent
+  // and is dead weight: at most ONE of the two call sites can run for a given
+  // turn (Stop landing before the write resolves takes the rescue branch and
+  // returns; landing after it takes the settle), so there is no second call for
+  // it to elide. Removing a mutation that no test can kill is better than
+  // shipping a line that reads as a guard and guards nothing.
+  const last = prev[prev.length - 1];
+  if (!last || last.id !== reply.id) return prev;
+  return [...prev.slice(0, -1), reply];
 }
 
 export function App({ deps: depsOverride }: AppProps = {}) {
@@ -1990,7 +2070,31 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // 🔴 ONLY ON A RESOLVED WRITE. This is what tells Stop there is nothing
         // left to rescue — see {@link StreamingTurn.replyPersisted}. A failed
         // write must leave it false, because then Stop's write is the only one.
-        if (saved) turn.replyPersisted = true;
+        if (saved) {
+          turn.replyPersisted = true;
+          // Beside the flag, and from the SAME `finalMsg` that was written, so
+          // the bubble a stopped turn settles on cannot disagree with the row a
+          // reload reads. Two separately-derived copies of one fact is how the
+          // two drift — the same argument the final replace below already makes
+          // about `correction`.
+          turn.persistedReply = finalMsg;
+          // 🔴 THE STOP-ALREADY-LANDED HALF OF THE REPAIR. `replyPersisted` is
+          // read by `handleStopStream`, so a Stop that arrives AFTER this line
+          // settles the bubble itself. A Stop that arrived BEFORE it read the
+          // flag as false, took the rescue branch and returned — and would
+          // leave `messages` holding the frozen partial with nobody left to
+          // repair it. That is the ⚠️ window documented on `replyPersisted`,
+          // and this closes its rendering half.
+          //
+          // Safe to replace here even though `replay` is still running: Stop
+          // sets `streamingRef.current = false` before anything else, so
+          // `onChunk` is already dropping every chunk and cannot append onto
+          // the text this writes. That is exactly why the guard is `aborted()`
+          // and not an unconditional replace — un-aborted, the replay still has
+          // words left and `onChunk` APPENDS, so replacing would duplicate the
+          // tail. Same reasoning as the post-replay replace below.
+          if (aborted()) setMessages((prev) => withSettledReply(prev, finalMsg));
+        }
         turnRecord.settle(saved ? 'saved' : 'write-failed');
       } else {
         // 🔴 THE ACCEPTED LOSS, MADE OBSERVABLE. Discarding this reply is the
@@ -2251,7 +2355,24 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // write is still in flight all read `false` and write exactly as before —
     // which is every case the rescue was built for. The abort and the cancel
     // above are unconditional and run either way.
-    if (turn.replyPersisted) return;
+    //
+    // 🔴 BUT SKIPPING THE WRITE IS ONLY HALF THE JOB, AND THE MISSING HALF WAS
+    // STILL A DURABILITY DEFECT. Storage is correct at this point and React is
+    // not: `messages` holds the bubble frozen at whatever word the typewriter
+    // had reached, and the next send in this chat serialises
+    // `[...messages, userMsg]` over the complete stored reply — which is how a
+    // 953-character answer came back as 210 characters. Settling the bubble on
+    // the reply that is already stored is what makes `messages` stop lagging
+    // storage, so no later write has a stale partial to re-serialise. See
+    // {@link StreamingTurn.persistedReply} for why settling — rather than
+    // freezing — is also the right thing for the viewer to see.
+    if (turn.replyPersisted) {
+      if (turn.persistedReply) {
+        const reply = turn.persistedReply;
+        setMessages((prev) => withSettledReply(prev, reply));
+      }
+      return;
+    }
     const current = turn.transcript();
     if (current.length > 0) {
       void persist('save the stopped reply', () =>
