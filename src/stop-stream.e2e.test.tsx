@@ -744,6 +744,23 @@ describe('the post-loop abort guard, with a second turn in flight', () => {
  * unchanged here — it is a rendering concern, not the persist bug). So after
  * Stop the chunks keep arriving; what must not happen is that they keep landing
  * in the transcript the viewer is looking at.
+ *
+ * 🔴 THE ASSERTION MOVED FROM "DID NOT GROW" TO "IS EXACTLY THE STORED REPLY",
+ * AND IT IS STRICTLY STRONGER RATHER THAN RELAXED. Stop now SETTLES the bubble
+ * on the reply that is already durably stored instead of freezing it mid-word —
+ * see {@link StreamingTurn.persistedReply}: freezing left React `messages`
+ * holding an abandoned partial that the next send re-serialised over the
+ * complete stored reply, which cost a production viewer 743 of 953 characters
+ * they had paid for.
+ *
+ * The old form (`not.toContain('word59')`) is unavailable against a settled
+ * bubble — the settled text legitimately contains every word — but it was only
+ * ever a proxy for "no chunk landed after Stop", and equality tests that
+ * directly: `onChunk` APPENDS, so a chunk landing after the settle can only
+ * produce `<reply> word34 word35 …`, which is not equal to `<reply>`. Deleting
+ * the `!streamingRef.current` guard is therefore still caught, and now so is a
+ * settle that puts the WRONG text on screen — a case the old form could not see
+ * at all.
  */
 describe('a stopped turn must stop RENDERING, not just stop billing', () => {
   beforeEach(() => {
@@ -767,6 +784,7 @@ describe('a stopped turn must stop RENDERING, not just stop billing', () => {
   });
 
   it('🔴 chunks arriving after Stop do not extend the transcript', async () => {
+    const REPLY = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ');
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
     fireEvent.click(screen.getByTestId('new-session-button'));
@@ -779,9 +797,13 @@ describe('a stopped turn must stop RENDERING, not just stop billing', () => {
     const bubble = () => document.body.textContent ?? '';
     await waitFor(() => expect(bubble()).toContain('word0'), { timeout: 5000 });
 
+    // 🔴 THE POSITIVE CONTROL IS NOW READ BEFORE THE CLICK, NOT AFTER IT. Stop
+    // settles the bubble synchronously, so a sample taken afterwards can no
+    // longer answer "was the replay still running when Stop landed" — it would
+    // report the settled text in BOTH arms and the control would be vacuous.
+    const beforeStop = bubble();
     fireEvent.click(await screen.findByTestId('stop-button'));
     await new Promise((r) => setTimeout(r, 100));
-    const atStop = bubble();
 
     // Let the rest of the replay run to COMPLETION. `simulateStreaming` is not
     // abortable, so the chunks DO keep coming — only the guard stops them
@@ -796,12 +818,15 @@ describe('a stopped turn must stop RENDERING, not just stop billing', () => {
     await new Promise((r) => setTimeout(r, 60 * 20 * 2));
 
     // 🔴 POSITIVE CONTROL: the replay must genuinely have been incomplete when
-    // Stop landed, or "it did not grow" is trivially true of a finished stream.
-    expect(atStop, 'Stop landed after the replay had already finished').not.toContain('word59');
+    // Stop landed, or every assertion below is trivially true of a stream that
+    // had already finished on its own.
+    expect(beforeStop, 'Stop landed after the replay had already finished').not.toContain('word59');
 
-    // 🔴 ISOLATING: no chunk that arrived after Stop reached the transcript.
-    expect(bubble()).toContain('word0');
-    expect(bubble(), 'a stopped turn kept rendering its chunks').not.toContain('word59');
+    // 🔴 ISOLATING: the bubble is EXACTLY the stored reply. `onChunk` appends,
+    // so any chunk that reached the transcript after Stop shows up here as a
+    // duplicated tail (`…word59 word34 word35 …`) and this equality fails.
+    const content = screen.getAllByTestId('message-content').at(-1)!.textContent ?? '';
+    expect(content.trim(), 'a stopped turn did not settle on its stored reply').toBe(REPLY);
     // 🔴 THE BUDGET IS EXPLICIT BECAUSE THIS TEST'S OWN SLEEPS EAT HALF THE
     // DEFAULT, AND THE SHORTFALL IS SILENT. vitest's default is 5 s; the waits
     // above are a fixed 100 ms + 60 × 20 × 2 = 2,400 ms, so ~2.5 s is spent
