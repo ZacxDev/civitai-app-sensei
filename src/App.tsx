@@ -378,6 +378,47 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    * this cell rather than a second counter to keep in step.
    */
   const streamingTurnRef = useRef<StreamingTurn | null>(null);
+  /**
+   * Is THIS instance still mounted?
+   *
+   * 🔴 IT EXISTS BECAUSE A TURN DELIBERATELY OUTLIVES ITS COMPONENT. Nothing
+   * aborts an in-flight turn on unmount — that is #425's decided invariant: the
+   * Buzz was spent at submit, so the reply must still be persisted. The turn
+   * therefore keeps polling and eventually runs its continuation against an
+   * instance that is gone, where every React state write it makes is at best a
+   * no-op and at worst a throw (in the suite, jsdom is torn down underneath it
+   * and `dispatchSetState` reads a `window` that no longer exists — an unhandled
+   * `ReferenceError` that exits the runner non-zero while every test passes).
+   *
+   * 🔴 IT GATES REACT STATE ONLY, NEVER PERSISTENCE. Skipping a state write on a
+   * dead instance removes nothing observable; skipping the `saveMessages` would
+   * destroy a reply the viewer has already paid for. `App.teardown-write.e2e`
+   * pins both halves — the regression AND that the stranded turn still persists.
+   *
+   * 🔴 IT IS NOT AN ABORT, AND MUST NOT BECOME ONE. Aborting the turn on unmount
+   * is the obvious alternative and it is WRONG here for the reason above; it was
+   * measured to redden `App.unmount-turn.e2e`'s invariant guard.
+   *
+   * 🔴 RE-ARMED ON MOUNT, not just cleared on unmount, so a remount under
+   * StrictMode's double-invoked effects does not leave a live instance marked
+   * dead — which would silently stop every state write in the app.
+   */
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  /**
+   * `setMessages` for any site reachable AFTER an await — i.e. every write a
+   * stranded turn can still make. Grep for this name to enumerate them; a bare
+   * `setMessages` in an async continuation is the bug this replaced.
+   */
+  const setMessagesIfMounted = useCallback<typeof setMessages>((update) => {
+    if (!mountedRef.current) return;
+    setMessages(update);
+  }, []);
   const { open: openResourcePicker } = useResourcePicker();
   const { estimate, submit, poll, cancel } = useBuzzWorkflow();
   const orchestrator = useMemo(
@@ -420,13 +461,28 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    */
   const persist = useCallback(
     async (what: string, run: () => Promise<unknown>): Promise<boolean> => {
+      // 🔴 THE WRITE RUNS EVEN WHEN NOBODY IS LEFT TO SEE THE BANNER, AND ONLY
+      // THE BANNER IS SKIPPED. `persist` is awaited on every persistence path,
+      // including a turn stranded by an unmount — which must still SAVE (#425:
+      // the Buzz was spent). So `run()` is never gated, and neither is the
+      // boolean, which is what the caller turns into `settle('saved' |
+      // 'write-failed')`. Only `setStorageError` is, because a React state write
+      // on a dead instance is at best a no-op and at worst a throw: with the
+      // environment torn down underneath a stranded turn it reads a `window`
+      // that no longer exists, which is the unhandled rejection that exits the
+      // runner non-zero while every test passes.
+      //
+      // 🔴 THIS SITE, NOT JUST THE `setMessages` ONES. The two boot-path callers
+      // of `setStorageError` already guard on their effect's `cancelled` flag;
+      // this helper had no equivalent, and it is the one a stranded turn
+      // actually reaches. Pinned by `App.teardown-write.e2e`.
       try {
         await run();
-        setStorageError(null);
+        if (mountedRef.current) setStorageError(null);
         return true;
       } catch (e) {
         const detail = e instanceof Error && e.message ? e.message : 'storage is unavailable';
-        setStorageError(`Couldn't ${what} — ${detail}.`);
+        if (mountedRef.current) setStorageError(`Couldn't ${what} — ${detail}.`);
         depsRef.current.track('storage_error', { what });
         return false;
       }
@@ -1412,7 +1468,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       content: '',
       timestamp: Date.now(),
     };
-    setMessages([...updatedMessages, assistantMsg]);
+    setMessagesIfMounted([...updatedMessages, assistantMsg]);
 
     // 🔴 THE TURN PUBLISHES ITS OWN SESSION AND ITS OWN TRANSCRIPT, so Stop can
     // ask the turn instead of asking the screen. (clawgate #427.)
@@ -1607,7 +1663,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // dropped, not appended. `streamedText` above already holds it, so Stop
         // still files what was streamed.
         // ─────────────────────────────────────────────────────────────────────
-        setMessages((prev) => {
+        setMessagesIfMounted((prev) => {
           const last = prev[prev.length - 1];
           if (!last || last.id !== assistantMsg.id) return prev;
           return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
@@ -2093,7 +2149,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
           // and not an unconditional replace — un-aborted, the replay still has
           // words left and `onChunk` APPENDS, so replacing would duplicate the
           // tail. Same reasoning as the post-replay replace below.
-          if (aborted()) setMessages((prev) => withSettledReply(prev, finalMsg));
+          if (aborted()) setMessagesIfMounted((prev) => withSettledReply(prev, finalMsg));
         }
         turnRecord.settle(saved ? 'saved' : 'write-failed');
       } else {
@@ -2158,7 +2214,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // having done so — pinned by "A REPLY THAT COMPLETES INSIDE THE READ
         // WINDOW LANDS ON THE CLEARED TRANSCRIPT", which goes red against this
         // site alone.
-        setMessages((prev) => {
+        setMessagesIfMounted((prev) => {
           const last = prev[prev.length - 1];
           if (!last || last.id !== assistantMsg.id) return prev;
           // 🔴 THE RENDERED MESSAGE CARRIES THE RECORD TOO, not just the
@@ -2201,7 +2257,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // writes its "Error: …" onto an empty transcript, so this site is
       // reachable on a turn that never replayed a chunk — pinned by "A TURN
       // THAT FAILS INSIDE THE READ WINDOW LANDS ON THE CLEARED TRANSCRIPT".
-      setMessages((prev) => {
+      setMessagesIfMounted((prev) => {
         const last = prev[prev.length - 1];
         if (!last || last.id !== assistantMsg.id) return prev;
         return [...prev.slice(0, -1), { ...last, content: body, withheld }];
@@ -2246,7 +2302,9 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // this turn is still current. A turn can be superseded without ever being
       // aborted — that is precisely turns 2 and 3 in the case above.
       if (turnSeqRef.current === mine) {
-        setIsStreaming(false);
+        // The turn may be settling against an instance that is gone; the ref below
+        // is not React state and must still be cleared either way.
+        if (mountedRef.current) setIsStreaming(false);
         streamingRef.current = false;
       }
       // 🔴 SAME OWNERSHIP QUESTION, ASKED BY IDENTITY. A superseded turn must
