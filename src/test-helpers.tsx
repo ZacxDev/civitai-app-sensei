@@ -11,11 +11,28 @@ import type { UseAppStorage } from '@civitai/blocks-react';
 export function fakeAppStorage(seed: Record<string, unknown> = {}) {
   const store = new Map<string, unknown>(Object.entries(seed));
   const sets: Array<{ key: string; value: unknown }> = [];
+  /**
+   * Every `set` CALL, including the ones that reject.
+   *
+   * `sets` records only what COMMITTED, so it cannot distinguish a write that
+   * was never issued from one that was issued and refused — and that is exactly
+   * the pair a test driving `setFailSet` has to tell apart. Same instrument, and
+   * same reason for it, as `turn-records.e2e.test.tsx`'s own fake.
+   */
+  const attempts: Array<{ key: string; value: unknown }> = [];
+  /**
+   * Per-(key, value) injected write failure. OFF by default, so every existing
+   * caller gets byte-for-byte the previous behaviour; a test opts in with
+   * `setFailSet`.
+   */
+  let failSet: (key: string, value: unknown) => boolean = () => false;
   const appStorage: UseAppStorage = {
     async get<T = unknown>(key: string) {
       return (store.has(key) ? (store.get(key) as T) : null) as T | null;
     },
     async set<T = unknown>(key: string, value: T) {
+      attempts.push({ key, value });
+      if (failSet(key, value)) throw new Error('kv rejected');
       store.set(key, value);
       sets.push({ key, value });
       return { ok: true as const };
@@ -33,7 +50,15 @@ export function fakeAppStorage(seed: Record<string, unknown> = {}) {
       return { usedBytes: 0, rowCount: store.size, limitBytes: 50_000_000, limitRows: 1_000_000 };
     },
   };
-  return { appStorage, sets, store };
+  return {
+    appStorage,
+    sets,
+    store,
+    attempts,
+    setFailSet(f: (key: string, value: unknown) => boolean) {
+      failSet = f;
+    },
+  };
 }
 
 /**
