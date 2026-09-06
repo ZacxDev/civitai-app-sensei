@@ -207,6 +207,62 @@ interface StreamingTurn {
 }
 
 /**
+ * Build a turn's assistant row — the ONE place it is built, for the write AND
+ * for React state.
+ *
+ * 🔴 IT EXISTS BECAUSE THE TWO USED TO BE BUILT SEPARATELY AND DISAGREED ABOUT A
+ * FIELD (rank 34). The write built `finalMsg` with
+ * `...(turnGrounded.size > 0 ? { grounded } : {})`; the state replace beside it
+ * built `{ ...last, content: replyText, ...correction }` — `last` being the
+ * empty placeholder `assistantMsg` plus streamed prose, which never carries
+ * `grounded`. So storage held the turn's citation evidence and React did not,
+ * and the very next send serialises `[...messages, userMsg]`: an ORDINARY second
+ * send committed turn 1's reply back with its `grounded` array gone. The
+ * reply-monotonicity ledger could not see it — it compared `content.length`, and
+ * the content was identical.
+ *
+ * 🔴 WHAT THAT COSTS IS THE ANTI-FABRICATION GUARANTEE, NOT A COSMETIC. The
+ * citation gate refuses a `civitai.com/models/<id>` link unless a tool round in
+ * THIS conversation returned `<id>`, and `role:'tool'` is never persisted — so
+ * `Message.grounded` is the only surviving evidence. Dropped, a reload rebuilds
+ * a poorer grounded set than the live turn enforced and every link that turn
+ * approved renders as plain text: the guard refusing a citation it had itself
+ * verified, because the evidence was deleted rather than because the id was bad.
+ *
+ * 🔴 SO THE OMISSION RULE LIVES HERE, ONCE. A predicate duplicated across call
+ * sites regenerates the same bug at every site, and this one had four sites —
+ * the success write, the error/withhold write, the stopped turn's rescue
+ * transcript, and two state replaces. Anything that puts an assistant row into a
+ * write or into `messages` goes through here, so a site added later cannot
+ * forget the field by omission.
+ *
+ * `grounded` is dropped when empty for the same reason `serializeMessages` drops
+ * it: a turn that grounded nothing must store byte-identically to what it did
+ * before the field existed.
+ */
+export function assistantReply(
+  base: Pick<Message, 'id' | 'timestamp'>,
+  fields: {
+    content: string;
+    correction?: CorrectionRecord;
+    withheld?: boolean;
+    /** This turn's accumulated grounded ids — the set `linkHref` was consulted with. */
+    grounded: ReadonlySet<string> | readonly string[];
+  },
+): Message {
+  const grounded = [...fields.grounded];
+  return {
+    id: base.id,
+    role: 'assistant',
+    content: fields.content,
+    timestamp: base.timestamp,
+    ...(fields.withheld ? { withheld: true } : {}),
+    ...(fields.correction ? { correction: fields.correction } : {}),
+    ...(grounded.length > 0 ? { grounded } : {}),
+  };
+}
+
+/**
  * Settle a stopped turn's bubble on the reply that is already in storage.
  *
  * 🔴 THE LAST-ELEMENT IDENTITY TEST IS THE SESSION GUARD, and it is the same one
@@ -217,6 +273,11 @@ interface StreamingTurn {
  * would put one conversation's reply into another. If the last message is not
  * this turn's assistant message, the turn no longer owns the screen and the
  * repair is skipped; storage is already correct either way.
+ *
+ * 🔴 IT IS NOW THE ONLY WAY A SETTLED REPLY REACHES `messages`. Both post-turn
+ * updaters — the success path and the error/withhold path — call it with the row
+ * `assistantReply` built, so the guard above is applied identically at both and
+ * neither can reassemble a row of its own that disagrees with what was written.
  *
  * Exported so both refusals can be pinned directly rather than only through a
  * timing-dependent e2e — see the `withSettledReply` block in
@@ -1562,7 +1623,17 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     let streamedText = '';
     const turn: StreamingTurn = {
       sessionId: activeSessionId,
-      transcript: () => [...updatedMessages, { ...assistantMsg, content: streamedText }],
+      // 🔴 THE RESCUE TRANSCRIPT CARRIES THE TURN'S EVIDENCE TOO. A Stop pressed
+      // AFTER a tool round has returned but before the reply is durable writes
+      // this array — and it used to write the placeholder plus prose, dropping
+      // ids the catalog had genuinely returned in this conversation and that the
+      // live screen was already honouring. Read from the same `turnGrounded` the
+      // reply write reads, at rescue time, so what is rescued is what was
+      // enforced. See `assistantReply`.
+      transcript: () => [
+        ...updatedMessages,
+        assistantReply(assistantMsg, { content: streamedText, grounded: turnGrounded }),
+      ],
     };
     streamingTurnRef.current = turn;
 
@@ -2113,22 +2184,18 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // owns — never from a read-back. `updatedMessages` already contains the
       // user turn, so both halves of the exchange land in one write and neither
       // can overwrite the other.
-      const finalMsg: Message = {
-        id: assistantMsg.id,
-        role: 'assistant',
+      // 🔴 THE CITATION GATE'S EVIDENCE RIDES THE WRITE THAT ALREADY HAPPENS,
+      // AND THE SAME VALUE NOW GOES INTO REACT STATE BELOW. `role:'tool'` is a
+      // transcript role and is never stored, so `grounded` is the only surviving
+      // record of what this turn's tool rounds returned. `turnGrounded` is
+      // exactly the set `linkHref` was consulted with while the reply rendered,
+      // so what is stored is what was actually enforced. See `assistantReply`
+      // for why the row is built there rather than inline here.
+      const finalMsg = assistantReply(assistantMsg, {
         content: replyText ?? '',
-        timestamp: assistantMsg.timestamp,
-        ...(correction ? { correction } : {}),
-        // 🔴 THE CITATION GATE'S EVIDENCE, RIDING THE WRITE THAT ALREADY
-        // HAPPENS. `role:'tool'` is a transcript role and is never stored, so
-        // without this a reload rebuilds an EMPTY grounded set and every link
-        // in this reply renders as plain text — the guard refusing links it
-        // approved minutes ago because the evidence was gone, not because the
-        // id was bad. `turnGrounded` is this turn's accumulated set, which is
-        // exactly what `linkHref` was consulted with while the reply rendered,
-        // so what is stored is what was actually enforced.
-        ...(turnGrounded.size > 0 ? { grounded: [...turnGrounded] } : {}),
-      };
+        correction,
+        grounded: turnGrounded,
+      });
       // 🔴 ONLY IF THIS TURN STILL OWNS THE TRANSCRIPT. `updatedMessages` was
       // built when this turn started; writing it now would drop anything a newer
       // writer has added since. Within one instance that cannot happen, but a
@@ -2255,27 +2322,31 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // other half of that, and the two must move together.
       if (aborted()) return;
 
-      if (replyText) {
-        // 🔴 SAME `!last` GUARD AS `onChunk`, AND IT IS NOT REDUNDANT WITH IT.
-        // A reply short enough to finish replaying inside the successor-read
-        // window reaches THIS updater on an empty transcript with no chunk ever
-        // having done so — pinned by "A REPLY THAT COMPLETES INSIDE THE READ
-        // WINDOW LANDS ON THE CLEARED TRANSCRIPT", which goes red against this
-        // site alone.
-        setMessagesIfMounted((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last || last.id !== assistantMsg.id) return prev;
-          // 🔴 THE RENDERED MESSAGE CARRIES THE RECORD TOO, not just the
-          // persisted one. They are written from the same `correction` value
-          // here so a reload cannot disagree with the live screen about
-          // whether a round fired — two separately-derived copies of one fact
-          // is how the two drift.
-          return [
-            ...prev.slice(0, -1),
-            { ...last, content: replyText, ...(correction ? { correction } : {}) },
-          ];
-        });
-      }
+      // 🔴 THE ROW REACT KEEPS IS THE ROW STORAGE KEEPS — THE SAME OBJECT, not a
+      // second copy assembled from the placeholder. This used to be
+      // `{ ...last, content: replyText, ...correction }`, which reproduced
+      // `content` and `correction` and silently omitted `grounded`, so `messages`
+      // held a strictly poorer copy of a reply that was already durable. The next
+      // send serialises `[...messages, userMsg]`, which is how an ORDINARY second
+      // send committed turn 1's citation evidence away (rank 34). Two separately
+      // derived copies of one fact is how the two drift; there is now one.
+      //
+      // 🔴 SAME `!last` GUARD AS `onChunk`, AND IT IS NOT REDUNDANT WITH IT — it
+      // lives inside `withSettledReply` now, which applies exactly the test this
+      // site applied inline (plus the id comparison it already had). A reply
+      // short enough to finish replaying inside the successor-read window reaches
+      // THIS updater on an empty transcript with no chunk ever having done so —
+      // pinned by "A REPLY THAT COMPLETES INSIDE THE READ WINDOW LANDS ON THE
+      // CLEARED TRANSCRIPT", which goes red against this site alone.
+      //
+      // ⚠️ THE `if (replyText)` WRAPPER IS GONE, DELIBERATELY. `finalMsg.content`
+      // IS `replyText ?? ''`, so on a falsy reply this now writes the empty
+      // string the WRITE ABOVE ALREADY STORED rather than leaving state holding
+      // something storage does not — the whole point of one row. That branch is
+      // not known to be reachable: the bridge throws
+      // `Chat completion returned empty response` on a content-less, call-less
+      // reply, and the round-cap exit substitutes a non-empty notice.
+      setMessagesIfMounted((prev) => withSettledReply(prev, finalMsg));
     } catch (e) {
       // 🔴 A USER STOP IS NOT AN ERROR, AND MUST NOT OVERWRITE ITS OWN WRITE.
       // `handleStopStream` aborts and persists what was streamed; aborting then
@@ -2300,16 +2371,28 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       const body = withheld
         ? (e as TextOutputWithheldError).reason
         : `Error: ${e instanceof Error ? e.message : 'Failed to get response'}`;
-      // 🔴 SAME `!last` GUARD AGAIN, ON THE EXIT THAT NEEDS NO STREAM AT ALL. A
-      // turn that fails or is withheld while the successor read is still out
-      // writes its "Error: …" onto an empty transcript, so this site is
-      // reachable on a turn that never replayed a chunk — pinned by "A TURN
-      // THAT FAILS INSIDE THE READ WINDOW LANDS ON THE CLEARED TRANSCRIPT".
-      setMessagesIfMounted((prev) => {
-        const last = prev[prev.length - 1];
-        if (!last || last.id !== assistantMsg.id) return prev;
-        return [...prev.slice(0, -1), { ...last, content: body, withheld }];
+      // 🔴 A FAILED OR WITHHELD TURN STILL CARRIES ITS EVIDENCE. Its tool rounds
+      // may already have returned catalog ids — the model asked, the catalog
+      // answered, and only the FINAL completion failed — and `recordGrounded`
+      // has put those ids into `groundedBySession`, so the live screen honours
+      // them for the rest of the session. Omitting them from the row that gets
+      // written made storage strictly weaker than the running app: a reload
+      // rebuilt a grounded set missing exactly what this turn looked up, and a
+      // later citation of one of those ids rendered as plain text. Same class as
+      // the success path above, on the exit nobody looked at.
+      //
+      // 🔴 SAME `!last` GUARD AGAIN, ON THE EXIT THAT NEEDS NO STREAM AT ALL —
+      // now inside `withSettledReply`, applying the identical test. A turn that
+      // fails or is withheld while the successor read is still out writes its
+      // "Error: …" onto an empty transcript, so this site is reachable on a turn
+      // that never replayed a chunk — pinned by "A TURN THAT FAILS INSIDE THE
+      // READ WINDOW LANDS ON THE CLEARED TRANSCRIPT".
+      const failedMsg = assistantReply(assistantMsg, {
+        content: body,
+        withheld,
+        grounded: turnGrounded,
       });
+      setMessagesIfMounted((prev) => withSettledReply(prev, failedMsg));
       // 🔴 PERSIST THE WITHHOLD TOO. A withheld reply means the capability ran
       // and the Buzz was SPENT; leaving it unsaved made the whole exchange
       // disappear on reload, so the viewer saw a charge with nothing to show for
@@ -2330,7 +2413,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         const writing = persist('save the reply', () =>
           sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, [
             ...updatedMessages,
-            { ...assistantMsg, content: body, ...(withheld ? { withheld: true } : {}) },
+            failedMsg,
           ]),
         );
         turn.replyWrite = writing;
