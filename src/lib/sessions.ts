@@ -1,6 +1,7 @@
 import type { UseAppStorage } from '@civitai/blocks-react';
 import type { Message, Session } from '../types.js';
 import { serializeMessages, deserializeMessages } from './chat.js';
+import { serializeMessageWrite } from './write-ownership.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 🔴 THIS MODULE IS WRITE-ONLY EXCEPT AT LOAD, AND THAT IS THE WHOLE POINT.
@@ -144,21 +145,53 @@ export function groundedIdsFromMessages(
   return [...out];
 }
 
-/** WRITE. Persists the caller's authoritative array verbatim. Never reads. */
+/**
+ * WRITE. Persists the caller's authoritative array verbatim. Never reads.
+ *
+ * 🔴 SERIALISED PER SESSION, AND THAT IS A DURABILITY GUARANTEE RATHER THAN
+ * TIDINESS. This key is last-writer-wins, so what survives is decided by the
+ * order writes LAND. Two writers overlapping on one session — turn 1's reply
+ * write still in flight while a Stop and a second send produce three more — let
+ * the OLDEST array land last and delete everything written since. Measured
+ * (rank 33): the stored array ended `[user, assistant]` with the viewer's second
+ * question and its paid-for reply gone. Chaining here makes landing order equal
+ * issue order, which is the property the ownership ticket cannot provide (it is
+ * asked before the write, and an in-flight `set` cannot be revoked).
+ *
+ * 🔴 IT LIVES HERE, NOT AT THE CALL SITES, so a write added later cannot opt out
+ * by accident. `App.tsx` has four message writes on three different exits;
+ * requiring each to remember is how the ticket ended up guarding two of them and
+ * not the ordering of any.
+ *
+ * The value is serialised BEFORE queueing, from the array the caller holds, so a
+ * queued write stores what its issuer decided — never a later snapshot.
+ */
 export async function saveMessages(
   appStorage: UseAppStorage,
   sessionId: string,
   messages: Message[],
 ): Promise<void> {
-  await appStorage.set(`${MESSAGES_PREFIX}${sessionId}`, serializeMessages(messages));
+  const value = serializeMessages(messages);
+  await serializeMessageWrite(sessionId, () =>
+    appStorage.set(`${MESSAGES_PREFIX}${sessionId}`, value),
+  );
 }
 
-/** WRITE. Drops a session's message array. Idempotent host-side. */
+/**
+ * WRITE. Drops a session's message array. Idempotent host-side.
+ *
+ * 🔴 IN THE SAME QUEUE AS `saveMessages`, because it targets the same key. A
+ * delete that overtakes an earlier in-flight write erases a transcript the
+ * viewer still has; a delete overtaken BY one resurrects a conversation they
+ * deleted. Ordering is only a guarantee if every writer of the key is in it.
+ */
 export async function deleteMessages(
   appStorage: UseAppStorage,
   sessionId: string,
 ): Promise<void> {
-  await appStorage.delete(`${MESSAGES_PREFIX}${sessionId}`);
+  await serializeMessageWrite(sessionId, () =>
+    appStorage.delete(`${MESSAGES_PREFIX}${sessionId}`),
+  );
 }
 
 /** The title a session carries until its first message names it. */

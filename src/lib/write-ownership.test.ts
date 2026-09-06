@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { claimMessageWrite, ownsMessageWrite } from './write-ownership.js';
+import {
+  claimMessageWrite,
+  ownsMessageWrite,
+  serializeMessageWrite,
+} from './write-ownership.js';
 
 /**
  * Unit cover for the ownership primitive behind clawgate #425.
@@ -47,6 +51,78 @@ describe('message-write ownership', () => {
     const real = claimMessageWrite('s-forged');
     expect(ownsMessageWrite('s-forged', real + 1)).toBe(false);
     expect(ownsMessageWrite('s-forged', real - 1)).toBe(false);
+  });
+});
+
+/**
+ * The ORDERING half of the fix (rank 33).
+ *
+ * The ticket decides WHETHER a write may be issued; this decides WHEN it runs.
+ * On a last-writer-wins key the second question is what decides which array
+ * survives, and the e2e that carries the behavioural weight is
+ * `src/App.late-write-ordering.e2e.test.tsx`. These pin the primitive's own
+ * contract so a change to it fails HERE, small, instead of three layers up.
+ *
+ * 🔴 SESSION IDS ARE DISTINCT PER TEST, same reason as above: the chain is
+ * module state and outlives a test.
+ */
+describe('message-write ordering', () => {
+  /** A write that finishes after `ms` and appends its label to `landed`. */
+  const slowWrite = (landed: string[], label: string, ms: number) => () =>
+    new Promise<void>((resolve) =>
+      setTimeout(() => {
+        landed.push(label);
+        resolve();
+      }, ms),
+    );
+
+  it('🔴 a write issued FIRST lands FIRST even when it is much slower', async () => {
+    // This is the whole mechanism. Unordered, `slow` resolves last and — on a
+    // last-writer-wins key — its array would be the one a reload reads, deleting
+    // everything `fast` wrote in between.
+    const landed: string[] = [];
+    const first = serializeMessageWrite('o-order', slowWrite(landed, 'slow', 40));
+    const second = serializeMessageWrite('o-order', slowWrite(landed, 'fast', 0));
+    await Promise.all([first, second]);
+
+    expect(landed).toEqual(['slow', 'fast']);
+  });
+
+  it('🔴 a REJECTED write must not wedge the queue behind it', async () => {
+    // One failed write per page life is ordinary — the host rejects, `persist`
+    // shows a banner. If the rejection stopped the chain, every later write on
+    // that conversation would hang forever and the viewer would silently stop
+    // being able to save anything at all.
+    const landed: string[] = [];
+    const failed = serializeMessageWrite('o-reject', async () => {
+      throw new Error('kv rejected');
+    });
+    await expect(failed).rejects.toThrow('kv rejected');
+
+    await serializeMessageWrite('o-reject', slowWrite(landed, 'after', 0));
+    expect(landed).toEqual(['after']);
+  });
+
+  it("the caller receives its own write's value and its own rejection", async () => {
+    // `persist` turns exactly these two into `saved` / `write-failed`, so a
+    // wrapper that swallowed either would silently mis-record every turn.
+    await expect(serializeMessageWrite('o-value', async () => 'ok')).resolves.toBe('ok');
+    await expect(
+      serializeMessageWrite('o-value', async () => {
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+  });
+
+  it('🔴 ordering is PER SESSION — one conversation must not queue behind another', async () => {
+    // A shared chain would make a slow write in a conversation the viewer left
+    // delay every write in the one they are actually using.
+    const landed: string[] = [];
+    const a = serializeMessageWrite('o-sess-A', slowWrite(landed, 'A', 40));
+    const b = serializeMessageWrite('o-sess-B', slowWrite(landed, 'B', 0));
+    await Promise.all([a, b]);
+
+    expect(landed).toEqual(['B', 'A']);
   });
 });
 
