@@ -64,12 +64,43 @@ import type { UseAppStorage } from '@civitai/blocks-react';
 // header says the same thing at the other end of the pipeline.
 //
 // 🔴 A STOPPED TURN IS NOT A LOST ANSWER AND DOES NOT NEED AN OUTCOME OF ITS
-// OWN. `handleSend`'s two abort exits return without settling, so a stopped turn
-// keeps `outcome: 'pending'` — but `handleStopStream` persists that same
-// `assistantMsg.id` with whatever was streamed, so the reconciliation FINDS a
-// matching message and the record is not counted as lost. What surfaces is a
-// stopped turn whose own write also failed, which is a real loss and is
-// attributed to (a).
+// OWN — AND IT DOES NOT ALL LAND ON ONE OUTCOME. Which value a stopped turn
+// carries depends on WHERE the stop landed, because `turnRecord.settle` sits
+// ABOVE the abort exit that follows the reply write, not below it:
+//
+//   stopped BEFORE the reply write (the common case — Stop pressed while the
+//   workflow is still polling) reaches an abort exit that returns without
+//   settling, so the record keeps `outcome: 'pending'`;
+//
+//   stopped AFTER the reply write has been persisted settles normally to
+//   `'saved'` / `'write-failed'` / `'discarded'`, because the settle runs first
+//   and only then does the abort exit return.
+//
+// Either way the record is NOT counted as lost, which is the point of this
+// paragraph: `handleStopStream` persists that same `assistantMsg.id` with
+// whatever was streamed, so the reconciliation FINDS a matching message. What
+// surfaces is a stopped turn whose own write also failed, which is a real loss
+// and is attributed to (a).
+//
+// 🔴 THIS USED TO SAY "`handleSend`'s TWO abort exits return without settling,
+// so a stopped turn keeps `outcome: 'pending'`". Both halves were wrong after
+// #55 moved the settle ahead of the replay: there are FOUR abort exits in
+// `handleSend`, and the one after the reply write settles before it returns.
+// Anyone reasoning about the lost-answer reconciliation off the old sentence
+// would expect `pending` for every stop and mis-read a `saved` record as a
+// different turn.
+//
+// 🔴 AND THIS ORDERING IS NOT PINNED BY ANY TEST — stated because the honest
+// version of this paragraph is more useful than a confident one. It was
+// MEASURED: inserting `if (aborted()) return;` immediately above the
+// success-path `turnRecord.settle` — restoring exactly the pre-#55 ordering the
+// old sentence described — leaves the whole `turn-records.e2e` file GREEN.
+// The suite's stopped-turn case stops while the workflow is still POLLING, so
+// it never reaches this line, and every case that does reach it has already let
+// the settle run. A case written to close this has to abort in the window
+// between `await persist(...)` resolving and the settle executing, which is a
+// harder fixture than it looks and was not built. Until it is, the sentence
+// above rests on reading the call order, not on a guard.
 //
 // COST AND POSTURE. This is the money path. Nothing here is awaited by the
 // caller, every rejection is swallowed, and no failure here can reach
