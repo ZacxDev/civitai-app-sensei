@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { App, withSettledReply } from './App.js';
+import { App, assistantReply, withSettledReply } from './App.js';
 import { fakeAppStorage } from './test-helpers.js';
 
 /**
@@ -32,18 +32,40 @@ import { fakeAppStorage } from './test-helpers.js';
  * rename that re-serialises — reintroduces it through a door no case-specific
  * test is watching.
  *
- * 🔴 READ THAT SENTENCE NARROWLY: THIS LEDGER MEASURES `content.length` AND
- * NOTHING ELSE. An earlier revision said "can hold less of an assistant
- * message", which is WIDER than what the body checks and would let a reader
- * conclude that assistant-message loss is pinned in general. It is not.
- * FIELD-level loss is invisible here and is REAL and PRE-EXISTING: an ordinary
- * second send re-serialises React's copy of turn 1's reply, whose `grounded`
- * array is `undefined`, so a turn's citation evidence is silently dropped from
- * storage while `content.length` is unchanged and this ledger stays green.
- * Measured against this PR's head on a tool-round fixture. Widening the ledger
- * to compare `grounded` would go RED on `origin/trunk` behaviour, i.e. it is a
- * separate defect and not this PR's to fix — but do not mistake this guard for
- * covering it.
+ * ✅ THE LEDGER NOW MEASURES TWO THINGS: `content.length` AND `grounded`. The
+ * previous revision measured `content.length` alone and said so, and named the
+ * gap it therefore could not see: an ordinary second send re-serialises React's
+ * copy of turn 1's reply, whose `grounded` array is `undefined`, so a turn's
+ * citation evidence is silently dropped from storage while `content.length` is
+ * unchanged. That prediction was correct — widening the comparison DOES go red
+ * on `9f2a220` behaviour, verbatim:
+ * `write 2 dropped grounded ids from assistant msg-…: [4384] -> []`, where
+ * write 2 is the SECOND SEND'S USER-MESSAGE WRITE. `App.tsx`'s `assistantReply`
+ * is what closes it (rank 34).
+ *
+ * ⚠️ AND THE HARM IS A WINDOW, NOT A PERMANENT DELETION — MEASURED AT
+ * `9f2a220`, BECAUSE THE OBVIOUS FINAL-STATE READ IS BLIND TO IT. Turn 2's own
+ * `turnGrounded` is seeded from the session's accumulated set, so when turn 2
+ * COMPLETES it writes the same id back under its OWN message id and the
+ * conversation's grounded union is whole again. The four committed writes at
+ * base were `[u1]`, `[u1, a1(g=[4384])]`, `[u1, a1(g=absent), u2]`,
+ * `[u1, a1(g=absent), u2, a2(g=[4384])]`. So a test that reads the LAST row
+ * passes over this defect; only the write LOG sees it. What makes the loss
+ * durable is turn 2 never writing a row that carries the union — a closed tab,
+ * a reload, or (at `9f2a220`) a turn 2 that fails or is stopped, since those
+ * rows carried no `grounded` at all. `App.grounded-evidence.e2e.test.tsx`
+ * drives those.
+ *
+ * 🔴 STILL READ IT NARROWLY: THE LEDGER COMPARES `content.length` AND
+ * `grounded`, AND NOTHING ELSE. `mentions` and `correction` are field-level loss
+ * of exactly the same kind and are NOT compared here; they are protected only by
+ * the structural fact that every assistant row is now built by one function
+ * (`assistantReply`) and every state replace takes that same object. That is a
+ * weaker claim than a ledger, and it is deliberately stated rather than implied.
+ *
+ * 🔴 AND THE GROUNDED HALF IS A SET COMPARISON, NOT A COUNT. A write that swaps
+ * one id for another keeps the size and loses the evidence, so what is asserted
+ * is SUPERSET-of-every-earlier-write, and the failure names the dropped ids.
  *
  * So the assertion below runs over the WHOLE committed write log, per assistant
  * message id, and fails on any strictly-shortening write regardless of which
@@ -90,13 +112,90 @@ const REPLAY_MS = WORDS.length * 20;
  */
 let replyTextFor: (submitCount: number) => string = () => REPLY;
 
-const pollFn = vi.fn(async () => ({
-  workflowId: 'wf-1',
-  status: 'succeeded',
-  cost: { total: 1 },
-  textOutputs: [replyTextFor(submitFn.mock.calls.length)],
-}));
+/**
+ * Snapshots to serve, in order, before falling back to `replyTextFor`.
+ *
+ * 🔴 OPT-IN AND EMPTY BY DEFAULT, so every case that predates the tool fixture
+ * gets byte-identical behaviour. Only the grounded case queues anything.
+ */
+let pollQueue: Array<Record<string, unknown>> = [];
+
+const pollFn = vi.fn(async () => {
+  const queued = pollQueue.shift();
+  if (queued) return queued;
+  return {
+    workflowId: 'wf-1',
+    status: 'succeeded',
+    cost: { total: 1 },
+    textOutputs: [replyTextFor(submitFn.mock.calls.length)],
+  };
+});
 const cancelFn = vi.fn(async () => undefined);
+
+/**
+ * The one catalog id this file's tool round returns. Real, and the same id
+ * `citation-grounding.e2e.test.tsx` uses, so the two files agree about what a
+ * grounded id looks like.
+ */
+const DREAMSHAPER = '4384';
+
+/** The declarations `GET /api/v1/blocks/tools` serves. Empty = tool-less turn. */
+let toolDeclarations: unknown[] = [];
+/** What `POST /api/v1/blocks/tools` returns — i.e. what actually grounds. */
+let toolItems: Array<Record<string, unknown>> = [];
+
+/**
+ * A snapshot in which the model asks for a `search_models` round instead of
+ * answering. The reply text arrives on the NEXT submit.
+ */
+function toolCallSnapshot() {
+  return {
+    workflowId: 'wf-tc',
+    status: 'succeeded',
+    cost: { total: 1 },
+    toolCalls: [
+      {
+        id: 'call_abc',
+        type: 'function',
+        function: { name: 'search_models', arguments: JSON.stringify({ query: 'realistic' }) },
+      },
+    ],
+  };
+}
+
+function textSnapshot(text: string) {
+  return { workflowId: 'wf-t', status: 'succeeded', cost: { total: 1 }, textOutputs: [text] };
+}
+
+/**
+ * The host's `/api/v1/blocks/tools` route, both verbs.
+ *
+ * 🔴 THE FALL-THROUGH BODY IS `{ tools: [] }`, WHICH IS WHAT THIS FILE SERVED
+ * FOR EVERY URL BEFORE THE TOOL FIXTURE EXISTED. Keeping it means the cases that
+ * do not opt in are running against the same bytes they always were, so a change
+ * in one of them is attributable to the code and not to this fixture.
+ */
+function installFetch() {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : String(input);
+    const method = init?.method ?? 'GET';
+    if (url.includes('/api/v1/blocks/tools')) {
+      const payload =
+        method === 'GET' ? { tools: toolDeclarations } : { items: toolItems, truncated: 0 };
+      return new Response(JSON.stringify(payload), { status: 200 });
+    }
+    return new Response(JSON.stringify({ tools: [] }), { status: 200 });
+  }) as unknown as typeof globalThis.fetch;
+}
+
+const SEARCH_MODELS_DECLARATION = {
+  type: 'function',
+  function: {
+    name: 'search_models',
+    description: 'Search the Civitai model catalog',
+    parameters: { type: 'object', properties: { query: { type: 'string' } } },
+  },
+};
 
 vi.mock('@civitai/blocks-react', () => ({
   useAppStorage: () => storage.appStorage,
@@ -119,7 +218,7 @@ vi.mock('@civitai/blocks-react', () => ({
   }),
 }));
 
-type StoredMessage = { id?: string; role: string; content: string };
+type StoredMessage = { id?: string; role: string; content: string; grounded?: string[] };
 
 /** Every COMMITTED transcript write, in issue order. `sets` excludes rejects. */
 function transcriptWrites(): StoredMessage[][] {
@@ -128,17 +227,41 @@ function transcriptWrites(): StoredMessage[][] {
     .map((s) => s.value as StoredMessage[]);
 }
 
+/** What the ledger learned, per assistant message id. */
+interface ReplyHighWater {
+  /** id → the longest `content` any committed write held for it. */
+  content: Map<string, number>;
+  /** id → the union of every `grounded` id any committed write held for it. */
+  grounded: Map<string, Set<string>>;
+}
+
 /**
- * THE LEDGER. For every assistant message id, no committed write may hold a
- * strictly shorter `content` than an earlier committed write held for that id.
+ * THE LEDGER. For every assistant message id, no committed write may hold LESS
+ * of that reply than an earlier committed write held — measured on two axes:
+ *
+ *   `content` — never strictly shorter (the F5 defect: a frozen partial
+ *               re-serialised over a complete stored reply);
+ *   `grounded` — never a strict subset (rank 34: the citation evidence dropped
+ *               by re-serialising React's copy, which never carried the field).
+ *
+ * 🔴 THE TWO AXES ARE INDEPENDENT AND BOTH ARE REQUIRED. A `content`-only ledger
+ * is exactly what was green while an ordinary second send deleted a turn's
+ * grounded array — the string was byte-identical. A `grounded`-only ledger would
+ * be blind to F5. Neither implies the other.
+ *
+ * 🔴 `grounded` IS COMPARED AS A SET, NOT AS A LENGTH. Swapping one id for
+ * another preserves the count and destroys the evidence, so the test is
+ * superset-of-every-earlier-write and the message names what went missing.
  *
  * Returns the per-id high-water marks so the caller can run its own positive
  * control on them — a ledger over a log that never saw the same id twice is
  * vacuously true, and reporting that as coverage is worse than no test.
  */
-function assertAssistantContentNeverShrinks(writes: StoredMessage[][]): Map<string, number> {
+function assertAssistantReplyNeverShrinks(writes: StoredMessage[][]): ReplyHighWater {
   /** id → the longest content any earlier committed write held for it. */
   const highWater = new Map<string, number>();
+  /** id → every grounded id any earlier committed write held for it. */
+  const groundedSeen = new Map<string, Set<string>>();
   /** id → how many committed writes mentioned it, for the vacuity control. */
   const appearances = new Map<string, number>();
 
@@ -158,6 +281,23 @@ function assertAssistantContentNeverShrinks(writes: StoredMessage[][]): Map<stri
         ).toBeGreaterThanOrEqual(was);
       }
       highWater.set(m.id, Math.max(was ?? 0, m.content.length));
+
+      // 🔴 A MISSING KEY IS AN EMPTY SET, NOT A SKIP. "The field is absent" is
+      // precisely how the evidence disappears — `serializeMessages` omits
+      // `grounded` when the array is empty, so the losing write looks like an
+      // ordinary row. Treating absence as "nothing to compare" would make this
+      // ledger blind to the only shape the defect takes.
+      const here = new Set(m.grounded ?? []);
+      const before = groundedSeen.get(m.id);
+      if (before !== undefined) {
+        const dropped = [...before].filter((id) => !here.has(id));
+        expect(
+          dropped,
+          `write ${i} dropped grounded ids from assistant ${m.id}: ` +
+            `[${[...before].join(', ')}] -> [${[...here].join(', ')}]`,
+        ).toEqual([]);
+      }
+      groundedSeen.set(m.id, new Set([...(before ?? []), ...here]));
     }
   }
 
@@ -170,7 +310,7 @@ function assertAssistantContentNeverShrinks(writes: StoredMessage[][]): Map<stri
       'so no cross-write comparison ever ran',
   ).toBe(true);
 
-  return highWater;
+  return { content: highWater, grounded: groundedSeen };
 }
 
 async function openChat() {
@@ -221,12 +361,13 @@ describe('a durable assistant reply never shrinks across committed writes', () =
     storage.attempts.length = 0;
     storage.setFailSet(() => false);
     replyTextFor = () => REPLY;
+    pollQueue = [];
+    toolDeclarations = [];
+    toolItems = [];
     submitFn.mockClear();
     pollFn.mockClear();
     cancelFn.mockClear();
-    globalThis.fetch = vi.fn(
-      async () => new Response(JSON.stringify({ tools: [] }), { status: 200 }),
-    ) as unknown as typeof globalThis.fetch;
+    installFetch();
   });
 
   it('🔴 Stop mid-replay then a second send — the reply must not shrink (F5)', async () => {
@@ -254,7 +395,7 @@ describe('a durable assistant reply never shrinks across committed writes', () =
     await new Promise((r) => setTimeout(r, REPLAY_MS));
 
     const writes = transcriptWrites();
-    const highWater = assertAssistantContentNeverShrinks(writes);
+    const highWater = assertAssistantReplyNeverShrinks(writes).content;
 
     // 🔴 SECOND POSITIVE CONTROL, ON THE FIXTURE RATHER THAN THE LOOP: the
     // ledger is only interesting if the full reply was ever committed at all.
@@ -287,8 +428,67 @@ describe('a durable assistant reply never shrinks across committed writes', () =
     await send('Say OK.', 1);
     await new Promise((r) => setTimeout(r, REPLAY_MS));
 
-    const highWater = assertAssistantContentNeverShrinks(transcriptWrites());
+    const highWater = assertAssistantReplyNeverShrinks(transcriptWrites()).content;
     expect([...highWater.values()].some((n) => n >= REPLY.length)).toBe(true);
+  }, 60_000);
+
+  it("🔴 an ORDINARY second send must not drop turn 1's citation evidence (rank 34)", async () => {
+    // ── THE FIELD HALF OF THE SAME RE-SERIALISATION. ──────────────────────────
+    //
+    // No Stop, no switch, no unmount, no failed write — the plainest sequence in
+    // the app: ask, get an answer that involved a catalog lookup, ask again.
+    // `handleSend` writes `[...messages, userMsg]`, and React's copy of turn 1's
+    // reply used to be rebuilt from the empty placeholder, so it carried
+    // `content` and nothing else. The committed write therefore held turn 1's
+    // reply with `grounded` GONE while `content.length` was byte-identical —
+    // which is precisely why the content-only ledger stayed green over it.
+    //
+    // 🔴 WHY IT IS NOT COSMETIC: `role:'tool'` is never persisted, so `grounded`
+    // is the only surviving evidence that the catalog returned this id in this
+    // conversation. A reload after this write rebuilds a grounded set without it
+    // and the citation gate refuses a link it had itself approved.
+    //
+    // 🔴 AND WHY THE LEDGER RATHER THAN A FINAL-STATE READ: turn 2's own reply
+    // write re-adds the id (its `turnGrounded` is seeded from the session's
+    // accumulated set), so the LAST row looks correct while the row a viewer who
+    // reloaded in between would have loaded does not. The loss is real and
+    // durable exactly when the second turn never completes — it fails, it is
+    // withheld, or the viewer closes the tab — and it is invisible to anything
+    // that only reads the end state.
+    toolDeclarations = [SEARCH_MODELS_DECLARATION];
+    toolItems = [{ id: Number(DREAMSHAPER), name: 'DreamShaper', type: 'Checkpoint' }];
+    // Turn 1 spends two submits: the model asks for a round, then answers.
+    pollQueue = [toolCallSnapshot(), textSnapshot(REPLY)];
+
+    await openChat();
+    await send('what is DreamShaper?', 0);
+    await waitFor(() => expect(fullReplyWrites().length).toBeGreaterThan(0), { timeout: 15_000 });
+
+    // 🔴 POSITIVE CONTROL ON THE FIXTURE, BEFORE THE LEDGER RUNS. Without it a
+    // green verdict is indistinguishable from a conversation that grounded
+    // nothing at all — the reassuring zero, where "no evidence was dropped" and
+    // "there was no evidence" look the same.
+    const groundedSoFar = transcriptWrites().flatMap((arr) =>
+      arr.filter((m) => m.role === 'assistant').flatMap((m) => m.grounded ?? []),
+    );
+    expect(
+      groundedSoFar,
+      'the tool round never grounded anything, so this case measures nothing',
+    ).toContain(DREAMSHAPER);
+
+    // The ordinary next thing a viewer does.
+    await send('anything else?', submitFn.mock.calls.length);
+    await new Promise((r) => setTimeout(r, REPLAY_MS));
+
+    const marks = assertAssistantReplyNeverShrinks(transcriptWrites());
+    expect(
+      [...marks.content.values()].some((n) => n >= REPLY.length),
+      `no committed write ever held the whole ${REPLY.length}-char reply`,
+    ).toBe(true);
+    expect(
+      [...marks.grounded.values()].some((s) => s.has(DREAMSHAPER)),
+      'no committed write ever held the grounded id, so the ledger compared nothing',
+    ).toBe(true);
   }, 60_000);
 
   it('🔴 Stop landing while the reply write is STILL IN FLIGHT — the reply must not shrink', async () => {
@@ -376,7 +576,7 @@ describe('a durable assistant reply never shrinks across committed writes', () =
       await send('Say OK.', 1);
       await new Promise((r) => setTimeout(r, REPLAY_MS));
 
-      const highWater = assertAssistantContentNeverShrinks(transcriptWrites());
+      const highWater = assertAssistantReplyNeverShrinks(transcriptWrites()).content;
       expect(
         [...highWater.values()].some((n) => n >= REPLY.length),
         `no committed write ever held the whole ${REPLY.length}-char reply`,
@@ -541,7 +741,7 @@ describe('a durable assistant reply never shrinks across committed writes', () =
 
 /**
  * 🔴 VALIDATE THE INSTRUMENT BEFORE READING ITS VERDICT. The two cases above
- * take their verdict from `assertAssistantContentNeverShrinks`; until it has
+ * take their verdict from `assertAssistantReplyNeverShrinks`; until it has
  * been watched to go red on a log that MUST fail and to refuse a log it cannot
  * learn anything from, a green there is a claim about the ledger, not about the
  * app. These run on synthetic logs, so they cannot be quieted by a timing
@@ -555,6 +755,82 @@ describe('a durable assistant reply never shrinks across committed writes', () =
  * chat can only ever exercise the first, which is how weakening the second to
  * `if (!last)` once survived the entire suite.
  */
+/**
+ * 🔴 THE BUILDER'S FOUR CLAUSES, PINNED WHERE A MUTATION CAN REACH THEM.
+ *
+ * `assistantReply` is now the single site that decides which optional fields an
+ * assistant row carries, for the write AND for React. Three of its clauses have
+ * behavioural coverage — `grounded` through the cases above and
+ * `App.grounded-evidence.e2e.test.tsx`, `correction` through
+ * `correction-round.e2e.test.tsx` (measured: deleting that clause reddens 5
+ * cases there). The fourth does not, and this describe exists because that was
+ * MEASURED rather than assumed.
+ *
+ * ⚠️ `withheld` HAS NO BEHAVIOURAL COVERAGE ANYWHERE IN THIS REPO, AND THAT IS
+ * PRE-EXISTING, NOT SOMETHING THIS CHANGE INTRODUCED. Deleting the flag from
+ * BOTH of its `9f2a220` sites — the state replace and the write — leaves all 634
+ * pre-existing tests green: `turn-records.e2e.test.tsx` asserts the withhold
+ * REASON renders, which is `content`, and `MessageBubble` only styles on the
+ * flag, so no assertion in the suite can see it. These unit cases stop it being
+ * deleted silently; they are NOT a claim that the rendered withhold notice is
+ * pinned end to end. It is not.
+ */
+describe('assistantReply', () => {
+  const base = { id: 'a1', timestamp: 7 } as const;
+
+  it('carries the required fields and NOTHING optional when there is nothing to carry', () => {
+    // Byte-identical to what a turn stored before any of these fields existed —
+    // the reason each clause is conditional rather than always-present.
+    expect(assistantReply(base, { content: 'hi', grounded: [] })).toEqual({
+      id: 'a1',
+      role: 'assistant',
+      content: 'hi',
+      timestamp: 7,
+    });
+  });
+
+  it('🔴 carries `grounded` when the turn grounded something, from a Set or an array', () => {
+    expect(assistantReply(base, { content: 'hi', grounded: new Set(['4384']) }).grounded).toEqual([
+      '4384',
+    ]);
+    expect(assistantReply(base, { content: 'hi', grounded: ['4384', '22220'] }).grounded).toEqual([
+      '4384',
+      '22220',
+    ]);
+  });
+
+  it('🔴 carries `withheld` only when it is TRUE', () => {
+    expect(assistantReply(base, { content: 'x', withheld: true, grounded: [] }).withheld).toBe(true);
+    expect('withheld' in assistantReply(base, { content: 'x', withheld: false, grounded: [] })).toBe(
+      false,
+    );
+  });
+
+  it('🔴 carries `correction` only when a round fired', () => {
+    const correction = { rounds: 1, resolved: true };
+    expect(assistantReply(base, { content: 'x', correction, grounded: [] }).correction).toEqual(
+      correction,
+    );
+    expect('correction' in assistantReply(base, { content: 'x', grounded: [] })).toBe(false);
+  });
+
+  it('🔴 stores a plain ARRAY snapshot, never the live Set the turn keeps mutating', () => {
+    // 🔴 TWO SEPARATE HAZARDS, ONE ASSERTION EACH, AND THE FIRST IS SILENT
+    // DATA LOSS RATHER THAN A TYPE COMPLAINT. `turnGrounded` is a `Set`, and
+    // `JSON.stringify(new Set(['4384']))` is `{}` — a row carrying the Set
+    // itself would go through `appStorage.set` as an EMPTY OBJECT, i.e. every
+    // id lost with nothing thrown. Second: the Set keeps accumulating after the
+    // row is built (a correction round can still ground more), so a shared
+    // reference would let a later id appear inside a value already handed to
+    // `saveMessages`.
+    const live = new Set(['4384']);
+    const row = assistantReply(base, { content: 'x', grounded: live });
+    expect(Array.isArray(row.grounded), 'the row carries the Set itself').toBe(true);
+    live.add('22220');
+    expect(row.grounded).toEqual(['4384']);
+  });
+});
+
 describe('withSettledReply', () => {
   const reply = { id: 'a1', role: 'assistant' as const, content: 'the whole reply', timestamp: 1 };
 
@@ -595,7 +871,7 @@ describe('the ledger itself', () => {
   it('NEGATIVE CONTROL: goes red on a log that shortens an assistant message', () => {
     const truncated = { id: 'a1', role: 'assistant', content: 'one two' };
     expect(() =>
-      assertAssistantContentNeverShrinks([
+      assertAssistantReplyNeverShrinks([
         [user, full],
         [user, truncated],
       ]),
@@ -605,7 +881,7 @@ describe('the ledger itself', () => {
   it('accepts growth, and re-writing the identical content', () => {
     const partial = { id: 'a1', role: 'assistant', content: 'one two' };
     expect(() =>
-      assertAssistantContentNeverShrinks([
+      assertAssistantReplyNeverShrinks([
         [user, partial],
         [user, full],
         [user, full],
@@ -614,7 +890,7 @@ describe('the ledger itself', () => {
   });
 
   it('VACUITY CONTROL: refuses a log in which no id was committed twice', () => {
-    expect(() => assertAssistantContentNeverShrinks([[user, full]])).toThrow(/vacuous ledger/);
+    expect(() => assertAssistantReplyNeverShrinks([[user, full]])).toThrow(/vacuous ledger/);
   });
 
   it('🔴 keys on the message id, so a shrink is caught after a turn is inserted', () => {
@@ -623,10 +899,70 @@ describe('the ledger itself', () => {
     const inserted = { id: 'a0', role: 'assistant', content: 'x'.repeat(99) };
     const truncated = { id: 'a1', role: 'assistant', content: 'one' };
     expect(() =>
-      assertAssistantContentNeverShrinks([
+      assertAssistantReplyNeverShrinks([
         [user, full],
         [user, inserted, truncated],
       ]),
     ).toThrow(/shortened assistant a1/);
+  });
+
+  // ── THE GROUNDED AXIS, CONTROLLED SEPARATELY FROM THE CONTENT ONE. ──────────
+  //
+  // 🔴 EVERY CASE HERE HOLDS `content` CONSTANT. That is the whole point: the
+  // defect this axis exists for kept the string byte-identical, so a fixture
+  // whose content also moved would let the content assertion do the killing and
+  // prove nothing about the grounded comparison.
+
+  const groundedFull = { ...full, grounded: ['4384', '22220'] };
+
+  it('NEGATIVE CONTROL: goes red when a later write DROPS a grounded id', () => {
+    // The measured shape: the field is simply absent, because
+    // `serializeMessages` omits an empty array.
+    const stripped = { ...full };
+    expect(() =>
+      assertAssistantReplyNeverShrinks([
+        [user, groundedFull],
+        [user, stripped],
+      ]),
+    ).toThrow(/dropped grounded ids from assistant a1: \[4384, 22220\] -> \[\]/);
+  });
+
+  it('🔴 goes red on a SWAP that preserves the count — a length test would not', () => {
+    const swapped = { ...full, grounded: ['4384', '999'] };
+    expect(() =>
+      assertAssistantReplyNeverShrinks([
+        [user, groundedFull],
+        [user, swapped],
+      ]),
+    ).toThrow(/dropped grounded ids from assistant a1: .* -> \[4384, 999\]/);
+  });
+
+  it('accepts a grounded set that GROWS, and one re-written identically', () => {
+    expect(() =>
+      assertAssistantReplyNeverShrinks([
+        [user, groundedFull],
+        [user, groundedFull],
+        [user, { ...full, grounded: ['4384', '22220', '58390'] }],
+      ]),
+    ).not.toThrow();
+  });
+
+  it('accepts a log with no grounded ids anywhere — the ordinary tool-less chat', () => {
+    // Absence must not be a failure, or every case in this file that never calls
+    // a tool would go red for a reason unrelated to what it tests.
+    expect(() =>
+      assertAssistantReplyNeverShrinks([
+        [user, full],
+        [user, full],
+      ]),
+    ).not.toThrow();
+  });
+
+  it('🔴 the grounded high-water is the UNION, so a later write cannot narrow it', () => {
+    const { grounded } = assertAssistantReplyNeverShrinks([
+      [user, { ...full, grounded: ['4384'] }],
+      [user, { ...full, grounded: ['4384', '22220'] }],
+    ]);
+    expect([...(grounded.get('a1') ?? [])].sort()).toEqual(['22220', '4384']);
   });
 });
