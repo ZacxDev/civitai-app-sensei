@@ -70,7 +70,61 @@ const storage = fakeAppStorage();
  */
 const estimateFn = vi.fn().mockResolvedValue({ workflowId: 'e', status: 'succeeded', cost: { total: 1 } });
 
-const submitFn = vi.fn(async () => ({ workflowId: 'wf-1', status: 'pending' }));
+/**
+ * 🔴 THE TEST GENERATION A TURN BELONGS TO — AND WITHOUT IT A DEAD TEST'S TURN
+ * EATS A LIVE ONE'S REPLY.
+ *
+ * `cleanup()` unmounts the component; it does NOT cancel the bridge's poll loop,
+ * which is a detached async function. Two tests in this file (`a second send
+ * while the first turn is still in flight`, and `a superseded turn must not
+ * clear the shared streaming state`) deliberately leave their SECOND turn
+ * running and never stop it — that is the scenario they exist to pin. Those
+ * turns keep calling `poll` once a second for the rest of the FILE.
+ *
+ * `pollMode` and `toolPollQueue` are module state read at CALL time, so when a
+ * later test set `pollMode = 'queue'` and refilled the queue, a turn from a test
+ * that had already finished took the queue branch and `shift()`ed the snapshot
+ * out from under the live test. The live turn then got the inert
+ * `status: 'pending'` fallback and polled forever: the assistant bubble stayed
+ * `…Thinking…`, the reply never arrived, and the wait for the replay's first
+ * word could not have succeeded at ANY budget.
+ *
+ * MEASURED. Reproduced deterministically by starting a turn, ending its test,
+ * refilling the queue and letting one poll interval pass: the probe logged
+ * `SHIFTED(left=0)` before the next test had sent anything, and the failure was
+ * byte-identical to the one seen in the wild — `…Thinking…`, `Stop` on the
+ * composer, no `word0` anywhere in the DOM.
+ *
+ * A turn is therefore stamped with the generation that created it, and only a
+ * turn of the CURRENT generation may consume the queue. Turns inside one test
+ * still share the FIFO — `Stop DURING a tool call` and `the post-loop abort
+ * guard` both depend on turn 1 taking the tool-call snapshot and turn 2 taking
+ * the next one — while a turn that outlived its test is inert rather than
+ * merely stale.
+ */
+let pollEpoch = 0;
+const turnEpoch = new Map<string, number>();
+beforeEach(() => {
+  // File-level, so it runs before every `describe`'s own `beforeEach` and there
+  // is no per-suite copy to forget. One rule, one place.
+  pollEpoch += 1;
+});
+
+/**
+ * 🔴 A FRESH ID PER SUBMIT, BECAUSE `poll` HAS NO OTHER WAY TO KNOW WHO IS
+ * ASKING. The bridge calls `workflow.poll(workflowId)` with the id THIS submit
+ * returned, so a unique id is what lets `pollFn` tell a live turn from one that
+ * outlived its test. It is also what a real orchestrator does; the constant
+ * `'wf-1'` was the fiction. Nothing reads it back: the bridge takes
+ * `workflowId` from the SUBMIT snapshot only, never from a poll snapshot, and no
+ * assertion in this file names a workflow id.
+ */
+let submitSeq = 0;
+const submitFn = vi.fn(async () => {
+  const workflowId = `wf-${++submitSeq}`;
+  turnEpoch.set(workflowId, pollEpoch);
+  return { workflowId, status: 'pending' };
+});
 /**
  * Two poll shapes, selected per test.
  *
@@ -94,13 +148,15 @@ let pollMode: 'never' | 'pending' | 'queue' = 'never';
  * was therefore unreachable by any test in the file written to guard Stop.
  */
 let toolPollQueue: Array<Record<string, unknown>> = [];
-const pollFn = vi.fn(() => {
+const pollFn = vi.fn((workflowId: string) => {
   if (pollMode === 'never') return new Promise<never>(() => {});
-  if (pollMode === 'queue') {
+  // 🔴 THE EPOCH CHECK IS THE WHOLE GUARD. Without it a turn left running by an
+  // earlier test consumes this test's snapshot; see `pollEpoch` above.
+  if (pollMode === 'queue' && turnEpoch.get(workflowId) === pollEpoch) {
     const next = toolPollQueue.shift();
-    return Promise.resolve(next ?? { workflowId: 'wf-1', status: 'pending' });
+    return Promise.resolve(next ?? { workflowId, status: 'pending' });
   }
-  return Promise.resolve({ workflowId: 'wf-1', status: 'pending' });
+  return Promise.resolve({ workflowId, status: 'pending' });
 });
 const cancelFn = vi.fn(async () => undefined);
 
