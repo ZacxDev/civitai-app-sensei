@@ -97,6 +97,66 @@ describe('sessions', () => {
   });
 
   // ───────────────────────────────────────────────────────────────────────────
+  // 🔴 EVERY WRITER OF THE MESSAGE KEY IS IN ONE QUEUE — rank 33.
+  //
+  // The message key is last-writer-wins, so what survives is decided by the
+  // order writes LAND. `serializeMessageWrite` makes landing order equal issue
+  // order; these pin that both mutators of this key actually route through it.
+  // A mutant that calls `appStorage.set`/`.delete` directly leaves the ownership
+  // ticket intact and every other test green — which is how the ordering half
+  // could ship unenforced.
+  //
+  // The behavioural weight is `src/App.late-write-ordering.e2e.test.tsx`; these
+  // are the small failures that name the site.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('message-key writes are serialised per session', () => {
+    /** A storage fake whose `set`/`delete` take `delayMs` and record landings. */
+    function orderRecordingStorage(landed: string[], delayMs: (label: string) => number) {
+      const wait = (label: string) =>
+        new Promise<void>((r) =>
+          setTimeout(() => {
+            landed.push(label);
+            r();
+          }, delayMs(label)),
+        );
+      const inner = fakeAppStorage();
+      return {
+        ...inner.appStorage,
+        async set<T = unknown>(key: string, value: T) {
+          await wait(`set:${(value as { content?: string }[])[0]?.content}`);
+          return inner.appStorage.set(key, value);
+        },
+        async delete(key: string) {
+          await wait('delete');
+          return inner.appStorage.delete(key);
+        },
+      };
+    }
+
+    it('🔴 a slow saveMessages still lands BEFORE the saveMessages issued after it', async () => {
+      const landed: string[] = [];
+      const s = orderRecordingStorage(landed, (label) => (label === 'set:first' ? 40 : 0));
+      const a = saveMessages(s, 'q1', [msg('m1', 'user', 'first')]);
+      const b = saveMessages(s, 'q1', [msg('m2', 'user', 'second')]);
+      await Promise.all([a, b]);
+
+      expect(landed).toEqual(['set:first', 'set:second']);
+    });
+
+    it('🔴 a deleteMessages cannot overtake a write issued before it', async () => {
+      // Overtaking here resurrects a conversation the viewer deleted; the
+      // reverse order erases one they still have. Both need the same queue.
+      const landed: string[] = [];
+      const s = orderRecordingStorage(landed, (label) => (label === 'set:kept' ? 40 : 0));
+      const write = saveMessages(s, 'q2', [msg('m1', 'user', 'kept')]);
+      const drop = deleteMessages(s, 'q2');
+      await Promise.all([write, drop]);
+
+      expect(landed).toEqual(['set:kept', 'delete']);
+    });
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
   // 🔴 THE REGRESSION GUARD FOR THE LOST-USER-MESSAGE DEFECT.
   //
   // These run against `staleReadAppStorage`, which models the DEPLOYED host: a

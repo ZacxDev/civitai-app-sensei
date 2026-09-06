@@ -306,12 +306,22 @@ describe('a durable assistant reply never shrinks across committed writes', () =
     // the `handleStopStream` half only. A guard no test can reach is a guard
     // nobody has tested, however obviously correct it reads.
     //
-    // 🔴 THE COMMIT ORDER IS THE WHOLE FIXTURE. Stop's partial must commit
-    // FIRST and the full reply SECOND — that ordering is growth, which the
-    // ledger permits, so the only thing left that can shorten the reply is the
-    // second send re-serialising React state. Held the other way round the
-    // ledger would go red on the accepted-window write itself and could not
-    // attribute anything.
+    // 🔴 THE COMMIT ORDER WAS THE WHOLE FIXTURE, AND IT HAS CHANGED — READ THIS
+    // BEFORE "RESTORING" IT. This case used to wait for Stop's partial to commit
+    // FIRST and the full reply SECOND, because unordered writes made that the
+    // order the artificial hold produced. It is not the order production
+    // produced: the reply write is ISSUED first, so it also tended to LAND
+    // first, and Stop's partial then overwrote it — the ⚠️ window
+    // `StreamingTurn.replyPersisted` documents as open.
+    //
+    // Since rank 33 a session's message writes land in ISSUE order
+    // (`lib/write-ownership.ts` → `serializeMessageWrite`), which turned that
+    // race into a certainty — so `handleStopStream` now WAITS for an in-flight
+    // reply write and rescues only if it failed. Stop therefore commits nothing
+    // here at all, and the assertion below pins that: no second transcript write
+    // may commit while the reply write is parked. The ledger is unchanged and
+    // still the point — what shortens a reply is the second send re-serialising
+    // React state, and the persist-site settle is what stops it.
     let releaseReplyWrite: () => void = () => {};
     const realSet = storage.appStorage.set.bind(storage.appStorage);
     const gate = new Promise<void>((r) => {
@@ -342,9 +352,23 @@ describe('a durable assistant reply never shrinks across committed writes', () =
       // ordinary Stop case wearing this case's name.
       expect(fullReplyWrites().length, 'the gate never held the reply write').toBe(0);
 
+      const writesBeforeStop = transcriptWrites().length;
       fireEvent.click(await screen.findByTestId('stop-button'));
-      // Stop's partial commits while the reply write is still parked.
-      await waitFor(() => expect(transcriptWrites().length).toBeGreaterThan(1), { timeout: 5_000 });
+      // Stop has been handled — the control is gone and the turn is no longer
+      // streaming — so anything it was going to write has been decided.
+      await waitFor(() => expect(screen.queryByTestId('stop-button')).toBeNull(), {
+        timeout: 5_000,
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      // 🔴 AND IT WROTE NOTHING WHILE THE REPLY WRITE WAS PARKED. A partial
+      // committed here would land AFTER the full reply once the gate opens —
+      // deterministically, now that writes are ordered — which is the downgrade
+      // this whole case exists to catch.
+      expect(
+        transcriptWrites().length,
+        'Stop wrote a shorter transcript while the reply write was still in flight',
+      ).toBe(writesBeforeStop);
+      expect(fullReplyWrites().length, 'the gate stopped holding the reply write').toBe(0);
 
       releaseReplyWrite();
       await waitFor(() => expect(fullReplyWrites().length).toBeGreaterThan(0), { timeout: 15_000 });

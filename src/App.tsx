@@ -103,13 +103,49 @@ interface StreamingTurn {
    * optimistically before awaiting would suppress the rescue write in exactly
    * the case it exists for.
    *
-   * ⚠️ ONE WINDOW IS NOT CLOSED, AND IT IS THE HONEST COST OF THAT ORDER: a
-   * Stop landing after the write is issued but before it resolves reads false,
-   * so both writes go out. The issue order is fixed — the reply first, Stop's
-   * partial second — so the worst case is what the code did before this change,
-   * and the window is one storage round trip rather than the whole animation.
+   * ✅ THE WINDOW THIS USED TO DOCUMENT AS OPEN IS NOW CLOSED, and the paragraph
+   * is kept rather than deleted because the reasoning is what changed. It read:
+   * a Stop landing after the write is issued but before it resolves reads this
+   * flag as false, so BOTH writes go out — accepted because the two RACED and
+   * the reply write, issued first, usually landed first anyway.
+   *
+   * Once a session's message writes land in ISSUE order (rank 33 —
+   * `lib/write-ownership.ts`), "usually" became "always", and Stop's partial
+   * landing second stopped being a risk and became a certainty. Stop therefore
+   * no longer writes into this window at all: it awaits
+   * {@link StreamingTurn.replyWrite} and rescues only if that write FAILED, so
+   * `false` still means "write it" in every case listed above.
    */
   replyPersisted?: boolean;
+  /**
+   * This turn's reply write once it has been ISSUED, resolving to whether it
+   * saved. Undefined until then.
+   *
+   * 🔴 DELIBERATELY NEVER CLEARED. "Still in flight" would be the narrower
+   * meaning, and clearing it is not merely redundant — it is worse. The catch
+   * path never sets {@link replyPersisted} (that flag is the success path's), so
+   * after a successful error/withhold write a cleared field would send a late
+   * Stop back down the unconditional-write branch and put the half-typed partial
+   * over the stored reason the viewer was charged. Left set, the verdict is
+   * still readable and Stop declines. Once settled, awaiting it costs a
+   * microtask and nothing else.
+   *
+   * 🔴 IT CLOSES THE ⚠️ WINDOW `replyPersisted` DOCUMENTS AS OPEN, and it can
+   * only be closed now that writes to a session's message key LAND IN ISSUE
+   * ORDER (`lib/write-ownership.ts` → `serializeMessageWrite`). Before that,
+   * Stop's partial and the reply write raced, so skipping Stop's write could
+   * have left nothing stored at all. Now the reply write provably lands FIRST,
+   * which means Stop's partial can only take text away — so Stop waits for the
+   * verdict instead of writing over it, and rescues only if that write FAILED.
+   *
+   * 🔴 A PROMISE, NOT A SECOND BOOLEAN, and the difference is a real race rather
+   * than taste. `replyPersisted` is assigned in a continuation of this same
+   * promise, so a flag read from another continuation is scheduled ahead of the
+   * assignment as often as not — it would read `false` for a write that
+   * succeeded and reintroduce the downgrade it was added to prevent. Awaiting
+   * the promise reads the verdict itself, which cannot be early.
+   */
+  replyWrite?: Promise<boolean>;
   /**
    * The exact assistant message this turn durably wrote, set beside
    * {@link replyPersisted} and only on a `persist` that RESOLVED.
@@ -152,14 +188,20 @@ interface StreamingTurn {
    * and the control is still labelled "Stop". Renaming it was considered and
    * deliberately left out of this change as a separate design call.
    *
-   * 🔴 AND THE CLASS CLAIM HAS A KNOWN HOLE, MEASURED: if Stop *and* the next
-   * send both land inside the window where turn 1's reply write is still
-   * in flight, turn 1's late write still clobbers the second exchange —
-   * `ownsMessageWrite` is evaluated BEFORE its `await`, so a claim taken
-   * afterwards cannot revoke it. That ordering is **byte-identical on
-   * `origin/trunk`**, i.e. pre-existing and not introduced here, and the
-   * monotonicity ledger does NOT catch it (the sequence grows rather than
-   * shortens). Do not read this field as closing that case.
+   * ✅ THE KNOWN HOLE THIS USED TO NAME IS FIXED (rank 33), AND IT WAS NEVER
+   * THIS FIELD'S TO CLOSE. It read: if Stop *and* the next send both land inside
+   * the window where turn 1's reply write is still in flight, turn 1's late
+   * write clobbers the second exchange — `ownsMessageWrite` is evaluated BEFORE
+   * its `await`, so a claim taken afterwards cannot revoke it, and the
+   * monotonicity ledger cannot see it because the losing sequence GROWS rather
+   * than shortens.
+   *
+   * The diagnosis was right and the implied remedy was not: an in-flight `set`
+   * cannot be revoked by anybody, so no re-check on this side could have helped.
+   * What fixed it is ORDER — `lib/write-ownership.ts`'s `serializeMessageWrite`
+   * makes a session's message writes land in the order they were issued, so an
+   * older writer's array can no longer be the final value.
+   * `App.late-write-ordering.e2e.test.tsx` drives that exact interleaving.
    */
   persistedReply?: Message;
 }
@@ -2117,12 +2159,18 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // `write-failed` value mean anything. Moving the write earlier does not
         // touch this: it is the same call, at the same site, and the settle
         // still reads what it returned.
-        const saved = await persist('save the reply', () =>
+        // 🔴 PUBLISHED ON THE TURN BEFORE IT IS AWAITED, so Stop can WAIT for
+        // this verdict instead of writing a shorter transcript over it. See
+        // {@link StreamingTurn.replyWrite} for why it is a promise rather than a
+        // flag, and why it is never cleared.
+        const writing = persist('save the reply', () =>
           sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, [
             ...updatedMessages,
             finalMsg,
           ]),
         );
+        turn.replyWrite = writing;
+        const saved = await writing;
         // 🔴 ONLY ON A RESOLVED WRITE. This is what tells Stop there is nothing
         // left to rescue — see {@link StreamingTurn.replyPersisted}. A failed
         // write must leave it false, because then Stop's write is the only one.
@@ -2275,12 +2323,18 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // Same read of `persist`'s verdict as the success path, for the same
         // reason: a withheld or errored turn was charged too, and a write that
         // rejects here loses it exactly as thoroughly.
-        const saved = await persist('save the reply', () =>
+        // Published in flight for the same reason as the success path: this
+        // write is just as authorised and just as slow, and Stop's partial
+        // landing after it would take away the error or withhold text the
+        // viewer needs in order to know what they were charged for.
+        const writing = persist('save the reply', () =>
           sessionsLib.saveMessages(depsRef.current.appStorage, activeSessionId, [
             ...updatedMessages,
             { ...assistantMsg, content: body, ...(withheld ? { withheld: true } : {}) },
           ]),
         );
+        turn.replyWrite = writing;
+        const saved = await writing;
         turnRecord.settle(saved ? 'saved' : 'write-failed');
       } else {
         // Same accepted loss as the success path above, same reason for
@@ -2429,6 +2483,38 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         const reply = turn.persistedReply;
         setMessages((prev) => withSettledReply(prev, reply));
       }
+      return;
+    }
+    // 🔴 A REPLY WRITE THAT HAS BEEN ISSUED CARRIES A VERDICT — WAIT FOR IT
+    // RATHER THAN WRITING OVER IT. This is the ⚠️ window {@link
+    // StreamingTurn.replyPersisted} documents as open: a Stop landing after the
+    // reply write is issued but before it resolves reads the flag as false, so
+    // both writes went out. That was survivable only while the two RACED — now
+    // that a session's message writes land in issue order
+    // (`lib/write-ownership.ts`), the reply write provably lands FIRST and this
+    // one would deterministically overwrite a complete stored reply with the
+    // half-typed copy. Measured on `App.reply-monotonicity.e2e.test.tsx`'s
+    // in-flight case, which is what turned the accepted race into a certainty.
+    //
+    // 🔴 THE RESCUE IS DEFERRED, NOT DROPPED, and that distinction is the whole
+    // reason this is not a downgrade of Stop. `false` still means "write it":
+    // if that write FAILS, this is again the only write there is, and it goes
+    // out with the same transcript it would have carried — `transcript()` is
+    // read at rescue time and `onChunk` has been dropping chunks since the top
+    // of this function, so the array is identical to the one captured here. A
+    // write that has already settled resolves immediately and takes the same
+    // two branches, which is why the field is never cleared.
+    const replyWrite = turn.replyWrite;
+    if (replyWrite) {
+      void replyWrite.then((saved) => {
+        if (saved) return;
+        const rescued = turn.transcript();
+        if (rescued.length > 0) {
+          void persist('save the stopped reply', () =>
+            sessionsLib.saveMessages(depsRef.current.appStorage, turn.sessionId, rescued),
+          );
+        }
+      });
       return;
     }
     const current = turn.transcript();
