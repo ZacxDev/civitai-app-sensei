@@ -117,6 +117,27 @@ afterEach(() => {
  * ReferenceError, which is the reported signature.
  */
 async function withoutWindow(fn: () => Promise<void>) {
+  // 🔴 DRAIN REACT'S SCHEDULER BEFORE THE GLOBAL DISAPPEARS, OR THIS FIXTURE
+  // MANUFACTURES THE VERY DEFECT IT EXISTS TO CATCH.
+  //
+  // React schedules work through `setImmediate` (`performWorkUntilDeadline` in
+  // scheduler.development.js), and `unmount()` leaves a callback queued. If
+  // `window` is removed while one is still pending, that callback runs without
+  // it and throws an UNCAUGHT `ReferenceError: window is not defined` — from
+  // the SCHEDULER, with no frame in `src/`, which is indistinguishable in the
+  // runner's output from the production defect this file pins.
+  //
+  // MEASURED, and this is why the drain is here rather than assumed: without
+  // it, 1 of 24 consecutive full-suite runs at `988d133` exited rc=1 with all
+  // 643 tests passing and one unhandled error attributed to this file — the
+  // exact `rc=1`-with-everything-green signature rank 7 was fixing. A test that
+  // re-creates the flake it guards against is worse than no test.
+  //
+  // Two ticks, not one: the first lets a queued callback run, the second lets
+  // anything it queued in turn drain before the global goes.
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
   const real = Object.getOwnPropertyDescriptor(globalThis, 'window');
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   delete (globalThis as any).window;
@@ -124,6 +145,9 @@ async function withoutWindow(fn: () => Promise<void>) {
     await fn();
   } finally {
     if (real) Object.defineProperty(globalThis, 'window', real);
+    // Symmetric drain: let anything queued while the global was absent run now
+    // that it is back, rather than after the test has returned.
+    await new Promise((r) => setImmediate(r));
   }
 }
 
