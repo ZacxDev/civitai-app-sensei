@@ -5,6 +5,35 @@ import { fakeAppStorage } from './test-helpers.js';
 import { POLL_INTERVAL_MS } from './lib/orchestrator-bridge.js';
 
 /**
+ * The bridge's cosmetic replay, exposed so a test can wait for it to FINISH
+ * rather than estimate how long it takes.
+ *
+ * 🔴 THIS IS A SEAM, NOT A STUB. `importOriginal` keeps the real
+ * `simulateStreaming` — same 20 ms per word, same chunks, same non-abortability
+ * — and the wrapper only records the promise it returns. Replacing the timing
+ * would be the one change that could make the last test in this file pass
+ * vacuously, so the timing is deliberately untouched.
+ *
+ * `vi.hoisted` because `vi.mock` factories are hoisted above every other
+ * statement in this module: a plain `let` declared here would still be in its
+ * temporal dead zone when `App.js` pulls the mocked module in.
+ */
+const replay = vi.hoisted(() => ({ current: Promise.resolve() as Promise<void> }));
+vi.mock('./lib/streaming.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./lib/streaming.js')>();
+  return {
+    ...actual,
+    simulateStreaming: (text: string, onChunk: (chunk: string) => void, delayMs?: number) => {
+      const done = actual.simulateStreaming(text, onChunk, delayMs);
+      // Swallowed on the RECORDED copy only — the bridge still receives the
+      // original promise, so nothing about its own error handling moves.
+      replay.current = done.catch(() => undefined);
+      return done;
+    },
+  };
+});
+
+/**
  * 🔴 REGRESSION TEST FOR: a stopped stream spent Buzz and persisted NOTHING.
  *
  * Measured on the live store before the fix — after a two-exchange
@@ -41,7 +70,61 @@ const storage = fakeAppStorage();
  */
 const estimateFn = vi.fn().mockResolvedValue({ workflowId: 'e', status: 'succeeded', cost: { total: 1 } });
 
-const submitFn = vi.fn(async () => ({ workflowId: 'wf-1', status: 'pending' }));
+/**
+ * 🔴 THE TEST GENERATION A TURN BELONGS TO — AND WITHOUT IT A DEAD TEST'S TURN
+ * EATS A LIVE ONE'S REPLY.
+ *
+ * `cleanup()` unmounts the component; it does NOT cancel the bridge's poll loop,
+ * which is a detached async function. Two tests in this file (`a second send
+ * while the first turn is still in flight`, and `a superseded turn must not
+ * clear the shared streaming state`) deliberately leave their SECOND turn
+ * running and never stop it — that is the scenario they exist to pin. Those
+ * turns keep calling `poll` once a second for the rest of the FILE.
+ *
+ * `pollMode` and `toolPollQueue` are module state read at CALL time, so when a
+ * later test set `pollMode = 'queue'` and refilled the queue, a turn from a test
+ * that had already finished took the queue branch and `shift()`ed the snapshot
+ * out from under the live test. The live turn then got the inert
+ * `status: 'pending'` fallback and polled forever: the assistant bubble stayed
+ * `…Thinking…`, the reply never arrived, and the wait for the replay's first
+ * word could not have succeeded at ANY budget.
+ *
+ * MEASURED. Reproduced deterministically by starting a turn, ending its test,
+ * refilling the queue and letting one poll interval pass: the probe logged
+ * `SHIFTED(left=0)` before the next test had sent anything, and the failure was
+ * byte-identical to the one seen in the wild — `…Thinking…`, `Stop` on the
+ * composer, no `word0` anywhere in the DOM.
+ *
+ * A turn is therefore stamped with the generation that created it, and only a
+ * turn of the CURRENT generation may consume the queue. Turns inside one test
+ * still share the FIFO — `Stop DURING a tool call` and `the post-loop abort
+ * guard` both depend on turn 1 taking the tool-call snapshot and turn 2 taking
+ * the next one — while a turn that outlived its test is inert rather than
+ * merely stale.
+ */
+let pollEpoch = 0;
+const turnEpoch = new Map<string, number>();
+beforeEach(() => {
+  // File-level, so it runs before every `describe`'s own `beforeEach` and there
+  // is no per-suite copy to forget. One rule, one place.
+  pollEpoch += 1;
+});
+
+/**
+ * 🔴 A FRESH ID PER SUBMIT, BECAUSE `poll` HAS NO OTHER WAY TO KNOW WHO IS
+ * ASKING. The bridge calls `workflow.poll(workflowId)` with the id THIS submit
+ * returned, so a unique id is what lets `pollFn` tell a live turn from one that
+ * outlived its test. It is also what a real orchestrator does; the constant
+ * `'wf-1'` was the fiction. Nothing reads it back: the bridge takes
+ * `workflowId` from the SUBMIT snapshot only, never from a poll snapshot, and no
+ * assertion in this file names a workflow id.
+ */
+let submitSeq = 0;
+const submitFn = vi.fn(async () => {
+  const workflowId = `wf-${++submitSeq}`;
+  turnEpoch.set(workflowId, pollEpoch);
+  return { workflowId, status: 'pending' };
+});
 /**
  * Two poll shapes, selected per test.
  *
@@ -65,13 +148,15 @@ let pollMode: 'never' | 'pending' | 'queue' = 'never';
  * was therefore unreachable by any test in the file written to guard Stop.
  */
 let toolPollQueue: Array<Record<string, unknown>> = [];
-const pollFn = vi.fn(() => {
+const pollFn = vi.fn((workflowId: string) => {
   if (pollMode === 'never') return new Promise<never>(() => {});
-  if (pollMode === 'queue') {
+  // 🔴 THE EPOCH CHECK IS THE WHOLE GUARD. Without it a turn left running by an
+  // earlier test consumes this test's snapshot; see `pollEpoch` above.
+  if (pollMode === 'queue' && turnEpoch.get(workflowId) === pollEpoch) {
     const next = toolPollQueue.shift();
-    return Promise.resolve(next ?? { workflowId: 'wf-1', status: 'pending' });
+    return Promise.resolve(next ?? { workflowId, status: 'pending' });
   }
-  return Promise.resolve({ workflowId: 'wf-1', status: 'pending' });
+  return Promise.resolve({ workflowId, status: 'pending' });
 });
 const cancelFn = vi.fn(async () => undefined);
 
@@ -99,6 +184,86 @@ vi.mock('@civitai/blocks-react', () => ({
   }),
 }));
 
+/**
+ * The conversation the sidebar marks as open, or `null` when there is none.
+ *
+ * `aria-current` is `SessionList`'s active-row contract and it is driven by
+ * `activeSessionId` directly, which makes it the one thing on screen that
+ * answers "which chat is the app in?" — the question both gates below turn on.
+ */
+function currentSessionTestId(): string | null {
+  return (
+    document
+      .querySelector('[data-testid^="session-item-"][aria-current="true"]')
+      ?.getAttribute('data-testid') ?? null
+  );
+}
+
+/**
+ * Open a new chat and wait until the app is ACTUALLY IN IT.
+ *
+ * 🔴 THIS REPLACES A WALL-CLOCK ASSUMPTION, AND THE ASSUMPTION WAS THE FLAKE.
+ * Every test here used to click "+ New" and then wait only for `chat-input` to
+ * EXIST. But the composer belongs to whichever conversation is open, and one
+ * usually already is at that moment — `storage` is shared across this whole
+ * file, so the boot load selects a session an earlier test left behind. The
+ * wait was therefore satisfied by the OUTGOING chat's composer and returned
+ * before the new chat existed. Two windows follow from that, both silent:
+ *
+ *   1. `createSession` awaits its session write before it moves
+ *      `activeSessionId`, and `ChatArea` is `key`ed on that id. When the move
+ *      lands between the test's `change` and its `click`, the composer REMOUNTS
+ *      and the typed text goes with it; `disabled={!input.trim() || …}` then
+ *      swallows the click.
+ *   2. `createSession` REUSES an untouched chat when it finds one
+ *      (`isUnusedSession`), and that branch moves `activeSessionId` WITHOUT
+ *      pairing it with a transcript — so `transcriptPending` stays true until
+ *      the messages read lands, `sendPaused` is `'loading'`, and Send is
+ *      disabled for as long as that takes.
+ *
+ * Measured signature in both: `submitFn` never called, the question still
+ * sitting in the box, and whichever `waitFor` came next burning its whole
+ * budget — 1,000 ms on a default one, 5,000 ms on the explicit one below.
+ * Nothing about the app was wrong; the fixture was racing it. 3 red runs in 24.
+ *
+ * Waiting for the OPEN CHAT TO CHANGE is what both windows have in common:
+ * past it, no `activeSessionId` move is still pending, so nothing can remount
+ * the composer underneath the test.
+ */
+async function startNewChat() {
+  const before = currentSessionTestId();
+  fireEvent.click(screen.getByTestId('new-session-button'));
+  await waitFor(() =>
+    expect(currentSessionTestId(), 'the new chat never became the open one').not.toBe(before),
+  );
+  await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+}
+
+/**
+ * Type `text` and press Send once the app will actually take it.
+ *
+ * 🔴 THE GATE IS THE CONTROL'S OWN `disabled`, WHICH IS THE APP'S ANSWER TO
+ * "will this send be accepted" rather than a proxy for it: `ChatArea` disables
+ * Send on `!input.trim() || isStreaming || sendPaused !== null`, and the fixture
+ * can be ahead of all three. Clicking a disabled button in jsdom is a no-op with
+ * no error, so a send issued one tick early is indistinguishable from an app
+ * that ignored it — which is precisely how this file's failures read.
+ *
+ * 🔴 IT WEAKENS NOTHING. A send the app refuses for a REAL reason still fails,
+ * here, naming this wait, instead of surfacing several assertions later as "the
+ * reply never arrived". Every assertion these tests make is untouched.
+ */
+async function sendMessage(text: string) {
+  fireEvent.change(screen.getByTestId('chat-input'), { target: { value: text } });
+  await waitFor(() =>
+    expect(
+      (screen.getByTestId('send-button') as HTMLButtonElement).disabled,
+      'the composer never accepted the send',
+    ).toBe(false),
+  );
+  fireEvent.click(screen.getByTestId('send-button'));
+}
+
 function messageWrites() {
   // 🔴 THE PREFIX IS `sensei:messages:`, NOT `messages:`. A wrong prefix here
   // makes this helper return [] forever, so the test fails (or passes) for a
@@ -121,13 +286,9 @@ describe('stopping a stream persists what was already spent', () => {
   it('🔴 writes the conversation when the viewer presses Stop mid-stream', async () => {
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
-    fireEvent.click(screen.getByTestId('new-session-button'));
-    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+    await startNewChat();
 
-    fireEvent.change(screen.getByTestId('chat-input'), {
-      target: { value: 'tell me about DreamShaper' },
-    });
-    fireEvent.click(screen.getByTestId('send-button'));
+    await sendMessage('tell me about DreamShaper');
 
     // In flight: submitted, and polling a promise that will never settle.
     await waitFor(() => expect(submitFn).toHaveBeenCalled());
@@ -174,13 +335,9 @@ describe('the ORDINARY abort path — the catch must not undo Stop', () => {
   it("🔴 Stop's write SURVIVES — the catch does not overwrite it with 'Error: Aborted'", async () => {
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
-    fireEvent.click(screen.getByTestId('new-session-button'));
-    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+    await startNewChat();
 
-    fireEvent.change(screen.getByTestId('chat-input'), {
-      target: { value: 'tell me about DreamShaper' },
-    });
-    fireEvent.click(screen.getByTestId('send-button'));
+    await sendMessage('tell me about DreamShaper');
     await waitFor(() => expect(submitFn).toHaveBeenCalled());
 
     storage.sets.length = 0;
@@ -320,13 +477,9 @@ describe('Stop DURING a tool call must not overwrite its own write', () => {
   it('🔴 keeps Stop’s transcript when the abort lands during a tool POST', async () => {
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
-    fireEvent.click(screen.getByTestId('new-session-button'));
-    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+    await startNewChat();
 
-    fireEvent.change(screen.getByTestId('chat-input'), {
-      target: { value: 'tell me about DreamShaper' },
-    });
-    fireEvent.click(screen.getByTestId('send-button'));
+    await sendMessage('tell me about DreamShaper');
 
     // Wait until the tool POST is actually in flight. Without this the Stop
     // could land before the loop is reached and the test would pass on the
@@ -400,11 +553,9 @@ describe('a second send while the first turn is still in flight', () => {
   it("🔴 turn 1's abort exit must not clobber turn 2 — no write may drop a message an earlier one had", async () => {
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
-    fireEvent.click(screen.getByTestId('new-session-button'));
-    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+    await startNewChat();
 
-    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'FIRST question' } });
-    fireEvent.click(screen.getByTestId('send-button'));
+    await sendMessage('FIRST question');
     await waitFor(() => expect(submitFn).toHaveBeenCalledTimes(1));
 
     // Stop turn 1 — then send turn 2 immediately, which is the ordinary thing a
@@ -412,8 +563,7 @@ describe('a second send while the first turn is still in flight', () => {
     fireEvent.click(await screen.findByTestId('stop-button'));
     await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
 
-    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'SECOND question' } });
-    fireEvent.click(screen.getByTestId('send-button'));
+    await sendMessage('SECOND question');
     await waitFor(() => expect(submitFn).toHaveBeenCalledTimes(2));
 
     // Let turn 1's abort reach its catch. The bridge only observes the abort at
@@ -494,11 +644,9 @@ describe('Stop during the tool-declarations fetch', () => {
 
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
-    fireEvent.click(screen.getByTestId('new-session-button'));
-    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+    await startNewChat();
 
-    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'a question' } });
-    fireEvent.click(screen.getByTestId('send-button'));
+    await sendMessage('a question');
 
     // Parked in the declarations GET: nothing has been submitted yet.
     await waitFor(() => expect(releaseDeclarations).not.toBeNull());
@@ -562,18 +710,15 @@ describe('a superseded turn must not clear the shared streaming state', () => {
   it("🔴 turn 1 settling late must not switch off turn 2's stream", async () => {
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
-    fireEvent.click(screen.getByTestId('new-session-button'));
-    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+    await startNewChat();
 
-    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'FIRST question' } });
-    fireEvent.click(screen.getByTestId('send-button'));
+    await sendMessage('FIRST question');
     await waitFor(() => expect(submitFn).toHaveBeenCalledTimes(1));
 
     fireEvent.click(await screen.findByTestId('stop-button'));
     await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
 
-    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'SECOND question' } });
-    fireEvent.click(screen.getByTestId('send-button'));
+    await sendMessage('SECOND question');
     await waitFor(() => expect(submitFn).toHaveBeenCalledTimes(2));
 
     // Turn 2 is in flight, so its Stop button must be on screen. Positive
@@ -689,11 +834,9 @@ describe('the post-loop abort guard, with a second turn in flight', () => {
   it('🔴 turn 1 leaving the tool loop must not clobber turn 2', async () => {
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
-    fireEvent.click(screen.getByTestId('new-session-button'));
-    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+    await startNewChat();
 
-    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'FIRST question' } });
-    fireEvent.click(screen.getByTestId('send-button'));
+    await sendMessage('FIRST question');
 
     // Turn 1 must actually be inside the tool loop — the whole point of the
     // fixture. A Stop landing before it gets there proves nothing.
@@ -703,8 +846,7 @@ describe('the post-loop abort guard, with a second turn in flight', () => {
     await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
 
     // Turn 2, while turn 1 is still parked in its tool POST.
-    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'SECOND question' } });
-    fireEvent.click(screen.getByTestId('send-button'));
+    await sendMessage('SECOND question');
     await waitFor(() => expect(submitFn.mock.calls.length).toBeGreaterThanOrEqual(2));
 
     // Now release turn 1's POST so it leaves the loop and reaches the post-loop
@@ -787,11 +929,9 @@ describe('a stopped turn must stop RENDERING, not just stop billing', () => {
     const REPLY = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ');
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
-    fireEvent.click(screen.getByTestId('new-session-button'));
-    await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+    await startNewChat();
 
-    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'a question' } });
-    fireEvent.click(screen.getByTestId('send-button'));
+    await sendMessage('a question');
 
     // Wait until the replay has actually started, so Stop lands MID-stream.
     const bubble = () => document.body.textContent ?? '';
@@ -803,7 +943,6 @@ describe('a stopped turn must stop RENDERING, not just stop billing', () => {
     // report the settled text in BOTH arms and the control would be vacuous.
     const beforeStop = bubble();
     fireEvent.click(await screen.findByTestId('stop-button'));
-    await new Promise((r) => setTimeout(r, 100));
 
     // Let the rest of the replay run to COMPLETION. `simulateStreaming` is not
     // abortable, so the chunks DO keep coming — only the guard stops them
@@ -812,10 +951,18 @@ describe('a stopped turn must stop RENDERING, not just stop billing', () => {
     // 🔴 THE WAIT MUST OUTLAST THE WHOLE REPLAY OR THE TEST CANNOT DISCRIMINATE.
     // A first version waited 700 ms against a 60-word × 20 ms ≈ 1.2 s replay, so
     // `word59` had not been emitted yet in EITHER arm — the mutant survived and
-    // the test passed for the same reason the real code does. Derived from the
-    // fixture rather than guessed: 60 words × 20 ms, doubled for jsdom timer
-    // slop.
-    await new Promise((r) => setTimeout(r, 60 * 20 * 2));
+    // the test passed for the same reason the real code does. A second version
+    // waited 60 × 20 × 2 ms, which is the same claim with a safety factor
+    // bolted on: still an ESTIMATE of somebody else's timer.
+    //
+    // 🔴 SO WAIT FOR THE REPLAY ITSELF. `replay.current` is the promise the real
+    // `simulateStreaming` returned for THIS turn, recorded by the seam at the
+    // top of this file, so this resolves exactly when the last chunk has been
+    // delivered — never sooner (which is what let the mutant survive) and never
+    // later (which is what spent 2.4 s of a budget the test also needed for
+    // boot). It is strictly stronger than any duration, because it cannot be
+    // wrong about the replay's length.
+    await replay.current;
 
     // 🔴 POSITIVE CONTROL: the replay must genuinely have been incomplete when
     // Stop landed, or every assertion below is trivially true of a stream that
@@ -827,22 +974,18 @@ describe('a stopped turn must stop RENDERING, not just stop billing', () => {
     // duplicated tail (`…word59 word34 word35 …`) and this equality fails.
     const content = screen.getAllByTestId('message-content').at(-1)!.textContent ?? '';
     expect(content.trim(), 'a stopped turn did not settle on its stored reply').toBe(REPLY);
-    // 🔴 THE BUDGET IS EXPLICIT BECAUSE THIS TEST'S OWN SLEEPS EAT HALF THE
-    // DEFAULT, AND THE SHORTFALL IS SILENT. vitest's default is 5 s; the waits
-    // above are a fixed 100 ms + 60 × 20 × 2 = 2,400 ms, so ~2.5 s is spent
-    // before boot, session creation and the replay reaching `word0` get any of
-    // it. Measured in CI: 2,544 ms on the run that passed, 5,009 ms on the run
-    // that did NOT — one test doubling while its siblings moved ~4%, which is
-    // the signature of a thin budget rather than a loaded runner.
+    // 🔴 THE BUDGET IS EXPLICIT BECAUSE THIS TEST STILL WAITS OUT A REAL REPLAY,
+    // AND A SHORTFALL HERE IS SILENT. `await replay.current` above is exact
+    // rather than padded, but it is still ~1.2 s of 20 ms timers on top of
+    // boot, session creation and the wait for `word0` — and vitest's default
+    // per-test budget is 5 s. It was raised to 30 s in #25 and is left there:
+    // the fixed 2,500 ms of sleeps that motivated it are gone, so the headroom
+    // is now genuine slack rather than a number tuned against a measurement.
     //
-    // 🔴 AND THE `{ timeout: 5000 }` ON THE `word0` waitFor ABOVE WAS
-    // STRUCTURALLY UNREACHABLE: the per-test budget was also 5 s, so the test
-    // died before that waitFor could ever spend its own allowance. Raising the
-    // per-test budget is what makes that inner timeout mean anything.
-    //
-    // Deliberately NOT fixed by shortening the 2,400 ms wait: the comment above
-    // derives it from the fixture (60 words × 20 ms, doubled for jsdom slop),
-    // and a shorter wait is exactly the version that let the mutant survive.
-    // Nothing here is weakened — only the clock is widened.
+    // 🔴 THE REMAINING `{ timeout: 5000 }` ON THE `word0` waitFor IS ONLY
+    // REACHABLE BECAUSE OF THAT BUDGET: with the default 5 s per-test budget the
+    // test would die before that waitFor could spend its own allowance. It is
+    // also no longer load-bearing — the send is gated on the composer accepting
+    // it, so `word0` follows in tens of milliseconds rather than after a race.
   }, 30_000);
 });
