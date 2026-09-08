@@ -46,31 +46,28 @@ pnpm install --frozen-lockfile
 | Platform approve-time validator | `civitai app validate` (the Go CLI, installed separately — the flake does not ship it) |
 
 **Toolchain pins.** `.nvmrc` is the single authority for the node major — the
-flake reads it with `builtins.readFile`, and CI reads it via
-`actions/setup-node`'s `node-version-file`. pnpm's major is stated twice
-(`flake.nix`'s `pnpmMajor` and the `pnpm/action-setup` step) because the action
-reads only its own input or a `packageManager` field this repo **deliberately
-does not declare** — adding one would change what the *platform's* builder does,
-since `block.manifest.json`'s `buildCommand: pnpm run build` runs against the
-same `package.json`. `src/toolchain-lockstep.test.ts` fails if those two drift,
-or if someone hardcodes a node version back into the workflow.
+flake reads it with `builtins.readFile`, CI via `node-version-file`. pnpm's
+major is stated twice (`flake.nix`'s `pnpmMajor` and the `pnpm/action-setup`
+step) because the action reads only its own input or a `packageManager` field
+this repo **deliberately does not declare** — declaring one would change what
+the *platform's* builder does, since `buildCommand` runs against the same
+`package.json`. `src/toolchain-lockstep.test.ts` fails if those drift, or if
+someone hardcodes a node version back into any workflow.
 
-Only `x86_64-linux` is exercised. The flake evaluates for `aarch64-linux` and
-`aarch64-darwin` too; `x86_64-darwin` is absent because nixpkgs-unstable dropped
-it.
+Only `x86_64-linux` is exercised; the flake also evaluates for `aarch64-linux`
+and `aarch64-darwin`. `x86_64-darwin` is absent because nixpkgs-unstable dropped
+it — listing it hands an Intel-Mac contributor a `throw` instead of a shell.
 
-This repo has **no `pnpm-workspace.yaml`**. It needs none: no `minimumReleaseAge`
-gate is configured, and `pnpm store path` — what setup-node's `cache: pnpm`
-calls — resolves without one. Measured at pnpm 11.25.0, a workspace file with no
-`packages` key does **not** error either, so add one only when you have a reason
-(a `minimumReleaseAgeExclude` for a freshly published `@civitai/*`, as
-`civitai-app-gen-matrix` carries).
+No `pnpm-workspace.yaml`, and none is needed: no `minimumReleaseAge` gate is
+configured and `pnpm store path` (what `cache: pnpm` calls) resolves without
+one. Measured at pnpm 11.25.0, a `packages`-less file does **not** error either —
+add one only for a real reason, e.g. a `minimumReleaseAgeExclude` for a
+freshly published `@civitai/*`, as `civitai-app-gen-matrix` carries.
 
 ### The third environment: the platform builder
 
-The shell and CI are two of three. The one that builds the **artifact users
-actually load** is the app-blocks Tekton pipeline, and it is not configured from
-this repo:
+The artifact users actually load is built by the app-blocks Tekton pipeline,
+which this repo does not configure:
 
 | | node | pnpm | pinned by |
 |---|---|---|---|
@@ -78,12 +75,10 @@ this repo:
 | CI | `.nvmrc` (24) | `pnpm/action-setup` (11) | this repo |
 | **platform builder** | **`node:22-alpine`** | **`corepack enable` — unpinned** | the pipeline, not this repo |
 
-So `pnpm test && pnpm run build` passing locally and in CI is evidence about
-node 24, while the shipped bundle is built on node 22 by an unpinned pnpm.
-Nothing here can guard that, and `packageManager` in `package.json` — the only
-lever that would pin the builder's pnpm — is deliberately not declared, because
-it would change the builder's behaviour for every app at once. Treat a build
-failure that reproduces nowhere locally as a node-major difference first.
+So a green local and CI run is evidence about node 24, while the shipped bundle
+is built on node 22 by an unpinned pnpm. Nothing here can guard that — the only
+lever, `packageManager`, is withheld for the reason above. Treat a build failure
+that reproduces nowhere locally as a node-major difference first.
 
 ## Where a change belongs
 
@@ -118,12 +113,9 @@ Sibling app blocks worth reading for prior art:
 1. **The installed package itself.** `node_modules/@civitai/<pkg>/dist/*.d.ts`
    and its `README.md` are the only source guaranteed to describe *the version
    this repo builds against*. Check `package.json` for that version first.
-   Subpaths matter, and a written-down list of them rots on every bump — read
-   the `exports` key of the package's own `package.json` instead. At the
-   versions installed today that is `.`, `./blocks`, `./cookies`, `./oauth`,
-   `./orchestrator`, `./safe-storage`, `./schemas/app-block/v1.json`,
-   `./scopes` for `@civitai/app-sdk@0.31.0`, and `.`, `./testing`, `./ui` for
-   `@civitai/blocks-react@0.39.0`.
+   Subpaths matter (`@civitai/app-sdk` alone exports eight), and any list of
+   them written down here rots on the next bump — read the `exports` key of the
+   package's own `package.json`.
 2. **https://developer.civitai.com/apps/** — `guide/{quickstart,concepts,embedding,theming,text-to-image,comfy-cloud}`
    and `reference/{hooks,manifest,messages,scopes,components,generation,cli}`.
    Best for *why* and for the message-bridge contract. ⚠️ The generated pages
@@ -188,29 +180,22 @@ something that looks unfinished.
   `src/toolchain-lockstep.test.ts` now pins the command and the lockfile
   together; it is still the highest-blast-radius line in the repo.
 - Bumping `@civitai/app-sdk` and `@civitai/blocks-react` is a **paired** change.
-  `blocks-react@0.39.0` peers on `@civitai/app-sdk >=0.29.0 <1.0.0`, and the two
-  have been mismatched before: `blocks-react@0.37.0` peered on `^0.28.0` against
-  an exact `app-sdk@0.30.0` pin, and **npm silently overrode the conflict**
-  (`claudedocs/handoff-civitai-sensei-bridge.md`). pnpm does **not fail** on it
-  either — `strict-peer-dependencies` is unset, so a bad pair installs with
-  rc=0 and only `[WARN] Issues with peer dependencies found` (measured against
-  that exact 0.37.0 + 0.31.0 pair). So: after any bump, run `pnpm peers check`
-  and read the `peerDependencies` of the installed package. A green install is
-  not evidence the pair is valid.
-- Vite bakes `VITE_*` into the bundle at build time, and two of them decide
-  whether a release works at all. `.env.production` is untracked and gitignored,
-  so neither is visible in a diff — check the build environment, not the repo.
+  They have been mismatched before — `blocks-react@0.37.0` peered on `^0.28.0`
+  against an exact `app-sdk@0.30.0` pin and **npm silently overrode it**
+  (`claudedocs/handoff-civitai-sensei-bridge.md`). pnpm does not fail on it
+  either: `strict-peer-dependencies` is unset, so that exact bad pair installs
+  rc=0 with only `[WARN] Issues with peer dependencies found` (measured). **A
+  green install is not evidence the pair is valid** — run `pnpm peers check`.
+- Vite bakes `VITE_*` in at build time and `.env.production` is gitignored, so
+  neither of the two that matter is visible in a diff.
   - **`VITE_BLOCK_ALLOWED_PARENT_ORIGINS`** — the origin allowlist. Nothing in
     `src/` passes `allowedParentOrigins` on the embedded path; the SDK reads the
-    var itself (`blocks-react/dist/internal/detector.js`,
-    `readAllowedOriginsFromEnv()`), and `IframeTransport` **throws** when the
-    resulting list is empty (`allowedParentOrigins must contain at least one
-    entry`). ⚠️ **But you do not own this value in production.** The platform
-    builder sets it as a Docker `ENV`, and a `process.env` `VITE_*` outranks any
-    `.env` file, so it **overrides whatever this repo commits** — the allowlist
-    is platform-authoritative and must mirror the per-app CSP `frame-ancestors`.
-    Setting it here therefore affects a *local* build only. Do not "fix" a blank
-    embedded iframe by editing this repo.
+    var itself (`blocks-react/dist/internal/detector.js`), and `IframeTransport`
+    **throws** on an empty list. ⚠️ **You do not own this value in production**:
+    the platform builder sets it as a Docker `ENV`, which outranks any `.env`
+    file, so it overrides whatever this repo commits and must mirror the per-app
+    CSP `frame-ancestors`. Setting it here affects a *local* build only — never
+    "fix" a blank embedded iframe by editing this repo.
   - **`VITE_DEV_HARNESS`** — `src/main.tsx` mounts `<Harness>`, the mock host,
     when this is the string `'true'`. Set in a production build, it ships a
     block that answers itself instead of talking to the host.
