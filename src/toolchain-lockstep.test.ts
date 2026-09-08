@@ -155,13 +155,42 @@ function settingsIn(block: string[]): Array<[string, string]> {
     .map((m) => [m[1] ?? m[2] ?? m[3], scalar(m[4])] as [string, string]);
 }
 
-/** Every `run:` command in a workflow, single-line form. */
+/**
+ * Every command a workflow runs — inline `run: x` AND the lines of a block
+ * scalar `run: |`.
+ *
+ * The block-scalar half is not an edge case, it is the SAME hole in a second
+ * shape. The first fix for G6 only read the inline form, so a workflow could
+ * revert wholesale to npm inside a `run: |` block and the guard stayed 8/8
+ * green — measured before this line existed. Multi-line `run:` is the ordinary
+ * way to write more than one command, so it is the shape a real revert takes.
+ */
 function runCommands(workflow: string): string[] {
-  return workflow
-    .split('\n')
-    .map((line) => line.match(/^\s*-?\s*run:\s*(\S.*?)\s*$/))
-    .filter((m): m is RegExpMatchArray => m !== null)
-    .map((m) => m[1]);
+  const lines = workflow.split('\n');
+  const commands: string[] = [];
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = lines[i].match(/^(\s*)-?\s*run:\s*(.*?)\s*$/);
+    if (!m) continue;
+
+    const indent = m[1].length;
+    const inline = m[2];
+
+    // `|`, `>`, and their chomping/indent indicators (`|-`, `>+`, `|2`) all
+    // introduce a block; a bare `run:` with nothing after it does too.
+    if (inline === '' || /^[|>][-+]?\d*$/.test(inline) || /^[|>]\d*[-+]?$/.test(inline)) {
+      for (const line of lines.slice(i + 1)) {
+        if (line.trim() === '') continue;
+        if (line.match(/^\s*/)![0].length <= indent) break;
+        commands.push(line.trim());
+      }
+      continue;
+    }
+
+    commands.push(inline);
+  }
+
+  return commands;
 }
 
 /** flake.nix with full-line comments removed (mutant G2). */
@@ -376,6 +405,18 @@ describe('toolchain lockstep', () => {
     // `runCommands` finds commands, and is not a regex that matches anything.
     expect(runCommands(sample)).toEqual(['pnpm test']);
     expect(runCommands('jobs:\n  build:\n')).toEqual([]);
+
+    // …including inside a block scalar, which the first fix for G6 missed
+    // entirely: a wholesale revert to npm written as `run: |` stayed green.
+    const block = [
+      '      - name: Install',
+      '        run: |',
+      '          npm ci',
+      '          npm run build',
+      '      - run: pnpm test',
+      '',
+    ].join('\n');
+    expect(runCommands(block)).toEqual(['npm ci', 'npm run build', 'pnpm test']);
 
     // And the parsers are pointed at files that exist and are non-empty.
     expect(allWorkflows().length).toBeGreaterThan(0);
