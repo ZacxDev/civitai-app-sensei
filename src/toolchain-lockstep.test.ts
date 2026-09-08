@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -133,21 +134,46 @@ function allWorkflows(): Array<[name: string, content: string]> {
 
   // Composite actions are optional — none exists today. Scanning them is what
   // stops the whole guard being sidestepped by moving the steps one directory
-  // over, which is an ordinary refactor rather than an attack.
-  // GitHub resolves a local composite action at ANY repo path — `uses: ./ci/setup`
-  // is as valid as `uses: ./.github/actions/setup`. Scoping the scan to
-  // `.github/actions/` was mutant N2 one directory further over, so the whole
-  // repo is walked instead.
-  const root = new URL('../', import.meta.url);
-  for (const entry of readdirSync(root, { withFileTypes: true, recursive: true })) {
-    if (!/^action\.ya?ml$/.test(entry.name)) continue;
-    const dir = entry.parentPath;
-    if (/(^|\/)(node_modules|dist|\.git)(\/|$)/.test(dir)) continue;
-    const path = `${dir}/${entry.name}`;
-    found.push([path.replace(/^.*\/civitai-app-sensei[^/]*\//, ''), readFileSync(path, 'utf8')]);
-  }
+  // over, which is an ordinary refactor rather than an attack. GitHub resolves
+  // a local action at ANY repo path (`uses: ./ci/setup` is as valid as
+  // `uses: ./.github/actions/setup`), so the scan cannot be scoped to
+  // `.github/actions/` — that was mutant N2 one directory further over.
+  found.push(...actionFiles(fileURLToPath(new URL('../', import.meta.url))));
 
   return found;
+}
+
+/**
+ * `action.y[a]ml` anywhere in the repo, as [repo-relative path, contents].
+ *
+ * Pruned at the DIRECTORY level rather than filtered afterwards: a
+ * `readdirSync(root, { recursive: true })` descends into `node_modules` before
+ * any filter can reject it — measured at 17,641 entries here, walked on every
+ * run of every test in this file, to find files that live in two or three
+ * places.
+ *
+ * Paths are built relative to the repo root rather than sliced out of an
+ * absolute path using the repo's own directory NAME. That slice silently
+ * stopped working the moment the tree was checked out under a different name —
+ * which is what a scratch copy, a `git worktree`, or a fork does, and it would
+ * have degraded the failure message rather than the verdict, so nothing would
+ * have complained.
+ */
+function actionFiles(dir: string, relative = ''): Array<[string, string]> {
+  const SKIP = new Set(['node_modules', 'dist', '.git', '.direnv', 'coverage']);
+  const out: Array<[string, string]> = [];
+
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const child = relative ? `${relative}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      if (SKIP.has(entry.name)) continue;
+      out.push(...actionFiles(`${dir}/${entry.name}`, child));
+    } else if (/^action\.ya?ml$/.test(entry.name)) {
+      out.push([child, readFileSync(`${dir}/${entry.name}`, 'utf8')]);
+    }
+  }
+
+  return out;
 }
 
 /**
