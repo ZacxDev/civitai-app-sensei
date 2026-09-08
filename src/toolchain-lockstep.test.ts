@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
@@ -134,13 +134,17 @@ function allWorkflows(): Array<[name: string, content: string]> {
   // Composite actions are optional — none exists today. Scanning them is what
   // stops the whole guard being sidestepped by moving the steps one directory
   // over, which is an ordinary refactor rather than an attack.
-  const actionsDir = new URL('../.github/actions/', import.meta.url);
-  if (existsSync(actionsDir)) {
-    for (const entry of readdirSync(actionsDir, { withFileTypes: true, recursive: true })) {
-      if (!/^action\.ya?ml$/.test(entry.name)) continue;
-      const path = `${entry.parentPath}/${entry.name}`;
-      found.push([path.replace(/.*\.github\//, '.github/'), readFileSync(path, 'utf8')]);
-    }
+  // GitHub resolves a local composite action at ANY repo path — `uses: ./ci/setup`
+  // is as valid as `uses: ./.github/actions/setup`. Scoping the scan to
+  // `.github/actions/` was mutant N2 one directory further over, so the whole
+  // repo is walked instead.
+  const root = new URL('../', import.meta.url);
+  for (const entry of readdirSync(root, { withFileTypes: true, recursive: true })) {
+    if (!/^action\.ya?ml$/.test(entry.name)) continue;
+    const dir = entry.parentPath;
+    if (/(^|\/)(node_modules|dist|\.git)(\/|$)/.test(dir)) continue;
+    const path = `${dir}/${entry.name}`;
+    found.push([path.replace(/^.*\/civitai-app-sensei[^/]*\//, ''), readFileSync(path, 'utf8')]);
   }
 
   return found;
@@ -169,6 +173,26 @@ function scalar(raw: string): string {
  * indentation — or by any dedent out of the step — is sufficient, and it fails
  * loudly if the step is gone.
  */
+/**
+ * How many times this action is referenced at all, by a dumb line scan.
+ *
+ * 🔴 The parser must ACCOUNT FOR every occurrence. Both call sites used to do
+ * `try { stepBlocks(…) } catch { continue }`, which cannot tell "this workflow
+ * has no such step" from "this workflow has one and I could not parse it" —
+ * so a step written in flow style (`- { uses: actions/setup-node@v4, with: {
+ * node-version: 22 } }`) or after a bare `-` marker made the whole workflow
+ * silently skip, and the global `checked > 0` was satisfied by a DIFFERENT
+ * file. That is the round-4 root cause — an extractor narrower than the
+ * hazard — surviving its own fix. Comparing this count to the parsed count
+ * turns an unparseable step into a failure instead of a pass.
+ */
+function usesOccurrences(workflow: string, actionPrefix: string): number {
+  const escaped = actionPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return workflow.split('\n').filter((line) =>
+    new RegExp(`(?:^|[\\s{,-])uses:\\s*["']?${escaped}`).test(line),
+  ).length;
+}
+
 function stepBlocks(workflow: string, actionPrefix: string): string[][] {
   const lines = workflow.split('\n');
   const escaped = actionPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -186,7 +210,14 @@ function stepBlocks(workflow: string, actionPrefix: string): string[][] {
   const blocks: string[][] = [];
 
   for (let i = 0; i < lines.length; i += 1) {
-    const m = lines[i].match(/^(\s*)-\s/);
+    // 🔴 `-(\s|$)`, not `-\s`. A bare `-` alone on its line is a valid list
+    // item marker. Requiring whitespace after it meant such a line neither
+    // OPENED an item nor TERMINATED the previous one, so a second setup-node
+    // step written that way was absorbed into the first step's block —
+    // `withMapping` takes the FIRST `with:`, so its literal `node-version: 22`
+    // was never read, and GitHub runs both steps with the later one winning.
+    // One keystroke, in this repo's own merge gate.
+    const m = lines[i].match(/^(\s*)-(?:\s|$)/);
     if (!m) continue;
     const indent = m[1].length;
     const item: string[] = [lines[i]];
@@ -198,7 +229,7 @@ function stepBlocks(workflow: string, actionPrefix: string): string[][] {
       const lineIndent = line.match(/^\s*/)![0].length;
       // A sibling list item ends the step; so does any dedent out of it.
       if (lineIndent < indent) break;
-      if (lineIndent === indent && /^\s*-\s/.test(line)) break;
+      if (lineIndent === indent && /^\s*-(?:\s|$)/.test(line)) break;
       item.push(line);
     }
     if (item.some((line) => usesRe.test(line))) blocks.push(item);
@@ -221,7 +252,7 @@ function stepBlocks(workflow: string, actionPrefix: string): string[][] {
  * action's inputs, so only `with:` is read.
  */
 function withMapping(block: string[]): string[] {
-  const start = block.findIndex((l) => /^\s*with:\s*(\{.*\})?\s*$/.test(l));
+  const start = block.findIndex((l) => /^\s*with:\s*(\{.*\})?\s*(#.*)?$/.test(l));
   if (start === -1) return [];
 
   const line = block[start];
@@ -297,6 +328,8 @@ function runCommands(workflow: string): string[] {
       for (const line of lines.slice(i + 1)) {
         if (line.trim() === '') continue;
         if (line.match(/^\s*/)![0].length <= indent) break;
+        // A shell comment is not an invocation.
+        if (/^\s*#/.test(line)) continue;
         commands.push(line.trim());
       }
       continue;
@@ -316,24 +349,77 @@ function runCommands(workflow: string): string[] {
  * after a shell separator.
  */
 const INVOKES_NPM_OR_YARN =
-  /(?:^|[;&|(`'"]|\s)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+)?["'`]?(?:npm|yarn)(?:\s|["'`]|$)/;
+  /(?:^|[;&|(`'"]|\s)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+)?["'`]?(?:[\w./-]*\/)?(?:npm|yarn)(?:[\s;&|)"'`]|$)/;
 
 /**
- * flake.nix with comments removed — FULL-LINE and TRAILING (mutant G2b).
+ * Remove Nix comments — and ONLY comments.
  *
- * Stripping only full-line comments left `nodeMajor = "22"; # …readFile
- * ./.nvmrc` satisfying a `toContain` while the code hardcoded the major.
+ * 🔴 THREE attempts at this line-wise, three mutants that passed 8/8 while
+ * `nix eval` reported node 22.23.2 instead of 24.19.0:
+ *   - no stripping at all (round 1): a comment could SPELL the thing the guard
+ *     looked for (mutant G2).
+ *   - `#.*$` (round 3): deleted `nodejs = pkgs."nodejs_22";` that followed a
+ *     `#` inside a STRING — `note = "…/x#pins"; nodejs = …` (mutant D1).
+ *   - `(^|\s)#.*$` (round 4): fixed exactly that example and nothing else. Put
+ *     a SPACE before the hash — `note = "a #b"; nodejs = pkgs."nodejs_22";` —
+ *     and the literal was invisible again (mutant D3). One character.
+ *
+ * Whether a `#` opens a comment depends on whether you are inside a string,
+ * and no line-wise regex can know that. So this is a scanner. It stays small
+ * because it only tracks three states, and it is the difference between a
+ * guard that reads flake.nix and one that reads an arbitrary prefix of it.
+ *
+ * String CONTENTS are deliberately preserved: the thing being asserted on —
+ * `pkgs."nodejs_${nodeMajor}"` — lives inside a string.
  */
+function stripNixComments(src: string): string {
+  let out = '';
+  let i = 0;
+  let state: 'code' | 'string' | 'indented' = 'code';
+
+  while (i < src.length) {
+    const c = src[i];
+    const two = src.slice(i, i + 2);
+
+    if (state === 'code') {
+      if (two === "''") { state = 'indented'; out += two; i += 2; continue; }
+      if (c === '"') { state = 'string'; out += c; i += 1; continue; }
+      if (two === '/*') {
+        const end = src.indexOf('*/', i + 2);
+        i = end === -1 ? src.length : end + 2;
+        out += ' ';
+        continue;
+      }
+      if (c === '#') {
+        const nl = src.indexOf('\n', i);
+        i = nl === -1 ? src.length : nl; // keep the newline itself
+        continue;
+      }
+      out += c; i += 1; continue;
+    }
+
+    if (state === 'string') {
+      if (c === '\\') { out += src.slice(i, i + 2); i += 2; continue; }
+      if (c === '"') { state = 'code'; out += c; i += 1; continue; }
+      out += c; i += 1; continue;
+    }
+
+    // Indented string: `'''`, `''$` and `''\` are escapes; a bare `''` ends it.
+    if (two === "''") {
+      const third = src[i + 2];
+      if (third === "'" || third === '$' || third === '\\') {
+        out += src.slice(i, i + 3); i += 3; continue;
+      }
+      state = 'code'; out += two; i += 2; continue;
+    }
+    out += c; i += 1;
+  }
+
+  return out;
+}
+
 function flakeCode(): string {
-  // A `#` only begins a Nix comment at the start of a line or after
-  // whitespace. Stripping every `#` deleted real code that happened to follow
-  // one inside a STRING — `note = "…/x#pins"; nodeOverride = pkgs."nodejs_22";`
-  // vanished from view and the mutant passed 8/8, while the same line with the
-  // `#` changed to `-` was killed. One character, opposite verdicts.
-  return repoFile('../flake.nix')
-    .split('\n')
-    .map((line) => line.replace(/(^|\s)#.*$/, '$1'))
-    .join('\n');
+  return stripNixComments(repoFile('../flake.nix'));
 }
 
 const NVMRC = repoFile('../.nvmrc').trim();
@@ -372,8 +458,18 @@ describe('toolchain lockstep', () => {
       /\bnodeMajor\s*=\s*(?:[\w.]+\s*\(\s*)*builtins\.readFile\s*\(?\s*\.\/\.nvmrc\s*\)?[\s)]*;/,
     );
 
-    // Exactly one binding of it, so a second cannot shadow the first.
-    expect(flake.match(/\bnodeMajor\s*=/g)).toHaveLength(1);
+    // 🔴 Exactly one DEFINITION of the name, in any spelling. Counting only
+    // `nodeMajor =` was defeated by re-binding it as a LAMBDA PARAMETER, which
+    // is spelled `nodeMajor:` and so was not counted at all:
+    //
+    //   mk = nodeMajor: pnpmMajor: { nodejs = pkgs."nodejs_${nodeMajor}"; … };
+    //   in mk "22" "10";
+    //
+    // The top-level readFile binding survives untouched, every interpolation
+    // still names `${nodeMajor}` — just a DIFFERENT one — and all four flake
+    // assertions passed 8/8 while `nix eval` reported node 22.23.2 and pnpm
+    // 10.34.5. Pinning the NAME is not pinning the BINDING.
+    expect(flake.match(/\bnodeMajor\s*[:=](?!=)/g)).toHaveLength(1);
 
     // 🔴 And EVERY node attribute must interpolate that exact name. Asserting
     // `nodejs_${nodeMajor}` merely OCCURS plus "no literal `nodejs_<digits>`"
@@ -397,7 +493,8 @@ describe('toolchain lockstep', () => {
     // 10.34.5 against a base of 11.25.0. Same fix as for node: every `pnpm_`
     // must interpolate this exact name.
     expect(flake).toMatch(/\bpnpmMajor\s*=\s*"\d+";/);
-    expect(flake.match(/\bpnpmMajor\s*=/g)).toHaveLength(1);
+    // Same lambda-parameter shadowing applies here — see the node assertion.
+    expect(flake.match(/\bpnpmMajor\s*[:=](?!=)/g)).toHaveLength(1);
     expect(flake).toContain('pnpm_${pnpmMajor}');
     expect(flake).not.toMatch(/pnpm_(?!\$\{pnpmMajor\})/);
   });
@@ -406,12 +503,15 @@ describe('toolchain lockstep', () => {
     let checked = 0;
 
     for (const [name, workflow] of allWorkflows()) {
-      let blocks: string[][];
-      try {
-        blocks = stepBlocks(workflow, 'actions/setup-node@');
-      } catch {
-        continue; // a workflow may legitimately not set node up at all
-      }
+      // A workflow may legitimately not set node up — but if it REFERENCES the
+      // action, every reference must be parsed. `catch { continue }` alone made
+      // an unparseable step (flow style, a bare `-` marker) indistinguishable
+      // from an absent one, and the global `checked > 0` was then satisfied by
+      // a different file entirely.
+      const occurrences = usesOccurrences(workflow, 'actions/setup-node@');
+      if (occurrences === 0) continue;
+      const blocks = stepBlocks(workflow, 'actions/setup-node@');
+      expect(blocks.length, `${name}: setup-node steps parsed vs referenced`).toBe(occurrences);
 
       for (const block of blocks) {
         const byKey = new Map(settingsIn(withMapping(block)));
@@ -445,12 +545,10 @@ describe('toolchain lockstep', () => {
 
     let checked = 0;
     for (const [name, workflow] of allWorkflows()) {
-      let blocks: string[][];
-      try {
-        blocks = stepBlocks(workflow, 'pnpm/action-setup@');
-      } catch {
-        continue;
-      }
+      const occurrences = usesOccurrences(workflow, 'pnpm/action-setup@');
+      if (occurrences === 0) continue;
+      const blocks = stepBlocks(workflow, 'pnpm/action-setup@');
+      expect(blocks.length, `${name}: pnpm steps parsed vs referenced`).toBe(occurrences);
 
       for (const block of blocks) {
         const ciPin = new Map(settingsIn(withMapping(block))).get('version');
@@ -486,13 +584,8 @@ describe('toolchain lockstep', () => {
         if (/\bpnpm\b/.test(command)) sawPnpmRun = true;
       }
 
-      let blocks: string[][];
-      try {
-        blocks = stepBlocks(workflow, 'actions/setup-node@');
-      } catch {
-        continue;
-      }
-      for (const block of blocks) {
+      if (usesOccurrences(workflow, 'actions/setup-node@') === 0) continue;
+      for (const block of stepBlocks(workflow, 'actions/setup-node@')) {
         const cache = new Map(settingsIn(withMapping(block))).get('cache');
         if (cache !== undefined) {
           expect(cache, `${name}: setup-node cache`).toBe('pnpm');
@@ -644,8 +737,31 @@ describe('toolchain lockstep', () => {
     expect('pnpm  run build').not.toMatch(PLATFORM_BUILD_COMMAND_RE);
     expect('pnpm run build && echo hi').not.toMatch(PLATFORM_BUILD_COMMAND_RE);
 
+    // 🔴 The Nix comment scanner, both directions. Three line-wise versions of
+    // this shipped a mutant that passed 8/8 while `nix eval` showed node 22, so
+    // it gets the most explicit control in the file.
+    //
+    // Strips REAL comments…
+    expect(stripNixComments('a = 1; # nodejs_22\nb = 2;')).not.toContain('nodejs_22');
+    expect(stripNixComments('# nodejs_22\nb = 2;')).not.toContain('nodejs_22');
+    expect(stripNixComments('a = /* nodejs_22 */ 1;')).not.toContain('nodejs_22');
+    // …and keeps the code around them.
+    expect(stripNixComments('a = 1; # c\nb = 2;')).toContain('b = 2;');
+
+    // …but a `#` INSIDE a string is not a comment, with or without a space
+    // before it — these are mutants D1 and D3, and each one survived a
+    // different regex.
+    expect(stripNixComments('note = "x#pins"; n = "nodejs_22";')).toContain('nodejs_22');
+    expect(stripNixComments('note = "a #b"; n = "nodejs_22";')).toContain('nodejs_22');
+    expect(stripNixComments("h = ''echo a # b''; n = \"nodejs_22\";")).toContain('nodejs_22');
+    // An escaped quote must not end the string early.
+    expect(stripNixComments('s = "a\\"# b"; n = "nodejs_22";')).toContain('nodejs_22');
+
     // And the parsers are pointed at files that exist and are non-empty.
     expect(allWorkflows().length).toBeGreaterThan(0);
     expect(flakeCode().length).toBeGreaterThan(0);
+    // The real flake still has its comments removed — otherwise the assertions
+    // above would be reading prose that legitimately mentions `nodejs_24`.
+    expect(flakeCode()).not.toContain('A public OSS reference block');
   });
 });
