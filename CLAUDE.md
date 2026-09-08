@@ -97,9 +97,12 @@ Sibling app blocks worth reading for prior art:
 1. **The installed package itself.** `node_modules/@civitai/<pkg>/dist/*.d.ts`
    and its `README.md` are the only source guaranteed to describe *the version
    this repo builds against*. Check `package.json` for that version first.
-   Subpaths matter: `@civitai/app-sdk` exports `./blocks`, `./scopes`,
-   `./orchestrator`, `./schemas/app-block/v1.json`; `@civitai/blocks-react`
-   exports `./ui` and `./testing`.
+   Subpaths matter, and a written-down list of them rots on every bump — read
+   the `exports` key of the package's own `package.json` instead. At the
+   versions installed today that is `.`, `./blocks`, `./cookies`, `./oauth`,
+   `./orchestrator`, `./safe-storage`, `./schemas/app-block/v1.json`,
+   `./scopes` for `@civitai/app-sdk@0.31.0`, and `.`, `./testing`, `./ui` for
+   `@civitai/blocks-react@0.39.0`.
 2. **https://developer.civitai.com/apps/** — `guide/{quickstart,concepts,embedding,theming,text-to-image,comfy-cloud}`
    and `reference/{hooks,manifest,messages,scopes,components,generation,cli}`.
    Best for *why* and for the message-bridge contract. ⚠️ The generated pages
@@ -155,8 +158,16 @@ something that looks unfinished.
   the *platform's* builder runs to produce the live app, not something CI covers.
   `.github/` is not part of the submitted bundle, so a green CI run says nothing
   about it. Changing that line is the highest-blast-radius edit in this repo.
-- Bumping `@civitai/app-sdk` and `@civitai/blocks-react` is a **paired** change:
-  the peer range is real and the two have been mismatched silently before.
+- Bumping `@civitai/app-sdk` and `@civitai/blocks-react` is a **paired** change.
+  `blocks-react@0.39.0` peers on `@civitai/app-sdk >=0.29.0 <1.0.0`, and the two
+  have been mismatched before: `blocks-react@0.37.0` peered on `^0.28.0` against
+  an exact `app-sdk@0.30.0` pin, and **npm silently overrode the conflict**
+  (`claudedocs/handoff-civitai-sensei-bridge.md`). pnpm does **not fail** on it
+  either — `strict-peer-dependencies` is unset, so a bad pair installs with
+  rc=0 and only `[WARN] Issues with peer dependencies found` (measured against
+  that exact 0.37.0 + 0.31.0 pair). So: after any bump, run `pnpm peers check`
+  and read the `peerDependencies` of the installed package. A green install is
+  not evidence the pair is valid.
 - Vite bakes `VITE_*` into the bundle at build time, and two of them decide
   whether a release works at all. `.env.production` is untracked and gitignored,
   so neither is visible in a diff — check the build environment, not the repo.
