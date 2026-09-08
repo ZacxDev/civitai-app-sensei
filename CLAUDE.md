@@ -28,8 +28,9 @@ infrastructure internals. Keep it that way. Default branch is **`trunk`**, not
 
 ## Get a shell
 
-`pnpm` and `node` are **not on PATH** outside the dev shell. The flake pins the
-toolchain:
+`pnpm` is **not on PATH** outside the dev shell, and the `node` that is on your
+PATH is whatever your profile happens to carry — not the pinned major. Use the
+shell; the flake pins both:
 
 ```bash
 direnv allow          # or: nix develop
@@ -58,11 +59,31 @@ Only `x86_64-linux` is exercised. The flake evaluates for `aarch64-linux` and
 `aarch64-darwin` too; `x86_64-darwin` is absent because nixpkgs-unstable dropped
 it.
 
-This repo has **no `pnpm-workspace.yaml`**. It needs none: there is no
-`minimumReleaseAge` gate configured, and `pnpm store path` (what setup-node's
-`cache: pnpm` calls) resolves without one. If you ever add the file, it must
-declare `packages: ['.']` — a workspace file with no `packages` key errors where
-no file at all does not.
+This repo has **no `pnpm-workspace.yaml`**. It needs none: no `minimumReleaseAge`
+gate is configured, and `pnpm store path` — what setup-node's `cache: pnpm`
+calls — resolves without one. Measured at pnpm 11.25.0, a workspace file with no
+`packages` key does **not** error either, so add one only when you have a reason
+(a `minimumReleaseAgeExclude` for a freshly published `@civitai/*`, as
+`civitai-app-gen-matrix` carries).
+
+### The third environment: the platform builder
+
+The shell and CI are two of three. The one that builds the **artifact users
+actually load** is the app-blocks Tekton pipeline, and it is not configured from
+this repo:
+
+| | node | pnpm | pinned by |
+|---|---|---|---|
+| dev shell | `.nvmrc` (24) | `flake.nix` `pnpmMajor` (11) | this repo |
+| CI | `.nvmrc` (24) | `pnpm/action-setup` (11) | this repo |
+| **platform builder** | **`node:22-alpine`** | **`corepack enable` — unpinned** | the pipeline, not this repo |
+
+So `pnpm test && pnpm run build` passing locally and in CI is evidence about
+node 24, while the shipped bundle is built on node 22 by an unpinned pnpm.
+Nothing here can guard that, and `packageManager` in `package.json` — the only
+lever that would pin the builder's pnpm — is deliberately not declared, because
+it would change the builder's behaviour for every app at once. Treat a build
+failure that reproduces nowhere locally as a node-major difference first.
 
 ## Where a change belongs
 
@@ -143,7 +164,10 @@ reporting a green suite as if it covered the money path.
 New guards should pin a *relationship* that cannot rot on a routine bump, and be
 watched failing before they are trusted. `src/manifest.test.ts` and
 `src/toolchain-lockstep.test.ts` are the pattern to copy — both explain, in the
-file, the incident they exist to prevent.
+file, the incident they exist to prevent, and both carry a self-control proving
+their own extractor can fail. The toolchain guard's header lists six mutants it
+stayed **green** on in its first version; read them before writing a guard that
+asserts a word is present rather than a value is correct.
 
 `taste.json` carries the deferred-work ledger: each entry names why it was not
 done and the **closing condition** that ends it. Read it before "fixing"
@@ -154,10 +178,15 @@ something that looks unfinished.
 - `block.manifest.json` and `package.json` versions move **together**.
   `src/manifest.test.ts` enforces it; a release that bumps one is a shippable
   defect that has actually shipped before.
-- `block.manifest.json`'s `buildCommand` is **`pnpm run build`** — this is what
-  the *platform's* builder runs to produce the live app, not something CI covers.
+- `block.manifest.json`'s `buildCommand` is **`pnpm run build`** — what the
+  *platform's* builder runs to produce the live app, not something CI covers.
   `.github/` is not part of the submitted bundle, so a green CI run says nothing
-  about it. Changing that line is the highest-blast-radius edit in this repo.
+  about it. The builder picks which lockfile it demands from that command's
+  first word: `pnpm …` requires `pnpm-lock.yaml`, anything else requires
+  `package-lock.json` — which this repo no longer has. So reverting the word
+  alone hard-fails the build of the live app.
+  `src/toolchain-lockstep.test.ts` now pins the command and the lockfile
+  together; it is still the highest-blast-radius line in the repo.
 - Bumping `@civitai/app-sdk` and `@civitai/blocks-react` is a **paired** change.
   `blocks-react@0.39.0` peers on `@civitai/app-sdk >=0.29.0 <1.0.0`, and the two
   have been mismatched before: `blocks-react@0.37.0` peered on `^0.28.0` against
@@ -172,12 +201,16 @@ something that looks unfinished.
   whether a release works at all. `.env.production` is untracked and gitignored,
   so neither is visible in a diff — check the build environment, not the repo.
   - **`VITE_BLOCK_ALLOWED_PARENT_ORIGINS`** — the origin allowlist. Nothing in
-    `src/` passes `allowedParentOrigins` on the embedded path; the SDK reads
-    this var itself (`blocks-react/dist/internal/detector.js`,
+    `src/` passes `allowedParentOrigins` on the embedded path; the SDK reads the
+    var itself (`blocks-react/dist/internal/detector.js`,
     `readAllowedOriginsFromEnv()`), and `IframeTransport` **throws** when the
     resulting list is empty (`allowedParentOrigins must contain at least one
-    entry`). Unset or wrong ⇒ the transport never mounts, or drops every host
-    message, and the iframe renders blank.
+    entry`). ⚠️ **But you do not own this value in production.** The platform
+    builder sets it as a Docker `ENV`, and a `process.env` `VITE_*` outranks any
+    `.env` file, so it **overrides whatever this repo commits** — the allowlist
+    is platform-authoritative and must mirror the per-app CSP `frame-ancestors`.
+    Setting it here therefore affects a *local* build only. Do not "fix" a blank
+    embedded iframe by editing this repo.
   - **`VITE_DEV_HARNESS`** — `src/main.tsx` mounts `<Harness>`, the mock host,
     when this is the string `'true'`. Set in a production build, it ships a
     block that answers itself instead of talking to the host.

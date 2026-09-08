@@ -25,16 +25,18 @@ mount time and communicates via `postMessage`.
 
 ## Quickstart
 
+The toolchain is pinned by a nix flake, so `pnpm` comes from the shell rather
+than your machine — node's major from `.nvmrc`, pnpm's from `flake.nix`:
+
 ```bash
 git clone https://github.com/ZacxDev/civitai-app-sensei
 cd civitai-app-sensei
+nix develop              # or: direnv allow (needs nix-direnv)
 pnpm install --frozen-lockfile
 pnpm run dev:harness     # → mock host at http://localhost:5189
 ```
 
-The toolchain is pinned by a nix flake (`nix develop`, or `direnv allow` if you
-use direnv) — node's major comes from `.nvmrc`, pnpm's from `flake.nix`. If you
-would rather bring your own, read those two files for the versions.
+No nix? Read those two files for the versions and bring your own node + pnpm.
 
 ## What this demonstrates → where to look
 
