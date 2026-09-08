@@ -30,8 +30,8 @@ import { describe, expect, it } from 'vitest';
  *          does. So the major is written down twice and asserted equal here.
  *
  * ---------------------------------------------------------------------------
- * 🔴 FOUR ADVERSARIAL ROUNDS. EVERY ROUND FOUND THIS FILE PASSING WITH THE
- * HAZARD PRESENT — AND THREE OF THEM BROKE THE PREVIOUS ROUND'S FIX.
+ * 🔴 SIX ADVERSARIAL ROUNDS. EVERY ROUND FOUND THIS FILE PASSING WITH THE
+ * HAZARD PRESENT — AND FOUR OF THEM BROKE THE PREVIOUS ROUND'S FIX.
  *
  * Do not read the assertions below as obviously sufficient. They are the
  * residue of mutants that were watched going GREEN. Each is a SHAPE, and the
@@ -94,6 +94,26 @@ import { describe, expect, it } from 'vitest';
  * guard that checks a WORD IS PRESENT can be walked around by an edit that
  * spells the word somewhere harmless. Pin the VALUE, the BINDING, or the whole
  * normalised string.
+ *
+ * 🔴 KNOWN SURVIVORS — mutants that pass this guard TODAY, measured in round 6
+ * and left OPEN on purpose, because each needs a real parser or an evaluator
+ * rather than another regex. They are written down so nobody reads a green run
+ * as more than it is:
+ *
+ *   1. A `"` inside a Nix comment inside a `${…}` interpolation desyncs
+ *      `stripNixComments` (it does not re-enter code context on `${`), which
+ *      then deletes a later line containing `nodejs_22`. `nix eval` → 22.23.2.
+ *   2. `inherit (pins) nodeMajor pnpmMajor;`, or an attrset pattern
+ *      `{ nodeMajor, pnpmMajor }:`, binds both names without a `:`/`=` the
+ *      definition count can see. `nix eval` → node 22.23.2, pnpm 10.34.5.
+ *   3. `- uses:` with the action name on the FOLLOWING line is invisible to
+ *      `usesOccurrences`, so that workflow is skipped whole.
+ *   4. Using no `nodejs_` attribute at all (`pkgs.nodejs`) while satisfying the
+ *      `toContain` checks from a string in the shellHook.
+ *   5. A quoted `"run":` key is invisible to `runCommands`.
+ *
+ * Six consecutive adversarial rounds ended the same way: a hand-rolled parser
+ * lost to valid input. 1, 2 and 4 cannot be closed textually at all.
  *
  * 🔴 AND KNOW THIS FILE'S CEILING. These are textual assertions over Nix, a
  * Turing-complete expression language — B1/B2/C1 are proof that source-text
@@ -202,7 +222,13 @@ function scalar(raw: string): string {
 /**
  * How many times this action is referenced at all, by a dumb line scan.
  *
- * 🔴 The parser must ACCOUNT FOR every occurrence. Both call sites used to do
+ * 🔴 The parser must account for every occurrence it CAN SEE — which is not
+ * every occurrence. Round 6 showed `uses:` with its value on the next line
+ * (`- uses:\n    actions/setup-node@v4`) is invisible to this line scan, so the
+ * workflow is skipped entirely and the count-equality check never runs. Do not
+ * read this as complete coverage.
+ *
+ * Both call sites used to do
  * `try { stepBlocks(…) } catch { continue }`, which cannot tell "this workflow
  * has no such step" from "this workflow has one and I could not parse it" —
  * so a step written in flow style (`- { uses: actions/setup-node@v4, with: {
@@ -215,6 +241,11 @@ function scalar(raw: string): string {
 function usesOccurrences(workflow: string, actionPrefix: string): number {
   const escaped = actionPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return workflow.split('\n').filter((line) =>
+    // A COMMENTED-OUT step is not a reference. Without this the count
+    // disagreed with `stepBlocks` (which correctly ignores comments) and the
+    // suite went red on `# - uses: actions/setup-node@v4` — i.e. on commenting
+    // a CI step out, which is an everyday edit.
+    !/^\s*#/.test(line) &&
     new RegExp(`(?:^|[\\s{,-])uses:\\s*["']?${escaped}`).test(line),
   ).length;
 }
@@ -373,9 +404,17 @@ function runCommands(workflow: string): string[] {
  * A bare `/\bnpm\b/` turned `pnpm dlx npm-check-updates` red — a false red is
  * how a gate gets disabled. Only the command position counts: start of line, or
  * after a shell separator.
+ *
+ * 🔴 Widening the TERMINATOR to catch `yarn;` and `npm&&pnpm` (round 5) made
+ * three ordinary commands go red, measured against the previous regex:
+ * `command -v npm`, `test -z $(command -v npm)` and `sed -e "s|npm|pnpm|"`.
+ * The first two are excluded by refusing a match preceded by a short flag
+ * (`-v `), the third by dropping `|` from the terminator — `npm ci | tee log`
+ * still matches on the SPACE. A gate that reddens on `command -v npm` is a
+ * gate people learn to bypass.
  */
 const INVOKES_NPM_OR_YARN =
-  /(?:^|[;&|(`'"]|\s)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+)?["'`]?(?:[\w./-]*\/)?(?:npm|yarn)(?:[\s;&|)"'`]|$)/;
+  /(?:^|[;&|(`'"]|\s)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+)?["'`]?(?:[\w./-]*\/)?(?<!-[a-zA-Z] )(?:npm|yarn)(?:[\s;&)"'`]|$)/;
 
 /**
  * Remove Nix comments — and ONLY comments.
@@ -502,9 +541,19 @@ describe('toolchain lockstep', () => {
     // was defeated by a decoy: keep `[ pkgs."nodejs_${nodeMajor}" ]` in an
     // unused binding, then build the real derivations from a second let-bound
     // name (`hardMajor = "22"`). No digits appear, so the literal check passed —
-    // and `nix eval` showed node 22.23.2. This form has no such gap: any
-    // `nodejs_`/`nodejs-slim_` not followed by `${nodeMajor}` fails, whether it
-    // is a digit, another name, or anything else.
+    // and `nix eval` showed node 22.23.2. Any `nodejs_`/`nodejs-slim_` not
+    // followed by `${nodeMajor}` now fails, whether it is a digit, another
+    // name, or anything else.
+    //
+    // 🔴 This is NOT complete, and an earlier version of this comment claimed
+    // it was ("this form has no such gap"). Round 6 defeated it by using no
+    // `nodejs_` attribute at all — `nodejs = pkgs.nodejs;` — and satisfying the
+    // two `toContain` checks from a STRING in the shellHook
+    // (`echo "pins nodejs_${nodeMajor}"`). 8/8 green with `.nvmrc` at 22 and
+    // `nix eval` reporting 24.19.0. Since `stripNixComments` preserves string
+    // contents by design, a string is now as good a hiding place as a comment
+    // used to be. Closing it needs evaluation, not text matching — see the
+    // CEILING note at the top of this file.
     expect(flake).toContain('nodejs_${nodeMajor}');
     expect(flake).toContain('nodejs-slim_${nodeMajor}');
     expect(flake).not.toMatch(/nodejs(?:-slim)?_(?!\$\{nodeMajor\})/);
@@ -743,6 +792,9 @@ describe('toolchain lockstep', () => {
       'bash -c "npm ci"',                             // nested shell
       'echo `npm ci`',                                // backticks
       'if [ -f x ]; then pnpm i; else npm ci; fi',    // a conditional revert
+      'npm ci | tee install.log',                     // piped, still a call
+      './node_modules/.bin/npm ci',                   // path-prefixed
+      'if [ ! -d node_modules ]; then yarn; fi',      // terminated by `;`
     ]) {
       expect(yes, `should be detected: ${yes}`).toMatch(INVOKES_NPM_OR_YARN);
     }
@@ -751,6 +803,10 @@ describe('toolchain lockstep', () => {
       'pnpm test',
       'pnpm dlx npm-check-updates',                   // a MENTION, not a call
       'echo "see npmjs.com"',
+      'if ! command -v npm; then echo x; fi',         // a PROBE, not a call
+      'test -z $(command -v npm)',
+      'sed -e "s|npm|pnpm|" README.md',               // a rewrite of the word
+      'pnpm run build && cp -r dist/ out/',
     ]) {
       expect(no, `should NOT be detected: ${no}`).not.toMatch(INVOKES_NPM_OR_YARN);
     }

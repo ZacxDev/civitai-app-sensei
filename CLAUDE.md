@@ -179,10 +179,13 @@ One clean round is not evidence; the ladder ends when a round finds nothing.
 
 That guard also documents its own ceiling, which is worth copying: its flake
 assertions are text matching over a Turing-complete expression language, so they
-are a **tripwire for drift, not a proof**. The proof is evaluation —
+are a **tripwire for drift, not a proof**. Its header lists five mutants that
+pass it **today** — left open because each needs a real Nix/YAML parser or an
+evaluator, not another regex. The proof is evaluation:
 `nix flake check --all-systems` and `nix eval .#packages.<system>.nodejs.version`
-against `.nvmrc`. CI does not run nix, so nothing automated does this. Run it by
-hand when you touch `flake.nix`.
+against `.nvmrc`. CI does not run nix, so **nothing automated does this** — run
+it by hand whenever you touch `flake.nix`, and do not read a green suite as
+covering it.
 
 `taste.json` carries the deferred-work ledger: each entry names why it was not
 done and the **closing condition** that ends it. Read it before "fixing"
