@@ -15,5 +15,5 @@ dist
 
 # nix / direnv build artifacts.
 .direnv/
-result
-result-*
+/result
+/result-*

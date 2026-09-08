@@ -157,9 +157,14 @@ New guards should pin a *relationship* that cannot rot on a routine bump, and be
 watched failing before they are trusted. `src/manifest.test.ts` and
 `src/toolchain-lockstep.test.ts` are the pattern to copy — both explain, in the
 file, the incident they exist to prevent, and both carry a self-control proving
-their own extractor can fail. The toolchain guard's header lists six mutants it
-stayed **green** on in its first version; read them before writing a guard that
-asserts a word is present rather than a value is correct.
+their own extractor can fail. **Read the toolchain guard's header before writing
+any guard.** It lists thirteen mutants that guard was watched going **green**
+on, across three adversarial rounds — and two of those rounds broke the previous
+round's fix rather than the original. The recurring failure is always the same:
+a guard that checks a WORD IS PRESENT is walked around by an edit that spells
+the word somewhere harmless. Pin the value, the binding, or the whole normalised
+string. Assume one clean round is not evidence; the rounds end when a round
+finds nothing, not when you are tired.
 
 `taste.json` carries the deferred-work ledger: each entry names why it was not
 done and the **closing condition** that ends it. Read it before "fixing"
@@ -176,9 +181,12 @@ something that looks unfinished.
   about it. The builder picks which lockfile it demands from that command's
   first word: `pnpm …` requires `pnpm-lock.yaml`, anything else requires
   `package-lock.json` — which this repo no longer has. So reverting the word
-  alone hard-fails the build of the live app.
-  `src/toolchain-lockstep.test.ts` now pins the command and the lockfile
-  together; it is still the highest-blast-radius line in the repo.
+  alone hard-fails the build of the live app. It also validates the command
+  against `/^(?:(?:npm|pnpm|yarn) run [\w:-]+|(?:npx )?vite build)$/` first, so
+  even `pnpm  run build` (two spaces) is **rejected outright**.
+  `src/toolchain-lockstep.test.ts` mirrors that regex, pins the exact string,
+  checks the named script exists in `package.json`, and requires exactly one
+  lockfile. Still the highest-blast-radius line in the repo.
 - Bumping `@civitai/app-sdk` and `@civitai/blocks-react` is a **paired** change.
   They have been mismatched before — `blocks-react@0.37.0` peered on `^0.28.0`
   against an exact `app-sdk@0.30.0` pin and **npm silently overrode it**
