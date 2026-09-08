@@ -29,8 +29,8 @@ import { describe, expect, it } from 'vitest';
  *          does. So the major is written down twice and asserted equal here.
  *
  * ---------------------------------------------------------------------------
- * 🔴 THREE ADVERSARIAL ROUNDS. EVERY ROUND FOUND THIS FILE PASSING WITH THE
- * HAZARD PRESENT — INCLUDING TWO ROUNDS THAT BROKE THE PREVIOUS ROUND'S FIX.
+ * 🔴 FOUR ADVERSARIAL ROUNDS. EVERY ROUND FOUND THIS FILE PASSING WITH THE
+ * HAZARD PRESENT — AND THREE OF THEM BROKE THE PREVIOUS ROUND'S FIX.
  *
  * Do not read the assertions below as obviously sufficient. They are the
  * residue of mutants that were watched going GREEN. Each is a SHAPE, and the
@@ -67,10 +67,41 @@ import { describe, expect, it } from 'vitest';
  *   G7f `pnpm run buildx` — a script that does not exist.
  *   N2  a literal inside a composite action under `.github/actions/`.
  *
+ * Round 4 (the round-3 fix, adversarially — and the sharpest, because several
+ * mutants were confirmed with `nix eval` to actually change the installed
+ * toolchain rather than merely to slip past a regex):
+ *   A1  a literal in a second workflow whose setup-node is written the
+ *   A5  IDIOMATIC way — `- name: Set up Node` then `uses: …`, or a quoted
+ *   N2b `uses: "actions/setup-node@v4"`. `stepBlocks` anchored on `- uses:`,
+ *       so it could not see such a step AT ALL; it threw, the caller swallowed
+ *       it, and the literal passed. The same bug was a FALSE RED in the other
+ *       direction: adding a `name:` to this repo's own step turned CI red.
+ *   B1  `nodeMajor = if false then (…readFile ./.nvmrc) else "22";`
+ *   B2  `nodeMajor = (_: "22") (builtins.readFile ./.nvmrc);`
+ *       The read is present and DISCARDED. `nix eval` → node 22.23.2.
+ *   C1  keep `[ pkgs."nodejs_${nodeMajor}" ]` as an unused decoy, build the
+ *   C2b real derivation from a second name (`hardMajor = "22"`). No digits, so
+ *       "no literal `nodejs_<n>`" passed. `nix eval` → node 22.23.2, pnpm 10.
+ *   D1  `note = "…/x#pins"; nodejs = pkgs."nodejs_22";` — `#` inside a Nix
+ *       STRING is not a comment, but the stripper deleted the rest of the line
+ *       anyway. The identical line with `-` instead of `#` was killed.
+ *   E1  npm invoked behind `CI=1`, `env NODE_ENV=…`, `bash -c "…"`, backticks,
+ *   E7  or an `else` branch. The detector only understood `sudo` and a few
+ *       separators, so a full revert to npm passed again.
+ *
  * The lesson each time is the same and is worth more than the assertions: a
  * guard that checks a WORD IS PRESENT can be walked around by an edit that
  * spells the word somewhere harmless. Pin the VALUE, the BINDING, or the whole
  * normalised string.
+ *
+ * 🔴 AND KNOW THIS FILE'S CEILING. These are textual assertions over Nix, a
+ * Turing-complete expression language — B1/B2/C1 are proof that source-text
+ * matching cannot decide what a flake EVALUATES to. The assertions below are a
+ * tripwire for drift, not a proof of correctness. The proof is evaluation:
+ * `nix flake check --all-systems`, and comparing
+ * `nix eval .#packages.<system>.nodejs.version` against `.nvmrc`. CI does not
+ * run nix, so no automated gate does this today — run it by hand when you
+ * touch flake.nix, and do not read a green suite as more than it is.
  *
  * `describes the extractors` is the control that keeps all of it honest: every
  * assertion here is only as good as the four parsers, and a parser that
@@ -141,30 +172,40 @@ function scalar(raw: string): string {
 function stepBlocks(workflow: string, actionPrefix: string): string[][] {
   const lines = workflow.split('\n');
   const escaped = actionPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const header = new RegExp(`^(\\s*)-\\s+uses:\\s*${escaped}`);
+
+  // 🔴 `uses:` may be the step's FIRST line (`- uses: x`) or ANY later line of
+  // the same list item — `- name: Set up Node` / `  uses: actions/setup-node@v4`
+  // is the idiomatic GitHub spelling and is what a contributor reaches for. An
+  // earlier version anchored on `- uses:` and therefore could not see such a
+  // step at all: it threw, the caller's `catch { continue }` swallowed it, and
+  // a literal `node-version: 22` in a second workflow written that way passed
+  // 8/8. That is mutants G4/G5/N2 reborn out of the extractor rather than the
+  // assertions. It was ALSO a false red: adding a `name:` to this repo's own
+  // setup-node step turned the gate red for nothing.
+  const usesRe = new RegExp(`^\\s*(?:-\\s+)?uses:\\s*["']?${escaped}`);
   const blocks: string[][] = [];
 
   for (let i = 0; i < lines.length; i += 1) {
-    const m = header.exec(lines[i]);
+    const m = lines[i].match(/^(\s*)-\s/);
     if (!m) continue;
     const indent = m[1].length;
-    const block: string[] = [];
+    const item: string[] = [lines[i]];
     for (const line of lines.slice(i + 1)) {
       if (line.trim() === '') {
-        block.push(line);
+        item.push(line);
         continue;
       }
       const lineIndent = line.match(/^\s*/)![0].length;
       // A sibling list item ends the step; so does any dedent out of it.
       if (lineIndent < indent) break;
       if (lineIndent === indent && /^\s*-\s/.test(line)) break;
-      block.push(line);
+      item.push(line);
     }
-    blocks.push(block);
+    if (item.some((line) => usesRe.test(line))) blocks.push(item);
   }
 
   if (blocks.length === 0) {
-    throw new Error(`no \`- uses: ${actionPrefix}…\` step found`);
+    throw new Error(`no step using ${actionPrefix}… found`);
   }
   return blocks;
 }
@@ -274,7 +315,8 @@ function runCommands(workflow: string): string[] {
  * how a gate gets disabled. Only the command position counts: start of line, or
  * after a shell separator.
  */
-const INVOKES_NPM_OR_YARN = /(?:^|&&|\|\||;|\||\()\s*(?:sudo\s+)?(?:npm|yarn)(?:\s|$)/;
+const INVOKES_NPM_OR_YARN =
+  /(?:^|[;&|(`'"]|\s)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+)?["'`]?(?:npm|yarn)(?:\s|["'`]|$)/;
 
 /**
  * flake.nix with comments removed — FULL-LINE and TRAILING (mutant G2b).
@@ -283,9 +325,14 @@ const INVOKES_NPM_OR_YARN = /(?:^|&&|\|\||;|\||\()\s*(?:sudo\s+)?(?:npm|yarn)(?:
  * ./.nvmrc` satisfying a `toContain` while the code hardcoded the major.
  */
 function flakeCode(): string {
+  // A `#` only begins a Nix comment at the start of a line or after
+  // whitespace. Stripping every `#` deleted real code that happened to follow
+  // one inside a STRING — `note = "…/x#pins"; nodeOverride = pkgs."nodejs_22";`
+  // vanished from view and the mutant passed 8/8, while the same line with the
+  // `#` changed to `-` was killed. One character, opposite verdicts.
   return repoFile('../flake.nix')
     .split('\n')
-    .map((line) => line.replace(/#.*$/, ''))
+    .map((line) => line.replace(/(^|\s)#.*$/, '$1'))
     .join('\n');
 }
 
@@ -312,32 +359,47 @@ describe('toolchain lockstep', () => {
     const flake = flakeCode();
 
     // 🔴 Not `toContain('builtins.readFile ./.nvmrc')`. That is a spelled
-    // guard, and it was walked around twice: once by leaving the words in a
-    // comment (G2/G2b) and once by binding the read to an unused name while a
-    // second binding hardcoded the major (G2c). What has to be true is that
-    // the name the packages are built from IS the name bound to the read.
-    expect(flake).toMatch(/\bnodeMajor\s*=\s*[^;]*builtins\.readFile\s+\.\/\.nvmrc[^;]*;/);
+    // guard, walked around twice: once by leaving the words in a comment
+    // (G2/G2b) and once by binding the read to an unused name (G2c).
+    //
+    // The RHS must be the read itself, optionally wrapped in calls like
+    // `nixpkgs.lib.trim (…)`. Allowing anything up to the `;` was not enough:
+    // `nodeMajor = if false then (builtins.readFile ./.nvmrc) else "22";` and
+    // `nodeMajor = (_: "22") (builtins.readFile ./.nvmrc);` both contained the
+    // read, both passed, and `nix eval` confirmed the shell then installed
+    // node 22.23.2 instead of 24.19.0. The read has to BE the value.
+    expect(flake).toMatch(
+      /\bnodeMajor\s*=\s*(?:[\w.]+\s*\(\s*)*builtins\.readFile\s*\(?\s*\.\/\.nvmrc\s*\)?[\s)]*;/,
+    );
 
     // Exactly one binding of it, so a second cannot shadow the first.
     expect(flake.match(/\bnodeMajor\s*=/g)).toHaveLength(1);
 
-    // …and that name is what the derivations actually use.
+    // 🔴 And EVERY node attribute must interpolate that exact name. Asserting
+    // `nodejs_${nodeMajor}` merely OCCURS plus "no literal `nodejs_<digits>`"
+    // was defeated by a decoy: keep `[ pkgs."nodejs_${nodeMajor}" ]` in an
+    // unused binding, then build the real derivations from a second let-bound
+    // name (`hardMajor = "22"`). No digits appear, so the literal check passed —
+    // and `nix eval` showed node 22.23.2. This form has no such gap: any
+    // `nodejs_`/`nodejs-slim_` not followed by `${nodeMajor}` fails, whether it
+    // is a digit, another name, or anything else.
     expect(flake).toContain('nodejs_${nodeMajor}');
     expect(flake).toContain('nodejs-slim_${nodeMajor}');
-
-    // No literal node major in the code, in either attribute spelling. This is
-    // what makes the assertions above load-bearing rather than decorative.
-    expect(flake).not.toMatch(/nodejs(-slim)?_\d+/);
+    expect(flake).not.toMatch(/nodejs(?:-slim)?_(?!\$\{nodeMajor\})/);
   });
 
   it('uses the pnpm major it declares, rather than a literal', () => {
     const flake = flakeCode();
 
     // Mutant G3 kept `pnpmMajor = "11";` as a decoy and built `pkgs."pnpm_10"`.
+    // C2b then did the same one level up — decoy interpolation retained, real
+    // derivation built from `pnpmPin = "10"` — and `nix eval` reported pnpm
+    // 10.34.5 against a base of 11.25.0. Same fix as for node: every `pnpm_`
+    // must interpolate this exact name.
     expect(flake).toMatch(/\bpnpmMajor\s*=\s*"\d+";/);
     expect(flake.match(/\bpnpmMajor\s*=/g)).toHaveLength(1);
     expect(flake).toContain('pnpm_${pnpmMajor}');
-    expect(flake).not.toMatch(/pnpm_\d+/);
+    expect(flake).not.toMatch(/pnpm_(?!\$\{pnpmMajor\})/);
   });
 
   it('has EVERY setup-node step in EVERY workflow read .nvmrc, with no literal beside it', () => {
@@ -521,7 +583,18 @@ describe('toolchain lockstep', () => {
     expect(new Map(settingsIn(['  k: "a # b"'])).get('k')).toBe('a # b');
 
     // The extractor throws rather than returning empty for an absent step.
-    expect(() => stepBlocks(sample, 'pnpm/action-setup@')).toThrow(/no `- uses: pnpm/);
+    expect(() => stepBlocks(sample, 'pnpm/action-setup@')).toThrow(/no step using pnpm/);
+
+    // …and it finds a step whose `uses:` is NOT the first line, which is the
+    // idiomatic spelling an earlier version could not see at all.
+    const named = [
+      '      - name: Set up Node',
+      '        uses: "actions/setup-node@v4"',
+      '        with:',
+      '          node-version: 22',
+      '',
+    ].join('\n');
+    expect(new Map(settingsIn(withMapping(stepBlocks(named, 'actions/setup-node@')[0]))).get('node-version')).toBe('22');
 
     // `runCommands` finds commands, and is not a regex that matches anything.
     expect(runCommands(sample)).toEqual(['pnpm test']);
@@ -538,14 +611,30 @@ describe('toolchain lockstep', () => {
     ].join('\n');
     expect(runCommands(block)).toEqual(['npm ci', 'npm run build', 'pnpm test']);
 
-    // The npm detector fires on an invocation and NOT on a mere mention —
-    // `pnpm dlx npm-check-updates` turning the branch red is a false red, and a
-    // permanently-red gate is worse than no gate.
-    expect('npm ci').toMatch(INVOKES_NPM_OR_YARN);
-    expect('cd app && npm ci').toMatch(INVOKES_NPM_OR_YARN);
-    expect('yarn install').toMatch(INVOKES_NPM_OR_YARN);
-    expect('pnpm install --frozen-lockfile').not.toMatch(INVOKES_NPM_OR_YARN);
-    expect('pnpm dlx npm-check-updates').not.toMatch(INVOKES_NPM_OR_YARN);
+    // The npm detector fires on an INVOCATION and not on a mere mention.
+    // Both directions matter: missing an invocation reinstates mutant G6, and
+    // firing on a mention (`pnpm dlx npm-check-updates`) is a false red, which
+    // is how a gate gets disabled.
+    for (const yes of [
+      'npm ci',
+      'cd app && npm ci',
+      'yarn install',
+      'CI=1 npm ci',                                  // leading env assignment
+      'env NODE_ENV=production npm run build',        // via `env`
+      'bash -c "npm ci"',                             // nested shell
+      'echo `npm ci`',                                // backticks
+      'if [ -f x ]; then pnpm i; else npm ci; fi',    // a conditional revert
+    ]) {
+      expect(yes, `should be detected: ${yes}`).toMatch(INVOKES_NPM_OR_YARN);
+    }
+    for (const no of [
+      'pnpm install --frozen-lockfile',
+      'pnpm test',
+      'pnpm dlx npm-check-updates',                   // a MENTION, not a call
+      'echo "see npmjs.com"',
+    ]) {
+      expect(no, `should NOT be detected: ${no}`).not.toMatch(INVOKES_NPM_OR_YARN);
+    }
 
     // The platform buildCommand regex accepts the real value and rejects the
     // shapes the platform rejects — copied from its validator, so a control is

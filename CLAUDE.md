@@ -58,11 +58,23 @@ Only `x86_64-linux` is exercised; the flake also evaluates for `aarch64-linux`
 and `aarch64-darwin`. `x86_64-darwin` is absent because nixpkgs-unstable dropped
 it — listing it hands an Intel-Mac contributor a `throw` instead of a shell.
 
-No `pnpm-workspace.yaml`, and none is needed: no `minimumReleaseAge` gate is
-configured and `pnpm store path` (what `cache: pnpm` calls) resolves without
-one. Measured at pnpm 11.25.0, a `packages`-less file does **not** error either —
-add one only for a real reason, e.g. a `minimumReleaseAgeExclude` for a
-freshly published `@civitai/*`, as `civitai-app-gen-matrix` carries.
+No `pnpm-workspace.yaml` — **but do not read that as "there is no freshness
+gate".** pnpm 11 enforces a minimum-release-age policy on the lockfile by
+default; `pnpm install` here prints `✓ Lockfile passes supply-chain policies`
+because the pinned `@civitai/*` versions are simply old enough. Bump any of
+them to a release younger than the cutoff (~24h) and the install **fails**:
+
+```
+[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] … was published at …, within the
+minimumReleaseAge cutoff
+```
+
+The fix then is a `pnpm-workspace.yaml` with `packages: ['.']` and a
+`minimumReleaseAgeExclude` naming those exact versions — `civitai-app-gen-matrix`
+and `civitai-app-playable-collections` both carry one for this reason. Until
+then the file buys nothing. ⚠️ `pnpm config get minimumReleaseAge` reports
+`undefined`, which means "no user override", **not** "no policy" — it is the
+wrong instrument for this question; run an install and read its output.
 
 ### The third environment: the platform builder
 
@@ -158,13 +170,19 @@ watched failing before they are trusted. `src/manifest.test.ts` and
 `src/toolchain-lockstep.test.ts` are the pattern to copy — both explain, in the
 file, the incident they exist to prevent, and both carry a self-control proving
 their own extractor can fail. **Read the toolchain guard's header before writing
-any guard.** It lists thirteen mutants that guard was watched going **green**
-on, across three adversarial rounds — and two of those rounds broke the previous
-round's fix rather than the original. The recurring failure is always the same:
-a guard that checks a WORD IS PRESENT is walked around by an edit that spells
-the word somewhere harmless. Pin the value, the binding, or the whole normalised
-string. Assume one clean round is not evidence; the rounds end when a round
-finds nothing, not when you are tired.
+any guard.** It catalogues every mutant that guard was watched going **green**
+on across four adversarial rounds — three of which broke the *previous round's
+fix* rather than the original. The recurring failure is always the same: a guard
+that checks a WORD IS PRESENT is walked around by an edit that spells the word
+somewhere harmless. Pin the value, the binding, or the whole normalised string.
+One clean round is not evidence; the ladder ends when a round finds nothing.
+
+That guard also documents its own ceiling, which is worth copying: its flake
+assertions are text matching over a Turing-complete expression language, so they
+are a **tripwire for drift, not a proof**. The proof is evaluation —
+`nix flake check --all-systems` and `nix eval .#packages.<system>.nodejs.version`
+against `.nvmrc`. CI does not run nix, so nothing automated does this. Run it by
+hand when you touch `flake.nix`.
 
 `taste.json` carries the deferred-work ledger: each entry names why it was not
 done and the **closing condition** that ends it. Read it before "fixing"
