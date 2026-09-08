@@ -788,6 +788,16 @@ describe('toolchain lockstep', () => {
     expect(flakeCode().length).toBeGreaterThan(0);
     // The real flake still has its comments removed — otherwise the assertions
     // above would be reading prose that legitimately mentions `nodejs_24`.
-    expect(flakeCode()).not.toContain('A public OSS reference block');
+    //
+    // 🔴 Structural, not spelled. This control used to assert
+    // `not.toContain('A public OSS reference block')` — one sentence from one
+    // comment in flake.nix. Reword that comment and the control goes green
+    // while proving nothing: the spelled-guard failure this entire file exists
+    // to catch, committed inside the control meant to catch it. It would also
+    // have been vacuously green in any repo this file is ported to.
+    const rawFlake = repoFile('../flake.nix');
+    expect(rawFlake, 'flake.nix has comments to strip').toMatch(/^\s*#/m);
+    expect(flakeCode().length, 'comments were removed').toBeLessThan(rawFlake.length);
+    expect(flakeCode(), 'no comment lines survive').not.toMatch(/^\s*#/m);
   });
 });
