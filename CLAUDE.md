@@ -157,6 +157,16 @@ something that looks unfinished.
   about it. Changing that line is the highest-blast-radius edit in this repo.
 - Bumping `@civitai/app-sdk` and `@civitai/blocks-react` is a **paired** change:
   the peer range is real and the two have been mismatched silently before.
-- `.env.production` (untracked; see `.env.example`) bakes
-  `VITE_BLOCK_ALLOWED_PARENT_ORIGINS` into the bundle at build time. Wrong value
-  = the transport drops every host message and the iframe renders blank.
+- Vite bakes `VITE_*` into the bundle at build time, and two of them decide
+  whether a release works at all. `.env.production` is untracked and gitignored,
+  so neither is visible in a diff — check the build environment, not the repo.
+  - **`VITE_BLOCK_ALLOWED_PARENT_ORIGINS`** — the origin allowlist. Nothing in
+    `src/` passes `allowedParentOrigins` on the embedded path; the SDK reads
+    this var itself (`blocks-react/dist/internal/detector.js`,
+    `readAllowedOriginsFromEnv()`), and `IframeTransport` **throws** when the
+    resulting list is empty (`allowedParentOrigins must contain at least one
+    entry`). Unset or wrong ⇒ the transport never mounts, or drops every host
+    message, and the iframe renders blank.
+  - **`VITE_DEV_HARNESS`** — `src/main.tsx` mounts `<Harness>`, the mock host,
+    when this is the string `'true'`. Set in a production build, it ships a
+    block that answers itself instead of talking to the host.
