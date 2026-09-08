@@ -12,3 +12,8 @@ dist
 
 # Local screenshot scratch (curated shots live in docs/screenshots/).
 .shots
+
+# nix / direnv build artifacts.
+.direnv/
+/result
+/result-*

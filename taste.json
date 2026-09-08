@@ -58,7 +58,7 @@
       "id": "unused-session-sweep",
       "ask": "Bound the number of never-used 'New Chat' rows that can accumulate across visits. The reuse rule above only recycles an unused chat the viewer is not currently on, so pressing '+ New' repeatedly within one visit still leaves a row per press.",
       "whyNotDone": "The remaining fix is a sweep of unused rows at load, which DELETES viewer-visible rows without being asked. It is safe by construction (an unused row holds no content by definition) but it is still an unprompted destructive default, and it changes boot to perform a storage write on a host that cannot serve a block its own writes.",
-      "closingCondition": "A merged PR adding `sweepUnusedSessions` to the load path in `src/App.tsx` with a unit test that a renamed-but-empty session SURVIVES it, plus one live boot against the real host confirming the session list is unchanged when there is nothing to sweep. Checked mechanically: the PR is merged and `npm run test` is green on trunk."
+      "closingCondition": "A merged PR adding `sweepUnusedSessions` to the load path in `src/App.tsx` with a unit test that a renamed-but-empty session SURVIVES it, plus one live boot against the real host confirming the session list is unchanged when there is nothing to sweep. Checked mechanically: the PR is merged and `pnpm test` is green on trunk."
     },
     {
       "id": "reshoot",
@@ -76,7 +76,7 @@
       "id": "sdk-pair-bump",
       "ask": "Move to the canonical pairing app-sdk ^0.35.0 + blocks-react ^0.43.1.",
       "whyNotDone": "Nothing in this pass needs it, and a version bump inside a defect-fix PR mixes two red/green matrices.",
-      "closingCondition": "A separate PR bumping both packages together with `npm run test`, `typecheck` and `build` green, and one live boot confirming the block still renders. Checked mechanically by that PR merging."
+      "closingCondition": "A separate PR bumping both packages together with `pnpm test`, `pnpm run typecheck` and `pnpm run build` green, and one live boot confirming the block still renders. Checked mechanically by that PR merging."
     }
   ],
 
