@@ -170,12 +170,15 @@ watched failing before they are trusted. `src/manifest.test.ts` and
 `src/toolchain-lockstep.test.ts` are the pattern to copy — both explain, in the
 file, the incident they exist to prevent, and both carry a self-control proving
 their own extractor can fail. **Read the toolchain guard's header before writing
-any guard.** It catalogues every mutant that guard was watched going **green**
-on across four adversarial rounds — three of which broke the *previous round's
-fix* rather than the original. The recurring failure is always the same: a guard
-that checks a WORD IS PRESENT is walked around by an edit that spells the word
+any guard.** It records the lesson six adversarial rounds kept producing — four
+of which broke the *previous round's fix* rather than the original: a guard that
+checks a WORD IS PRESENT is walked around by an edit that spells the word
 somewhere harmless. Pin the value, the binding, or the whole normalised string.
 One clean round is not evidence; the ladder ends when a round finds nothing.
+The full mutant catalogue those rounds produced was 858 lines of hand-rolled
+Nix/YAML parsing. It was normalised to the shape the sibling app-block repos
+share — the assertions, the survivors and the ceiling note kept, the parsers
+dropped; `git log -p -- src/toolchain-lockstep.test.ts` still has the catalogue.
 
 That guard also documents its own ceiling, which is worth copying: its flake
 assertions are text matching over a Turing-complete expression language, so they

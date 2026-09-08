@@ -1,5 +1,4 @@
 import { readFileSync, readdirSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -8,128 +7,62 @@ import { describe, expect, it } from 'vitest';
  * MEAN NOTHING.
  *
  * `flake.nix` is what a contributor's shell installs (`nix develop` / direnv);
- * `.github/workflows/*` is what the merge gate installs; `block.manifest.json`'s
- * `buildCommand` is what the PLATFORM's builder runs to produce the live app.
- * When those disagree, "it passes locally" stops being evidence about the gate
- * and the gate stops being evidence about anyone's machine — and nothing
- * announces the split, because both sides stay green while testing different
- * things.
+ * `.github/workflows/ci.yml` is what the merge gate installs;
+ * `block.manifest.json`'s `buildCommand` is what the PLATFORM's builder runs to
+ * produce the live app. When those disagree, "it passes locally" stops being
+ * evidence about the gate and the gate stops being evidence about anyone's
+ * machine — and nothing announces the split, because both sides stay green
+ * while testing different things. That is the state this repo was in until the
+ * flake landed: no dev shell at all, a literal `node-version: 22` and
+ * `cache: npm` in the workflow.
  *
- * That is the state this repo was in until the flake landed. There was no dev
- * shell at all, so there was nothing for CI to agree WITH: the workflow carried
- * a literal `node-version: 22` and `cache: npm`, and every contributor ran
- * whatever node their machine happened to have.
+ * The pins are asymmetric on purpose. Node has ONE authority, `.nvmrc`, read by
+ * flake.nix (`builtins.readFile`) and by CI (`node-version-file`) — neither
+ * restates a version, so what is guarded is that the wiring is still that way.
+ * pnpm takes TWO statements, because `pnpm/action-setup` reads only its own
+ * `version:` input or `package.json`'s `packageManager` field, and adding
+ * `packageManager` would change what the PLATFORM's builder does
+ * (`buildCommand: pnpm run build` runs against that same file). So the pnpm
+ * major is written down twice and asserted equal here.
  *
- * The pins are handled asymmetrically, on purpose:
+ * Every extractor below THROWS when the shape it expects is missing rather than
+ * returning undefined: a guard that passes once someone deletes the step it
+ * inspects reads as coverage while providing none.
  *
- *   node — ONE authority, `.nvmrc`. flake.nix reads it with `builtins.readFile`
- *          and CI reads it via `actions/setup-node`'s `node-version-file`.
- *   pnpm — TWO statements, because `pnpm/action-setup` reads only its own
- *          `version:` input or `package.json`'s `packageManager` field, and
- *          adding `packageManager` would change what the platform's builder
- *          does. So the major is written down twice and asserted equal here.
+ * 🔴 KNOW THIS FILE'S CEILING — it is a tripwire for drift, not a proof.
  *
- * ---------------------------------------------------------------------------
- * 🔴 SIX ADVERSARIAL ROUNDS. EVERY ROUND FOUND THIS FILE PASSING WITH THE
- * HAZARD PRESENT — AND FOUR OF THEM BROKE THE PREVIOUS ROUND'S FIX.
+ * These are textual assertions over YAML and over Nix, a Turing-complete
+ * expression language. An earlier version grew to 858 lines and eight
+ * assertions across six adversarial rounds of hand-rolled parsing, and every
+ * round still ended with mutants that passed it. It documented five and
+ * concluded three could not be closed textually at all. They are properties of
+ * the APPROACH rather than of that file's parsers, so all five are still open:
  *
- * Do not read the assertions below as obviously sufficient. They are the
- * residue of mutants that were watched going GREEN. Each is a SHAPE, and the
- * shapes recur — which is why they are written down rather than summarised.
+ *   1. A decoy in a Nix STRING: use no `nodejs_` attribute at all
+ *      (`nodejs = pkgs.nodejs;`) while a shellHook line spells
+ *      `nodejs_${nodeMajor}`. String contents are code to a text scan.
+ *   2. `inherit (pins) nodeMajor;`, or re-binding it as a lambda parameter
+ *      (`mk = nodeMajor: …; in mk "22"`), binds the name with no `=` this file
+ *      can see, leaving the real readFile binding intact and unused. The
+ *      858-line version counted definitions to catch this; that count is gone.
+ *   3. A quoted `"run":` key hides a command from `runCommands`, so a wholesale
+ *      revert to npm can be written where nothing reads it.
+ *   4. A step whose `uses:` value sits on the FOLLOWING line, or a flow-style
+ *      step, cannot be parsed here — that now fails LOUDLY (the extractors
+ *      throw, the ledger goes red) rather than silently skipping a workflow.
+ *   5. A composite action (`action.yml`) carrying its own setup steps is not
+ *      read at all. A second WORKFLOW is caught, but only because the ledger
+ *      below asserts the workflow set is exactly `['ci.yml']`.
  *
- * Round 1 (against the version ported from `civitai-app-gen-matrix`):
- *   G1  `"node-version": 22` — a QUOTED yaml key, invisible to a regex anchored
- *       on a bare letter, while GitHub reads it and PREFERS it.
- *   G2  the `builtins.readFile` words kept in a comment while the code beneath
- *       hardcoded a major — a SPELLED guard.
- *   G3  `pnpmMajor = "11";` kept as a decoy while `pkgs."pnpm_10"` was used.
- *   G4  a literal in a SECOND job — only the first step was inspected.
- *   G5  a literal in a SECOND workflow file — only `ci.yml` was read.
- *   G6  every command reverted to npm with the pnpm step left as decoration —
- *       the docstring named `cache: npm` as half the defect while the code
- *       inspected neither `cache:` nor any `run:` step.
+ * The fix for all five is structural, not another regex: parse the workflow
+ * with a real YAML parser, and pin the flake by EVALUATION in CI —
+ * `nix flake check --all-systems`, and `nix eval
+ * .#packages.<system>.nodejs.version` compared against `.nvmrc`. CI does not
+ * run nix today, so NOTHING AUTOMATED DOES THIS: run it by hand whenever you
+ * touch flake.nix, and do not read a green suite as covering it.
  *
- * Round 2 (the round-1 fix, found by re-running its own claim):
- *   G6b the SAME npm revert written as a `run: |` block scalar. The G6 fix read
- *       only the inline `run: x` form. Multi-line `run:` is how anyone actually
- *       writes several commands, so this was the likely shape, not an edge one.
- *
- * Round 3 (the round-1/2 fixes, adversarially):
- *   G2b `nodeMajor = "22"; # replaces builtins.readFile ./.nvmrc` — a TRAILING
- *       comment on a code line. The fix stripped only FULL-LINE comments.
- *   G2c bind the read to an unused name, hardcode the real one. Nothing checked
- *       that the value read was the value used — while a comment in this very
- *       file claimed "a read whose result is never used is decoration".
- *   N7  `cache: npm` under `with:`, masked by a deeper `env: cache: pnpm`.
- *   N9  the same trick on `node-version-file`. `settingsIn` matched any depth
- *       and `new Map` is last-wins, so a sibling mapping overrode the real one.
- *   G7b `buildCommand: "pnpm  run build"` (two spaces) — first-word parsing said
- *       pnpm, while the platform's own validator REJECTS the string outright.
- *   G7f `pnpm run buildx` — a script that does not exist.
- *   N2  a literal inside a composite action under `.github/actions/`.
- *
- * Round 4 (the round-3 fix, adversarially — and the sharpest, because several
- * mutants were confirmed with `nix eval` to actually change the installed
- * toolchain rather than merely to slip past a regex):
- *   A1  a literal in a second workflow whose setup-node is written the
- *   A5  IDIOMATIC way — `- name: Set up Node` then `uses: …`, or a quoted
- *   N2b `uses: "actions/setup-node@v4"`. `stepBlocks` anchored on `- uses:`,
- *       so it could not see such a step AT ALL; it threw, the caller swallowed
- *       it, and the literal passed. The same bug was a FALSE RED in the other
- *       direction: adding a `name:` to this repo's own step turned CI red.
- *   B1  `nodeMajor = if false then (…readFile ./.nvmrc) else "22";`
- *   B2  `nodeMajor = (_: "22") (builtins.readFile ./.nvmrc);`
- *       The read is present and DISCARDED. `nix eval` → node 22.23.2.
- *   C1  keep `[ pkgs."nodejs_${nodeMajor}" ]` as an unused decoy, build the
- *   C2b real derivation from a second name (`hardMajor = "22"`). No digits, so
- *       "no literal `nodejs_<n>`" passed. `nix eval` → node 22.23.2, pnpm 10.
- *   D1  `note = "…/x#pins"; nodejs = pkgs."nodejs_22";` — `#` inside a Nix
- *       STRING is not a comment, but the stripper deleted the rest of the line
- *       anyway. The identical line with `-` instead of `#` was killed.
- *   E1  npm invoked behind `CI=1`, `env NODE_ENV=…`, `bash -c "…"`, backticks,
- *   E7  or an `else` branch. The detector only understood `sudo` and a few
- *       separators, so a full revert to npm passed again.
- *
- * The lesson each time is the same and is worth more than the assertions: a
- * guard that checks a WORD IS PRESENT can be walked around by an edit that
- * spells the word somewhere harmless. Pin the VALUE, the BINDING, or the whole
- * normalised string.
- *
- * 🔴 KNOWN SURVIVORS — mutants that pass this guard TODAY, measured in round 6
- * and left OPEN on purpose, because each needs a real parser or an evaluator
- * rather than another regex. They are written down so nobody reads a green run
- * as more than it is:
- *
- *   1. A `"` inside a Nix comment inside a `${…}` interpolation desyncs
- *      `stripNixComments` (it does not re-enter code context on `${`), which
- *      then deletes a later line containing `nodejs_22`. `nix eval` → 22.23.2.
- *   2. `inherit (pins) nodeMajor pnpmMajor;`, or an attrset pattern
- *      `{ nodeMajor, pnpmMajor }:`, binds both names without a `:`/`=` the
- *      definition count can see. `nix eval` → node 22.23.2, pnpm 10.34.5.
- *   3. `- uses:` with the action name on the FOLLOWING line is invisible to
- *      `usesOccurrences`, so that workflow is skipped whole.
- *   4. Using no `nodejs_` attribute at all (`pkgs.nodejs`) while satisfying the
- *      `toContain` checks from a string in the shellHook.
- *   5. A quoted `"run":` key is invisible to `runCommands`.
- *
- * Six consecutive adversarial rounds ended the same way: a hand-rolled parser
- * lost to valid input. 1, 2 and 4 cannot be closed textually at all.
- *
- * 🔴 AND KNOW THIS FILE'S CEILING. These are textual assertions over Nix, a
- * Turing-complete expression language — B1/B2/C1 are proof that source-text
- * matching cannot decide what a flake EVALUATES to. The assertions below are a
- * tripwire for drift, not a proof of correctness. The proof is evaluation:
- * `nix flake check --all-systems`, and comparing
- * `nix eval .#packages.<system>.nodejs.version` against `.nvmrc`. CI does not
- * run nix, so no automated gate does this today — run it by hand when you
- * touch flake.nix, and do not read a green suite as more than it is.
- *
- * `describes the extractors` is the control that keeps all of it honest: every
- * assertion here is only as good as the four parsers, and a parser that
- * silently matches nothing produces a confident green.
- *
- * Read off disk rather than imported, for the same reason `manifest.test.ts`
- * does it: the bytes on disk are what ship and what CI executes.
+ * Read off disk rather than imported: `.nvmrc`, `flake.nix` and a YAML workflow
+ * have no import form at all, and the bytes on disk are what CI executes.
  */
 
 function repoFile(relativePath: string): string {
@@ -137,723 +70,384 @@ function repoFile(relativePath: string): string {
 }
 
 /**
- * Every workflow AND every composite action (mutant G5, mutant N2). A literal
- * in a release workflow, or in `.github/actions/setup/action.yml`, splits the
- * toolchain exactly as well as one in the merge gate.
+ * flake.nix with full-line comments removed — necessary, not decorative: this
+ * flake writes `nodejs_24` inside a comment explaining why the major is not
+ * restated, and the "no literal node attribute" assertion would match it.
+ * Whether a TRAILING `#` opens a comment depends on whether you are inside a
+ * string and no line-wise regex can know that, so a trailing `# … nodejs_22`
+ * gives a FALSE RED (the safe direction); a decoy inside a Nix string stays
+ * invisible (survivor 1).
  */
-function allWorkflows(): Array<[name: string, content: string]> {
-  const found: Array<[string, string]> = [];
-
-  const workflows = new URL('../.github/workflows/', import.meta.url);
-  for (const n of readdirSync(workflows).filter((n) => /\.ya?ml$/.test(n)).sort()) {
-    found.push([n, readFileSync(new URL(n, workflows), 'utf8')]);
-  }
-  if (found.length === 0) {
-    throw new Error('.github/workflows contains no workflow files to check');
-  }
-
-  // Composite actions are optional — none exists today. Scanning them is what
-  // stops the whole guard being sidestepped by moving the steps one directory
-  // over, which is an ordinary refactor rather than an attack. GitHub resolves
-  // a local action at ANY repo path (`uses: ./ci/setup` is as valid as
-  // `uses: ./.github/actions/setup`), so the scan cannot be scoped to
-  // `.github/actions/` — that was mutant N2 one directory further over.
-  found.push(...actionFiles(fileURLToPath(new URL('../', import.meta.url))));
-
-  return found;
+function flakeCode(): string {
+  return repoFile('../flake.nix')
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n');
 }
 
 /**
- * `action.y[a]ml` anywhere in the repo, as [repo-relative path, contents].
+ * The lines of the step that uses `<actionPrefix>…`, excluding its first line.
  *
- * Pruned at the DIRECTORY level rather than filtered afterwards: a
- * `readdirSync(root, { recursive: true })` descends into `node_modules` before
- * any filter can reject it — measured at 17,641 entries here, walked on every
- * run of every test in this file, to find files that live in two or three
- * places.
- *
- * Paths are built relative to the repo root rather than sliced out of an
- * absolute path using the repo's own directory NAME. That slice silently
- * stopped working the moment the tree was checked out under a different name —
- * which is what a scratch copy, a `git worktree`, or a fork does, and it would
- * have degraded the failure message rather than the verdict, so nothing would
- * have complained.
+ * `uses:` may be the step's first line (`- uses: x`) or a LATER line of the same
+ * list item (`- name: Set up Node` / `  uses: x`) — the idiomatic spelling.
+ * Anchoring on `- uses:` alone was both a false red (adding a `name:` to this
+ * repo's own step reddened CI) and a false green (such a step was invisible).
+ * Deliberately not a YAML parse — this repo ships no YAML dependency; see the
+ * CEILING note above for what that costs.
  */
-function actionFiles(dir: string, relative = ''): Array<[string, string]> {
-  const SKIP = new Set(['node_modules', 'dist', '.git', '.direnv', 'coverage']);
-  const out: Array<[string, string]> = [];
-
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const child = relative ? `${relative}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) {
-      if (SKIP.has(entry.name)) continue;
-      out.push(...actionFiles(`${dir}/${entry.name}`, child));
-    } else if (/^action\.ya?ml$/.test(entry.name)) {
-      out.push([child, readFileSync(`${dir}/${entry.name}`, 'utf8')]);
-    }
-  }
-
-  return out;
-}
-
-/**
- * A yaml scalar as written: `.nvmrc`, `".nvmrc"`, `.nvmrc  # why`.
- *
- * Unquote BEFORE stripping a trailing comment, not after: a quoted value that
- * legitimately contains ` # ` was being truncated at the hash.
- */
-function scalar(raw: string): string {
-  const trimmed = raw.trim();
-  const quoted = trimmed.match(/^(["'])(.*?)\1\s*(?:#.*)?$/);
-  if (quoted) return quoted[2];
-  return trimmed.replace(/\s+#.*$/, '').trim();
-}
-
-/**
- * The `with:` blocks of EVERY `- uses: <action>` step in one workflow (mutant
- * G4), as raw lines.
- *
- * Deliberately not a YAML parse: this repo ships no YAML dependency, and adding
- * one to read these workflows would be a bigger change than the thing it
- * verifies. A line scan bounded by the next list item at the step's own
- * indentation — or by any dedent out of the step — is sufficient, and it fails
- * loudly if the step is gone.
- */
-/**
- * How many times this action is referenced at all, by a dumb line scan.
- *
- * 🔴 The parser must account for every occurrence it CAN SEE — which is not
- * every occurrence. Round 6 showed `uses:` with its value on the next line
- * (`- uses:\n    actions/setup-node@v4`) is invisible to this line scan, so the
- * workflow is skipped entirely and the count-equality check never runs. Do not
- * read this as complete coverage.
- *
- * Both call sites used to do
- * `try { stepBlocks(…) } catch { continue }`, which cannot tell "this workflow
- * has no such step" from "this workflow has one and I could not parse it" —
- * so a step written in flow style (`- { uses: actions/setup-node@v4, with: {
- * node-version: 22 } }`) or after a bare `-` marker made the whole workflow
- * silently skip, and the global `checked > 0` was satisfied by a DIFFERENT
- * file. That is the round-4 root cause — an extractor narrower than the
- * hazard — surviving its own fix. Comparing this count to the parsed count
- * turns an unparseable step into a failure instead of a pass.
- */
-function usesOccurrences(workflow: string, actionPrefix: string): number {
-  const escaped = actionPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return workflow.split('\n').filter((line) =>
-    // A COMMENTED-OUT step is not a reference. Without this the count
-    // disagreed with `stepBlocks` (which correctly ignores comments) and the
-    // suite went red on `# - uses: actions/setup-node@v4` — i.e. on commenting
-    // a CI step out, which is an everyday edit.
-    !/^\s*#/.test(line) &&
-    new RegExp(`(?:^|[\\s{,-])uses:\\s*["']?${escaped}`).test(line),
-  ).length;
-}
-
-function stepBlocks(workflow: string, actionPrefix: string): string[][] {
+function stepBlock(workflow: string, actionPrefix: string): string[] {
   const lines = workflow.split('\n');
   const escaped = actionPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-  // 🔴 `uses:` may be the step's FIRST line (`- uses: x`) or ANY later line of
-  // the same list item — `- name: Set up Node` / `  uses: actions/setup-node@v4`
-  // is the idiomatic GitHub spelling and is what a contributor reaches for. An
-  // earlier version anchored on `- uses:` and therefore could not see such a
-  // step at all: it threw, the caller's `catch { continue }` swallowed it, and
-  // a literal `node-version: 22` in a second workflow written that way passed
-  // 8/8. That is mutants G4/G5/N2 reborn out of the extractor rather than the
-  // assertions. It was ALSO a false red: adding a `name:` to this repo's own
-  // setup-node step turned the gate red for nothing.
-  const usesRe = new RegExp(`^\\s*(?:-\\s+)?uses:\\s*["']?${escaped}`);
-  const blocks: string[][] = [];
-
-  for (let i = 0; i < lines.length; i += 1) {
-    // 🔴 `-(\s|$)`, not `-\s`. A bare `-` alone on its line is a valid list
-    // item marker. Requiring whitespace after it meant such a line neither
-    // OPENED an item nor TERMINATED the previous one, so a second setup-node
-    // step written that way was absorbed into the first step's block —
-    // `withMapping` takes the FIRST `with:`, so its literal `node-version: 22`
-    // was never read, and GitHub runs both steps with the later one winning.
-    // One keystroke, in this repo's own merge gate.
-    const m = lines[i].match(/^(\s*)-(?:\s|$)/);
-    if (!m) continue;
-    const indent = m[1].length;
-    const item: string[] = [lines[i]];
-    for (const line of lines.slice(i + 1)) {
-      if (line.trim() === '') {
-        item.push(line);
-        continue;
-      }
-      const lineIndent = line.match(/^\s*/)![0].length;
-      // A sibling list item ends the step; so does any dedent out of it.
-      if (lineIndent < indent) break;
-      if (lineIndent === indent && /^\s*-(?:\s|$)/.test(line)) break;
-      item.push(line);
-    }
-    if (item.some((line) => usesRe.test(line))) blocks.push(item);
+  const start = lines.findIndex((line) =>
+    new RegExp(`^\\s*(?:-\\s+)?uses:\\s*["']?${escaped}`).test(line),
+  );
+  if (start === -1) {
+    throw new Error(`ci.yml has no step using ${actionPrefix}…`);
   }
 
-  if (blocks.length === 0) {
-    throw new Error(`no step using ${actionPrefix}… found`);
+  // The key's own indentation, whether or not it carries the `- ` marker.
+  const indent = lines[start].replace(/^(\s*)-\s+/, '$1').match(/^\s*/)![0].length;
+  const block: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (line.trim() === '') continue;
+    const lineIndent = line.match(/^\s*/)![0].length;
+    if (lineIndent < indent) break; // dedent out of the step
+    if (lineIndent === indent && /^\s*-\s/.test(line)) break; // a sibling step
+    block.push(line);
   }
-  return blocks;
+  return block;
 }
 
 /**
- * ONLY the `with:` mapping of a step (mutants N7 / N9).
- *
- * Reading every `key: value` at any depth in the step looked harmless and was
- * not: a step's `env:` is a sibling of its `with:`, `settingsIn` matched both,
- * and `new Map` is last-wins — so `env: node-version-file: .nvmrc` sitting
- * below a `with:` that named a DIFFERENT file made the guard read the value it
- * wanted to see while CI installed from the other one. Only `with:` carries an
- * action's inputs, so only `with:` is read.
+ * ONLY the `with:` mapping of a step. Reading every `key: value` at any depth
+ * looks harmless and is not: a step's `env:` is a sibling of its `with:` and
+ * `new Map` is last-wins, so `env: { node-version-file: .nvmrc }` below a
+ * `with:` naming a DIFFERENT file makes the guard read the value it wants to
+ * see while CI installs the other one. Only `with:` carries an action's inputs.
  */
 function withMapping(block: string[]): string[] {
-  const start = block.findIndex((l) => /^\s*with:\s*(\{.*\})?\s*(#.*)?$/.test(l));
+  const start = block.findIndex((line) => /^\s*with:\s*(#.*)?$/.test(line));
   if (start === -1) return [];
+  const indent = block[start].match(/^\s*/)![0].length;
 
-  const line = block[start];
-  // Flow style — `with: { node-version-file: .nvmrc, cache: pnpm }` — is valid
-  // yaml and GitHub reads its members as inputs. `settingsIn` unpacks it.
-  if (/^\s*with:\s*\{.*\}\s*$/.test(line)) return [line];
-
-  const indent = line.match(/^\s*/)![0].length;
   const out: string[] = [];
-  for (const l of block.slice(start + 1)) {
-    if (l.trim() === '') continue;
-    if (l.match(/^\s*/)![0].length <= indent) break;
-    out.push(l);
+  for (const line of block.slice(start + 1)) {
+    if (line.trim() === '') continue;
+    if (line.match(/^\s*/)![0].length <= indent) break;
+    out.push(line);
   }
   return out;
 }
 
 /**
- * Every `key: value` in a mapping, as pairs.
- *
- * The key may be quoted (mutant G1). `"node-version": 22` is valid YAML and
- * GitHub reads it as the `node-version` input; a regex anchored on a bare
- * letter cannot see it, which is how a literal node version hid in plain sight
- * next to the `node-version-file` this guard was checking.
+ * Every `key: value` in a mapping, quotes and trailing comments stripped. The
+ * key may be QUOTED: `"node-version": 22` is valid YAML and GitHub reads it as
+ * the `node-version` input, but a regex anchored on a bare letter cannot see it
+ * — which is how a literal node version hid in plain sight next to the
+ * `node-version-file` this guard was checking.
  */
 function settingsIn(lines: string[]): Array<[string, string]> {
-  const pairs: Array<[string, string]> = [];
   const KV = /^\s*(?:"([\w.-]+)"|'([\w.-]+)'|([A-Za-z][\w.-]*))\s*:\s*(\S.*?)\s*$/;
 
-  for (const line of lines) {
+  return lines.flatMap((line) => {
     const m = line.match(KV);
-    if (!m) continue;
-    const key = m[1] ?? m[2] ?? m[3];
-    const raw = m[4];
-
-    const flow = raw.match(/^\{(.*)\}$/);
-    if (flow) {
-      for (const member of flow[1].split(',')) {
-        const kv = member.match(/^\s*(?:"([\w.-]+)"|'([\w.-]+)'|([A-Za-z][\w.-]*))\s*:\s*(.*?)\s*$/);
-        if (kv) pairs.push([kv[1] ?? kv[2] ?? kv[3], scalar(kv[4])]);
-      }
-      continue;
-    }
-
-    pairs.push([key, scalar(raw)]);
-  }
-
-  return pairs;
+    if (!m) return [];
+    // Unquote BEFORE stripping a trailing comment, or a quoted value that
+    // legitimately contains ` # ` is truncated at the hash.
+    const quoted = m[4].match(/^(["'])(.*?)\1\s*(?:#.*)?$/);
+    const value = quoted ? quoted[2] : m[4].replace(/\s+#.*$/, '').trim();
+    return [[m[1] ?? m[2] ?? m[3], value] as [string, string]];
+  });
 }
 
 /**
  * Every command a workflow runs — inline `run: x` AND the lines of a block
- * scalar `run: |` (mutant G6b).
- *
- * The block-scalar half is not an edge case, it is the SAME hole in a second
- * shape: the first fix for G6 read only the inline form, so a workflow could
- * revert wholesale to npm inside a `run: |` block and stay green.
+ * scalar `run: |`. Multi-line `run:` is how anyone actually writes several
+ * commands, so reading only the inline form leaves the likely shape of a revert
+ * to npm entirely unread.
  */
 function runCommands(workflow: string): string[] {
   const lines = workflow.split('\n');
   const commands: string[] = [];
 
   for (let i = 0; i < lines.length; i += 1) {
+    if (/^\s*#/.test(lines[i])) continue;
     const m = lines[i].match(/^(\s*)-?\s*run:\s*(.*?)\s*$/);
     if (!m) continue;
 
     const indent = m[1].length;
-    const inline = m[2];
-
     // `|`, `>` and their chomping/indent indicators (`|-`, `>+`, `|2`) all
-    // introduce a block; a bare `run:` with nothing after it does too.
-    if (inline === '' || /^[|>]\d*[-+]?$/.test(inline) || /^[|>][-+]?\d*$/.test(inline)) {
-      for (const line of lines.slice(i + 1)) {
-        if (line.trim() === '') continue;
-        if (line.match(/^\s*/)![0].length <= indent) break;
-        // A shell comment is not an invocation.
-        if (/^\s*#/.test(line)) continue;
-        commands.push(line.trim());
-      }
+    // introduce a block; so does a bare `run:` with nothing after it.
+    if (m[2] !== '' && !/^[|>][-+0-9]*$/.test(m[2])) {
+      commands.push(m[2]);
       continue;
     }
-
-    commands.push(inline);
+    for (const line of lines.slice(i + 1)) {
+      if (line.trim() === '') continue;
+      if (line.match(/^\s*/)![0].length <= indent) break;
+      if (/^\s*#/.test(line)) continue; // a shell comment is not an invocation
+      commands.push(line.trim());
+    }
   }
 
   return commands;
 }
 
 /**
- * Does this command INVOKE npm or yarn, as opposed to merely mentioning one?
- *
- * A bare `/\bnpm\b/` turned `pnpm dlx npm-check-updates` red — a false red is
- * how a gate gets disabled. Only the command position counts: start of line, or
- * after a shell separator.
- *
- * 🔴 Widening the TERMINATOR to catch `yarn;` and `npm&&pnpm` (round 5) made
- * three ordinary commands go red, measured against the previous regex:
- * `command -v npm`, `test -z $(command -v npm)` and `sed -e "s|npm|pnpm|"`.
- * The first two are excluded by refusing a match preceded by a short flag
- * (`-v `), the third by dropping `|` from the terminator — `npm ci | tee log`
- * still matches on the SPACE. A gate that reddens on `command -v npm` is a
- * gate people learn to bypass.
+ * Does this command INVOKE npm or yarn, as opposed to merely mentioning one? A
+ * bare `/\bnpm\b/` turns `pnpm dlx npm-check-updates` red, and a false red is
+ * how a gate gets disabled — so only the command position counts. The negative
+ * lookbehind on a short flag is what keeps `command -v npm` (a PROBE) out, and
+ * `|` is deliberately not a terminator so `sed -e "s|npm|pnpm|"` stays green
+ * while `npm ci | tee log` still matches on the space.
  */
 const INVOKES_NPM_OR_YARN =
   /(?:^|[;&|(`'"]|\s)(?:[A-Za-z_]\w*=\S*\s+)*(?:sudo\s+)?["'`]?(?:[\w./-]*\/)?(?<!-[a-zA-Z] )(?:npm|yarn)(?:[\s;&)"'`]|$)/;
-
-/**
- * Remove Nix comments — and ONLY comments.
- *
- * 🔴 THREE attempts at this line-wise, three mutants that passed 8/8 while
- * `nix eval` reported node 22.23.2 instead of 24.19.0:
- *   - no stripping at all (round 1): a comment could SPELL the thing the guard
- *     looked for (mutant G2).
- *   - `#.*$` (round 3): deleted `nodejs = pkgs."nodejs_22";` that followed a
- *     `#` inside a STRING — `note = "…/x#pins"; nodejs = …` (mutant D1).
- *   - `(^|\s)#.*$` (round 4): fixed exactly that example and nothing else. Put
- *     a SPACE before the hash — `note = "a #b"; nodejs = pkgs."nodejs_22";` —
- *     and the literal was invisible again (mutant D3). One character.
- *
- * Whether a `#` opens a comment depends on whether you are inside a string,
- * and no line-wise regex can know that. So this is a scanner. It stays small
- * because it only tracks three states, and it is the difference between a
- * guard that reads flake.nix and one that reads an arbitrary prefix of it.
- *
- * String CONTENTS are deliberately preserved: the thing being asserted on —
- * `pkgs."nodejs_${nodeMajor}"` — lives inside a string.
- */
-function stripNixComments(src: string): string {
-  let out = '';
-  let i = 0;
-  let state: 'code' | 'string' | 'indented' = 'code';
-
-  while (i < src.length) {
-    const c = src[i];
-    const two = src.slice(i, i + 2);
-
-    if (state === 'code') {
-      if (two === "''") { state = 'indented'; out += two; i += 2; continue; }
-      if (c === '"') { state = 'string'; out += c; i += 1; continue; }
-      if (two === '/*') {
-        const end = src.indexOf('*/', i + 2);
-        i = end === -1 ? src.length : end + 2;
-        out += ' ';
-        continue;
-      }
-      if (c === '#') {
-        const nl = src.indexOf('\n', i);
-        i = nl === -1 ? src.length : nl; // keep the newline itself
-        continue;
-      }
-      out += c; i += 1; continue;
-    }
-
-    if (state === 'string') {
-      if (c === '\\') { out += src.slice(i, i + 2); i += 2; continue; }
-      if (c === '"') { state = 'code'; out += c; i += 1; continue; }
-      out += c; i += 1; continue;
-    }
-
-    // Indented string: `'''`, `''$` and `''\` are escapes; a bare `''` ends it.
-    if (two === "''") {
-      const third = src[i + 2];
-      if (third === "'" || third === '$' || third === '\\') {
-        out += src.slice(i, i + 3); i += 3; continue;
-      }
-      state = 'code'; out += two; i += 2; continue;
-    }
-    out += c; i += 1;
-  }
-
-  return out;
-}
-
-function flakeCode(): string {
-  return stripNixComments(repoFile('../flake.nix'));
-}
-
-const NVMRC = repoFile('../.nvmrc').trim();
 
 /**
  * The platform's OWN accepted form for `buildCommand`, copied from the
  * app-blocks pipeline's `resolve-build.mjs`. Reproduced rather than
  * approximated because the whole point is to fail here instead of there.
  */
-const PLATFORM_BUILD_COMMAND_RE =
-  /^(?:(?:npm|pnpm|yarn) run [a-zA-Z0-9:_-]+|(?:npx )?vite build)$/;
+const PLATFORM_BUILD_COMMAND_RE = /^(?:(?:npm|pnpm|yarn) run [a-zA-Z0-9:_-]+|(?:npx )?vite build)$/;
+
+/**
+ * The package manager CI installs with, READ OUT OF the workflow.
+ * `pnpm/action-setup` is what puts a pnpm on the runner's PATH at all; without
+ * it the only package manager a job has is the npm that ships with node via
+ * `actions/setup-node`. So that step's presence IS CI's statement of which
+ * package manager it uses, and deriving from it is what makes the assertion
+ * below a claim about CI rather than about a literal typed into this file.
+ */
+function ciPackageManager(workflow: string): string {
+  const hasPnpmSetup = /^\s*(?:-\s+)?uses:\s*["']?pnpm\/action-setup@/m.test(workflow);
+
+  // A workflow that invokes no package manager has none to compare against, and
+  // answering "npm" for it would be an invention rather than a reading.
+  if (!/\b(?:npm|pnpm|yarn|bun)\s+(?:install|ci|run|test|build|exec)\b/.test(workflow)) {
+    throw new Error(
+      'ci.yml invokes no npm/pnpm/yarn/bun command — there is no CI package manager to compare against',
+    );
+  }
+
+  return hasPnpmSetup ? 'pnpm' : 'npm';
+}
 
 describe('toolchain lockstep', () => {
+  const workflow = repoFile('../.github/workflows/ci.yml');
+
   it('states the node major once, in .nvmrc, in the form the flake can consume', () => {
-    // flake.nix interpolates this straight into `pkgs."nodejs_${nodeMajor}"`.
-    // A patch-level `.nvmrc` (`24.19.0`) names an attribute nixpkgs does not
-    // have, so the shell dies on eval — and `actions/setup-node` accepts a bare
-    // major just as happily.
-    expect(NVMRC).toMatch(/^\d+$/);
+    // flake.nix interpolates this straight into the attribute name
+    // `pkgs."nodejs_${nodeMajor}"`, so a patch-level `.nvmrc` (`24.19.0`) names
+    // an attribute nixpkgs does not have and the shell dies on eval.
+    // `actions/setup-node` accepts a bare major just as happily.
+    expect(repoFile('../.nvmrc').trim()).toMatch(/^\d+$/);
   });
 
-  it('BINDS the node major to what it read from .nvmrc, rather than restating it', () => {
+  it('BINDS the node major in flake.nix to what it read from .nvmrc', () => {
     const flake = flakeCode();
 
-    // 🔴 Not `toContain('builtins.readFile ./.nvmrc')`. That is a spelled
-    // guard, walked around twice: once by leaving the words in a comment
-    // (G2/G2b) and once by binding the read to an unused name (G2c).
-    //
-    // The RHS must be the read itself, optionally wrapped in calls like
-    // `nixpkgs.lib.trim (…)`. Allowing anything up to the `;` was not enough:
-    // `nodeMajor = if false then (builtins.readFile ./.nvmrc) else "22";` and
-    // `nodeMajor = (_: "22") (builtins.readFile ./.nvmrc);` both contained the
-    // read, both passed, and `nix eval` confirmed the shell then installed
-    // node 22.23.2 instead of 24.19.0. The read has to BE the value.
+    // 🔴 Not `toContain('builtins.readFile ./.nvmrc')` — that is a SPELLED
+    // guard, walked around twice: once by leaving the words in a comment while
+    // the code beneath hardcoded a major, once by binding the read to an unused
+    // name. The read has to BE the right-hand side, modulo wrapping calls like
+    // `nixpkgs.lib.trim (…)` — which also rejects `if false then (…readFile…)
+    // else "22"` and `(_: "22") (…readFile…)`, both of which contain the read,
+    // discard it, and were confirmed with `nix eval` to install node 22.
     expect(flake).toMatch(
-      /\bnodeMajor\s*=\s*(?:[\w.]+\s*\(\s*)*builtins\.readFile\s*\(?\s*\.\/\.nvmrc\s*\)?[\s)]*;/,
+      /^\s*nodeMajor\s*=\s*(?:[\w.]+\s*\(\s*)*builtins\.readFile\s*\(?\s*\.\/\.nvmrc/m,
     );
 
-    // 🔴 Exactly one DEFINITION of the name, in any spelling. Counting only
-    // `nodeMajor =` was defeated by re-binding it as a LAMBDA PARAMETER, which
-    // is spelled `nodeMajor:` and so was not counted at all:
-    //
-    //   mk = nodeMajor: pnpmMajor: { nodejs = pkgs."nodejs_${nodeMajor}"; … };
-    //   in mk "22" "10";
-    //
-    // The top-level readFile binding survives untouched, every interpolation
-    // still names `${nodeMajor}` — just a DIFFERENT one — and all four flake
-    // assertions passed 8/8 while `nix eval` reported node 22.23.2 and pnpm
-    // 10.34.5. Pinning the NAME is not pinning the BINDING.
-    expect(flake.match(/\bnodeMajor\s*[:=](?!=)/g)).toHaveLength(1);
-
-    // 🔴 And EVERY node attribute must interpolate that exact name. Asserting
-    // `nodejs_${nodeMajor}` merely OCCURS plus "no literal `nodejs_<digits>`"
-    // was defeated by a decoy: keep `[ pkgs."nodejs_${nodeMajor}" ]` in an
-    // unused binding, then build the real derivations from a second let-bound
-    // name (`hardMajor = "22"`). No digits appear, so the literal check passed —
-    // and `nix eval` showed node 22.23.2. Any `nodejs_`/`nodejs-slim_` not
-    // followed by `${nodeMajor}` now fails, whether it is a digit, another
-    // name, or anything else.
-    //
-    // 🔴 This is NOT complete, and an earlier version of this comment claimed
-    // it was ("this form has no such gap"). Round 6 defeated it by using no
-    // `nodejs_` attribute at all — `nodejs = pkgs.nodejs;` — and satisfying the
-    // two `toContain` checks from a STRING in the shellHook
-    // (`echo "pins nodejs_${nodeMajor}"`). 8/8 green with `.nvmrc` at 22 and
-    // `nix eval` reporting 24.19.0. Since `stripNixComments` preserves string
-    // contents by design, a string is now as good a hiding place as a comment
-    // used to be. Closing it needs evaluation, not text matching — see the
-    // CEILING note at the top of this file.
+    // …and every node attribute must interpolate that name. Asserting only that
+    // `nodejs_${nodeMajor}` occurs was defeated by a decoy: keep the
+    // interpolation in an unused binding, build the real derivation from a
+    // second let-bound literal. Survivor 1 is what this still misses.
     expect(flake).toContain('nodejs_${nodeMajor}');
     expect(flake).toContain('nodejs-slim_${nodeMajor}');
     expect(flake).not.toMatch(/nodejs(?:-slim)?_(?!\$\{nodeMajor\})/);
   });
 
-  it('uses the pnpm major it declares, rather than a literal', () => {
+  it('reads every workflow, and every toolchain step in them', () => {
+    // A LEDGER, not a scan. The assertions below read `ci.yml` and the FIRST
+    // step using each action, so a second workflow — or a second setup-node
+    // step further down this one — would carry its own toolchain past them
+    // unseen. The 858-line version answered that by walking every workflow and
+    // every `action.yml` in the tree; asserting the SET is the cheap half.
+    // Adding either turns this red and makes someone widen the guard on
+    // purpose, instead of it quietly covering less than its name says.
+    const workflows = readdirSync(new URL('../.github/workflows/', import.meta.url)).sort();
+    expect(workflows, 'workflow files this guard reads').toEqual(['ci.yml']);
+
+    // `?? []` so a step that vanished reads as "0 steps", not as a null target.
+    const count = (re: RegExp) => workflow.match(re) ?? [];
+    expect(count(/uses:\s*["']?actions\/setup-node@/g), 'setup-node steps').toHaveLength(1);
+    expect(count(/uses:\s*["']?pnpm\/action-setup@/g), 'pnpm steps').toHaveLength(1);
+  });
+
+  it('has CI read .nvmrc rather than restating the node version', () => {
+    const byKey = new Map(settingsIn(withMapping(stepBlock(workflow, 'actions/setup-node@'))));
+
+    // `./.nvmrc` and `.nvmrc` are the same file to setup-node; failing on the
+    // prefix would be a false red.
+    expect(byKey.get('node-version-file')?.replace(/^\.\//, '')).toBe('.nvmrc');
+
+    // The half that actually stops the drift. `node-version-file` being present
+    // proves nothing on its own: `actions/setup-node` accepts BOTH inputs and
+    // PREFERS the literal `node-version`, so a step carrying both would read
+    // `.nvmrc` in this assertion's eyes and install something else in reality —
+    // precisely the `node-version: 22` this repo shipped until the flake landed.
+    expect(byKey.has('node-version')).toBe(false);
+  });
+
+  it('pins the same pnpm major in flake.nix and in CI, and builds from it', () => {
     const flake = flakeCode();
-
-    // Mutant G3 kept `pnpmMajor = "11";` as a decoy and built `pkgs."pnpm_10"`.
-    // C2b then did the same one level up — decoy interpolation retained, real
-    // derivation built from `pnpmPin = "10"` — and `nix eval` reported pnpm
-    // 10.34.5 against a base of 11.25.0. Same fix as for node: every `pnpm_`
-    // must interpolate this exact name.
-    expect(flake).toMatch(/\bpnpmMajor\s*=\s*"\d+";/);
-    // Same lambda-parameter shadowing applies here — see the node assertion.
-    expect(flake.match(/\bpnpmMajor\s*[:=](?!=)/g)).toHaveLength(1);
-    expect(flake).toContain('pnpm_${pnpmMajor}');
-    expect(flake).not.toMatch(/pnpm_(?!\$\{pnpmMajor\})/);
-  });
-
-  it('has EVERY setup-node step in EVERY workflow read .nvmrc, with no literal beside it', () => {
-    let checked = 0;
-
-    for (const [name, workflow] of allWorkflows()) {
-      // A workflow may legitimately not set node up — but if it REFERENCES the
-      // action, every reference must be parsed. `catch { continue }` alone made
-      // an unparseable step (flow style, a bare `-` marker) indistinguishable
-      // from an absent one, and the global `checked > 0` was then satisfied by
-      // a different file entirely.
-      const occurrences = usesOccurrences(workflow, 'actions/setup-node@');
-      if (occurrences === 0) continue;
-      const blocks = stepBlocks(workflow, 'actions/setup-node@');
-      expect(blocks.length, `${name}: setup-node steps parsed vs referenced`).toBe(occurrences);
-
-      for (const block of blocks) {
-        const byKey = new Map(settingsIn(withMapping(block)));
-
-        // `./.nvmrc` and `.nvmrc` are the same file to setup-node; failing on
-        // the prefix would be a false red.
-        const versionFile = byKey.get('node-version-file')?.replace(/^\.\//, '');
-        expect(versionFile, `${name}: node-version-file`).toBe('.nvmrc');
-
-        // The half that actually stops the drift. `node-version-file` being
-        // present proves nothing on its own: `actions/setup-node` accepts BOTH
-        // inputs and PREFERS the literal `node-version`, so a step carrying
-        // both reads `.nvmrc` in this assertion's eyes and installs something
-        // else in reality.
-        expect(byKey.has('node-version'), `${name}: literal node-version present`).toBe(false);
-        checked += 1;
-      }
-    }
-
-    // Not a soft pass. Zero steps checked means every workflow lost its
-    // setup-node — or the extractor stopped matching — and the loop above would
-    // have been vacuously green.
-    expect(checked, 'setup-node steps inspected').toBeGreaterThan(0);
-  });
-
-  it('pins the same pnpm major in flake.nix and in every workflow that installs pnpm', () => {
-    const flakePin = flakeCode().match(/^\s*pnpmMajor = "(\d+)";/m);
+    const flakePin = flake.match(/^\s*pnpmMajor = "(\d+)";/m);
     if (!flakePin) {
       throw new Error('flake.nix has no `pnpmMajor = "<n>";` line to compare against');
     }
 
-    let checked = 0;
-    for (const [name, workflow] of allWorkflows()) {
-      const occurrences = usesOccurrences(workflow, 'pnpm/action-setup@');
-      if (occurrences === 0) continue;
-      const blocks = stepBlocks(workflow, 'pnpm/action-setup@');
-      expect(blocks.length, `${name}: pnpm steps parsed vs referenced`).toBe(occurrences);
+    // Declaring the pin is not using it: a decoy `pnpmMajor = "11";` beside a
+    // real `pkgs."pnpm_10"` keeps the comparison below green.
+    expect(flake).toContain('pnpm_${pnpmMajor}');
+    expect(flake).not.toMatch(/pnpm_(?!\$\{pnpmMajor\})/);
 
-      for (const block of blocks) {
-        const ciPin = new Map(settingsIn(withMapping(block))).get('version');
-        if (ciPin === undefined) {
-          // Not a soft pass. `pnpm/action-setup` falls back to package.json's
-          // `packageManager` when `version:` is absent — and this repo declares
-          // no such field, so the step would fail at runtime.
-          throw new Error(`${name}: pnpm/action-setup declares no \`version:\` to compare against`);
-        }
-
-        // Majors, not full versions: nixpkgs carries whatever patch it carries
-        // and the action resolves the latest of the major. Pinning the patch
-        // would rot on a routine `nix flake update` and turn trunk red for
-        // nothing — a permanently-red gate teaches everyone to merge through it.
-        expect(ciPin.split('.')[0], `${name}: pnpm major`).toBe(flakePin[1]);
-        checked += 1;
-      }
+    const ciPin = new Map(
+      settingsIn(withMapping(stepBlock(workflow, 'pnpm/action-setup@'))),
+    ).get('version');
+    if (ciPin === undefined) {
+      // Not a soft pass: `pnpm/action-setup` falls back to package.json's
+      // `packageManager` when `version:` is absent, and this repo declares no
+      // such field, so the step would fail at runtime. Either way the pins stop
+      // being comparable, which is the state this guard exists to catch.
+      throw new Error('ci.yml pnpm/action-setup step declares no `version:` to compare against');
     }
 
-    expect(checked, 'pnpm/action-setup steps inspected').toBeGreaterThan(0);
+    // Majors, not full versions: nixpkgs carries whatever patch it carries and
+    // the action resolves the latest of the major. Pinning the patch would rot
+    // on a routine `nix flake update` and turn trunk red for nothing — a
+    // permanently-red gate teaches everyone to merge through it.
+    expect(ciPin.split('.')[0]).toBe(flakePin[1]);
   });
 
   it('has CI actually RUN pnpm, not merely install it', () => {
-    // Mutant G6 left the `pnpm/action-setup` step in place as decoration and
-    // reverted everything that uses it. Every other assertion stayed green:
-    // they all describe how pnpm is INSTALLED and none asked whether anything
-    // uses it. G6b then did the same inside a `run: |` block.
-    let sawPnpmRun = false;
-
-    for (const [name, workflow] of allWorkflows()) {
-      for (const command of runCommands(workflow)) {
-        expect(command, `${name}: run step invokes npm/yarn`).not.toMatch(INVOKES_NPM_OR_YARN);
-        if (/\bpnpm\b/.test(command)) sawPnpmRun = true;
-      }
-
-      if (usesOccurrences(workflow, 'actions/setup-node@') === 0) continue;
-      for (const block of stepBlocks(workflow, 'actions/setup-node@')) {
-        const cache = new Map(settingsIn(withMapping(block))).get('cache');
-        if (cache !== undefined) {
-          expect(cache, `${name}: setup-node cache`).toBe('pnpm');
-        }
-      }
+    // Every other assertion here describes how pnpm is INSTALLED and none asks
+    // whether anything uses it, so leaving the `pnpm/action-setup` step as
+    // decoration while reverting every command to npm kept the whole file
+    // green. It also makes `ciPackageManager` — which derives CI's package
+    // manager from that step's presence — tell a lie.
+    let sawPnpm = false;
+    for (const command of runCommands(workflow)) {
+      expect(command, 'run step invokes npm/yarn').not.toMatch(INVOKES_NPM_OR_YARN);
+      if (/\bpnpm\b/.test(command)) sawPnpm = true;
     }
+    expect(sawPnpm, 'a run step that actually invokes pnpm').toBe(true);
 
-    expect(sawPnpmRun, 'a workflow that actually runs pnpm').toBe(true);
+    // `cache:` picks which lockfile setup-node restores; `npm` here caches
+    // nothing useful and states the wrong package manager.
+    const cache = new Map(
+      settingsIn(withMapping(stepBlock(workflow, 'actions/setup-node@'))),
+    ).get('cache');
+    if (cache !== undefined) expect(cache).toBe('pnpm');
   });
 
-  it('keeps buildCommand in a form the PLATFORM accepts, and agreeing with the lockfile', () => {
-    // 🔴 This is the platform's rule, not a preference. The app-blocks build
-    // pipeline validates `buildCommand` against its own regex and then selects
-    // which lockfile it demands from the command's package manager: `pnpm …`
-    // requires `pnpm-lock.yaml` and installs with `pnpm install
-    // --frozen-lockfile`; anything else requires `package-lock.json` and
-    // `npm ci`, exiting 1 with "no package-lock.json is committed".
-    //
-    // After the npm→pnpm conversion, reverting this one word — without also
-    // restoring a lockfile that no longer exists — hard-fails the build of the
-    // LIVE app, and nothing in CI goes red, because `.github/` is not in the
-    // submitted bundle.
+  it("keeps buildCommand in the form the PLATFORM accepts, on CI's package manager", () => {
+    // 🔴 `buildCommand` is what the PLATFORM's builder runs against the
+    // submitted bundle, and `.github/` is not IN that bundle — so the merge gate
+    // never executes this command and CI being green says nothing about it. The
+    // builder validates it against its own regex, then picks which lockfile it
+    // demands from the command's package manager: `pnpm …` requires
+    // `pnpm-lock.yaml`, anything else `package-lock.json`, which this repo no
+    // longer has. A mismatch hands the builder a tree its package manager cannot
+    // install while every signal this repo produces stays green. Not
+    // hypothetical: `generate-from-model` shipped exactly that state and only
+    // `civitai app validate` caught it, at submission time.
     const manifest = JSON.parse(repoFile('../block.manifest.json')) as { buildCommand?: unknown };
     if (typeof manifest.buildCommand !== 'string') {
-      throw new Error('block.manifest.json has no string "buildCommand"');
+      throw new Error('block.manifest.json has no string "buildCommand" to compare against');
     }
     const buildCommand = manifest.buildCommand;
 
-    // The WHOLE normalised string, not its first token. `"pnpm  run build"`
-    // (two spaces) has the first token `pnpm` and is REJECTED by the platform
-    // validator — so first-token parsing was green on a manifest that cannot
-    // build, which is precisely the failure this guard exists to prevent.
+    // The WHOLE normalised string, not its first token: `"pnpm  run build"` (two
+    // spaces) has the first token `pnpm` and is REJECTED by the platform
+    // validator, so first-token parsing alone is green on a manifest that cannot
+    // build.
     expect(buildCommand).toMatch(PLATFORM_BUILD_COMMAND_RE);
     expect(buildCommand).toBe('pnpm run build');
 
-    // …and the script it names has to exist, or the builder runs a command
-    // that resolves to nothing (`pnpm run buildx`).
+    // …and the script it names has to exist, or the builder runs a command that
+    // resolves to nothing (`pnpm run buildx`).
     const pkg = JSON.parse(repoFile('../package.json')) as { scripts?: Record<string, string> };
-    const script = buildCommand.replace(/^pnpm run /, '');
-    expect(Object.keys(pkg.scripts ?? {}), 'package.json scripts').toContain(script);
+    expect(Object.keys(pkg.scripts ?? {}), 'package.json scripts').toContain(
+      buildCommand.replace(/^pnpm run /, ''),
+    );
 
-    const lockfiles = readdirSync(new URL('../', import.meta.url));
-    expect(lockfiles).toContain('pnpm-lock.yaml');
-    // Exactly one lockfile may remain, or the two can disagree silently — and
-    // this reads the working tree on purpose: an untracked `package-lock.json`
-    // still lands in a `civitai app submit` bundle.
-    expect(lockfiles).not.toContain('package-lock.json');
-    expect(lockfiles).not.toContain('yarn.lock');
+    // BOTH sides derived. An earlier draft hardcoded 'pnpm' for CI, which made
+    // its own name false: it would have gone on passing through a CI switch to
+    // npm, the precise drift it claims to catch.
+    expect(buildCommand.trim().split(/\s+/)[0]).toBe(ciPackageManager(workflow));
+
+    // Exactly one lockfile may exist or the two disagree silently — and this
+    // reads the working tree on purpose: an untracked `package-lock.json` still
+    // lands in a `civitai app submit` bundle.
+    const rootFiles = readdirSync(new URL('../', import.meta.url));
+    expect(rootFiles).toContain('pnpm-lock.yaml');
+    expect(rootFiles).not.toContain('package-lock.json');
+    expect(rootFiles).not.toContain('yarn.lock');
   });
 
   it('🔴 describes the extractors — they can FAIL, and they do match this repo', () => {
-    // The control the first version of this file lacked. Every assertion above
-    // is only as good as these parsers; one that silently matches nothing
-    // produces a confident green. `manifest.test.ts` carries the same kind of
-    // self-control for its own regex.
+    // Every assertion above is only as good as these parsers, and one that
+    // silently matches nothing produces a confident green. `INVOKES_NPM_OR_YARN`
+    // needs this most: a regex that never fires reinstates the npm revert while
+    // the suite stays green, and nothing else here would notice.
     const sample = [
-      'jobs:',
-      '  build:',
-      '    steps:',
-      '      - uses: actions/setup-node@v4',
+      '      - name: Set up Node', //                 `uses:` is NOT the first
+      '        uses: "actions/setup-node@v4"', //      line — idiomatic spelling
       '        with:',
       '          # a comment that mentions node-version: 99',
-      '          "node-version": 22',
-      '          node-version-file: ".nvmrc"  # quoted, with a trailing comment',
+      '          "node-version": 22', //               a QUOTED key
+      '          node-version-file: ".nvmrc"  # quoted, trailing comment',
       '        env:',
-      '          node-version-file: .decoy',
-      '      - name: after',
-      '        run: pnpm test',
-      '',
-    ].join('\n');
-
-    const step = stepBlocks(sample, 'actions/setup-node@')[0];
-    const settings = new Map(settingsIn(withMapping(step)));
-
-    // Quoted key is seen (G1); quotes and trailing comments are stripped (G8);
-    // and the sibling `env:` mapping is NOT read (N7/N9) — that decoy would
-    // otherwise win, because `new Map` is last-wins.
-    expect(settings.get('node-version')).toBe('22');
-    expect(settings.get('node-version-file')).toBe('.nvmrc');
-    expect(settings.has('run')).toBe(false);
-
-    // Flow style is unpacked rather than swallowed whole.
-    const flow = ['        with: { node-version: 22, cache: pnpm }'];
-    expect(new Map(settingsIn(flow)).get('node-version')).toBe('22');
-
-    // `scalar` unquotes before stripping a comment, so a hash inside a quoted
-    // value survives.
-    expect(new Map(settingsIn(['  k: "a # b"'])).get('k')).toBe('a # b');
-
-    // The extractor throws rather than returning empty for an absent step.
-    expect(() => stepBlocks(sample, 'pnpm/action-setup@')).toThrow(/no step using pnpm/);
-
-    // …and it finds a step whose `uses:` is NOT the first line, which is the
-    // idiomatic spelling an earlier version could not see at all.
-    const named = [
-      '      - name: Set up Node',
-      '        uses: "actions/setup-node@v4"',
-      '        with:',
-      '          node-version: 22',
-      '',
-    ].join('\n');
-    expect(new Map(settingsIn(withMapping(stepBlocks(named, 'actions/setup-node@')[0]))).get('node-version')).toBe('22');
-
-    // `runCommands` finds commands, and is not a regex that matches anything.
-    expect(runCommands(sample)).toEqual(['pnpm test']);
-    expect(runCommands('jobs:\n  build:\n')).toEqual([]);
-
-    // …including inside a block scalar, which the G6 fix missed entirely.
-    const block = [
-      '      - name: Install',
-      '        run: |',
-      '          npm ci',
-      '          npm run build',
+      '          node-version-file: .decoy', //        a sibling mapping
       '      - run: pnpm test',
       '',
     ].join('\n');
-    expect(runCommands(block)).toEqual(['npm ci', 'npm run build', 'pnpm test']);
 
-    // The npm detector fires on an INVOCATION and not on a mere mention.
-    // Both directions matter: missing an invocation reinstates mutant G6, and
-    // firing on a mention (`pnpm dlx npm-check-updates`) is a false red, which
-    // is how a gate gets disabled.
-    for (const yes of [
+    const settings = new Map(settingsIn(withMapping(stepBlock(sample, 'actions/setup-node@'))));
+    expect(settings.get('node-version')).toBe('22');
+    expect(settings.get('node-version-file')).toBe('.nvmrc'); // not `.decoy`
+    expect(() => stepBlock(sample, 'pnpm/action-setup@')).toThrow(/no step using pnpm/);
+
+    expect(runCommands(sample)).toEqual(['pnpm test']);
+    expect(runCommands('jobs:\n  build:\n')).toEqual([]);
+    expect(runCommands('      - run: |\n          npm ci\n          npm run build\n')).toEqual([
       'npm ci',
-      'cd app && npm ci',
-      'yarn install',
-      'CI=1 npm ci',                                  // leading env assignment
-      'env NODE_ENV=production npm run build',        // via `env`
-      'bash -c "npm ci"',                             // nested shell
-      'echo `npm ci`',                                // backticks
-      'if [ -f x ]; then pnpm i; else npm ci; fi',    // a conditional revert
-      'npm ci | tee install.log',                     // piped, still a call
-      './node_modules/.bin/npm ci',                   // path-prefixed
-      'if [ ! -d node_modules ]; then yarn; fi',      // terminated by `;`
-    ]) {
-      expect(yes, `should be detected: ${yes}`).toMatch(INVOKES_NPM_OR_YARN);
-    }
-    for (const no of [
-      'pnpm install --frozen-lockfile',
-      'pnpm test',
-      'pnpm dlx npm-check-updates',                   // a MENTION, not a call
-      'echo "see npmjs.com"',
-      'if ! command -v npm; then echo x; fi',         // a PROBE, not a call
-      'test -z $(command -v npm)',
-      'sed -e "s|npm|pnpm|" README.md',               // a rewrite of the word
-      'pnpm run build && cp -r dist/ out/',
-    ]) {
-      expect(no, `should NOT be detected: ${no}`).not.toMatch(INVOKES_NPM_OR_YARN);
-    }
+      'npm run build',
+    ]);
 
-    // The platform buildCommand regex accepts the real value and rejects the
-    // shapes the platform rejects — copied from its validator, so a control is
-    // the only thing proving it was copied correctly.
-    expect('pnpm run build').toMatch(PLATFORM_BUILD_COMMAND_RE);
+    // The npm detector fires on an INVOCATION and not on a mere mention. Both
+    // directions matter: missing an invocation reinstates the revert, and firing
+    // on a mention is a false red, which is how a gate gets disabled.
+    const invocations = ['npm ci', 'CI=1 npm ci', 'bash -c "npm ci"', 'x && npm ci | tee log'];
+    const mentions = ['pnpm install -r', 'pnpm dlx npm-check-updates', 'sed "s|npm|pnpm|" x', 'if ! command -v npm; then :; fi'];
+    for (const yes of invocations) expect(yes, `detected: ${yes}`).toMatch(INVOKES_NPM_OR_YARN);
+    for (const no of mentions) expect(no, `not detected: ${no}`).not.toMatch(INVOKES_NPM_OR_YARN);
+
+    // The platform regex accepts the real value and rejects what the platform
+    // rejects — it was copied from that validator, so a control is the only
+    // thing proving it was copied correctly.
     expect('npx vite build').toMatch(PLATFORM_BUILD_COMMAND_RE);
     expect('pnpm  run build').not.toMatch(PLATFORM_BUILD_COMMAND_RE);
     expect('pnpm run build && echo hi').not.toMatch(PLATFORM_BUILD_COMMAND_RE);
 
-    // 🔴 The Nix comment scanner, both directions. Three line-wise versions of
-    // this shipped a mutant that passed 8/8 while `nix eval` showed node 22, so
-    // it gets the most explicit control in the file.
-    //
-    // Strips REAL comments…
-    expect(stripNixComments('a = 1; # nodejs_22\nb = 2;')).not.toContain('nodejs_22');
-    expect(stripNixComments('# nodejs_22\nb = 2;')).not.toContain('nodejs_22');
-    expect(stripNixComments('a = /* nodejs_22 */ 1;')).not.toContain('nodejs_22');
-    // …and keeps the code around them.
-    expect(stripNixComments('a = 1; # c\nb = 2;')).toContain('b = 2;');
+    // …and `ciPackageManager` reads CI rather than answering from a literal.
+    expect(ciPackageManager('- uses: pnpm/action-setup@v4\n- run: pnpm install')).toBe('pnpm');
+    expect(ciPackageManager('- run: npm ci')).toBe('npm');
+    expect(() => ciPackageManager('- uses: actions/checkout@v4')).toThrow(/no npm\/pnpm/);
 
-    // …but a `#` INSIDE a string is not a comment, with or without a space
-    // before it — these are mutants D1 and D3, and each one survived a
-    // different regex.
-    expect(stripNixComments('note = "x#pins"; n = "nodejs_22";')).toContain('nodejs_22');
-    expect(stripNixComments('note = "a #b"; n = "nodejs_22";')).toContain('nodejs_22');
-    expect(stripNixComments("h = ''echo a # b''; n = \"nodejs_22\";")).toContain('nodejs_22');
-    // An escaped quote must not end the string early.
-    expect(stripNixComments('s = "a\\"# b"; n = "nodejs_22";')).toContain('nodejs_22');
-
-    // And the parsers are pointed at files that exist and are non-empty.
-    expect(allWorkflows().length).toBeGreaterThan(0);
-    expect(flakeCode().length).toBeGreaterThan(0);
-    // The real flake still has its comments removed — otherwise the assertions
-    // above would be reading prose that legitimately mentions `nodejs_24`.
-    //
-    // 🔴 Structural, not spelled. This control used to assert
-    // `not.toContain('A public OSS reference block')` — one sentence from one
-    // comment in flake.nix. Reword that comment and the control goes green
-    // while proving nothing: the spelled-guard failure this entire file exists
-    // to catch, committed inside the control meant to catch it. It would also
-    // have been vacuously green in any repo this file is ported to.
-    const rawFlake = repoFile('../flake.nix');
-    expect(rawFlake, 'flake.nix has comments to strip').toMatch(/^\s*#/m);
-    expect(flakeCode().length, 'comments were removed').toBeLessThan(rawFlake.length);
+    // The flake comment filter removes comment lines and keeps the code.
+    expect(repoFile('../flake.nix'), 'flake.nix has comments to strip').toMatch(/^\s*#/m);
     expect(flakeCode(), 'no comment lines survive').not.toMatch(/^\s*#/m);
+    expect(flakeCode()).toContain('pnpmMajor');
   });
 });
