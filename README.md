@@ -28,9 +28,13 @@ mount time and communicates via `postMessage`.
 ```bash
 git clone https://github.com/ZacxDev/civitai-app-sensei
 cd civitai-app-sensei
-npm install
-npm run dev:harness      # → mock host at http://localhost:5189
+pnpm install --frozen-lockfile
+pnpm run dev:harness     # → mock host at http://localhost:5189
 ```
+
+The toolchain is pinned by a nix flake (`nix develop`, or `direnv allow` if you
+use direnv) — node's major comes from `.nvmrc`, pnpm's from `flake.nix`. If you
+would rather bring your own, read those two files for the versions.
 
 ## What this demonstrates → where to look
 
@@ -113,18 +117,18 @@ from `@civitai/theme`.
 
 | Command | What it does |
 |---|---|
-| `npm run dev` | Vite dev server (no mock host) |
-| `npm run dev:harness` | Vite + SDK mock host (for local development) |
-| `npm run build` | `tsc --noEmit && vite build` → `dist/` |
-| `npm run typecheck` | `tsc --noEmit` |
-| `npm test` | Vitest (node + dom projects) |
-| `npm run preview` | Preview the production build |
+| `pnpm run dev` | Vite dev server (no mock host) |
+| `pnpm run dev:harness` | Vite + SDK mock host (for local development) |
+| `pnpm run build` | `tsc --noEmit && vite build` → `dist/` |
+| `pnpm run typecheck` | `tsc --noEmit` |
+| `pnpm test` | Vitest (node + dom projects) |
+| `pnpm run preview` | Preview the production build |
 
 ## Build & submit (Civitai CLI)
 
 ```bash
 civitai app validate      # lint block.manifest.json + the build output
-civitai app submit        # build (npm run build) + upload dist/ for review
+civitai app submit        # build (pnpm run build) + upload dist/ for review
 ```
 
 ## Links
