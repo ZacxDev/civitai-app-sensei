@@ -8,13 +8,24 @@ import type { WorkflowBody, WorkflowBodyStep, BlockWorkflowSnapshot } from '@civ
 // — the module they live in imports only `useCallback`/`useState`, so this file
 // stays importable from the `node` vitest project.
 //
-// 🔴 `instanceof` IS ONLY SOUND WHILE THERE IS ONE COPY OF `@civitai/blocks-react`
-// IN THE TREE. Two copies give two distinct class identities and every `instanceof`
-// below silently returns false — the rejection would then fall through to the
-// generic rethrow and the viewer would be shown the developer-facing constant
-// again. `blocks-react` exact-pins `@civitai/theme` and `@civitai/components`, so
-// leaving a sibling `@civitai/components-react` behind on a bump is how a second
-// copy of those arrives; see the ledger entry `sdk-pair-bump` in `taste.json`.
+// 🔴 RETRACTED, DO NOT RE-DERIVE: THIS COMMENT USED TO WARN THAT A SECOND COPY OF
+// `@civitai/blocks-react` WOULD GIVE TWO CLASS IDENTITIES AND SILENTLY FALSIFY
+// EVERY `instanceof` BELOW. The hazard is real for a package that CAN be installed
+// twice; `blocks-react` cannot be. Measured: no `@civitai` package declares a
+// dependency on `@civitai/blocks-react` at all — `app-sdk` declares no dependencies,
+// `blocks-react` and `components-react` each depend on `{theme, components}`,
+// `components` on `{theme}`, `theme` on nothing — so `blocks-react` reaches the tree
+// only as this app's DIRECT dependency and no transitive path can duplicate it.
+// `app-sdk`'s only in-tree declarer is `blocks-react`, as a PEER, which resolves to
+// the app's own copy. It is `theme` and `components` that duplicate on a partial
+// bump, and neither exports a class this file branches on. Confirmed behaviourally:
+// with the tree deliberately skewed (blocks-react 0.49.0 against components-react
+// 0.3.1 / theme 0.2.1) all 71 tests in `orchestrator-bridge.test.ts` pass, these
+// `instanceof` branches included.
+//
+// The skew is still worth refusing, for a different and smaller reason, and
+// `src/civitai-dependency-lockstep.test.ts` is the guard that refuses it — see its
+// header, and the `sdk-pair-bump` entry in `taste.json`.
 import { WorkflowEstimateError, WorkflowSubmitError } from '@civitai/blocks-react';
 
 export type {

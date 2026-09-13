@@ -768,10 +768,48 @@ describe('orchestrator-bridge', () => {
         // idempotency conflict, and `'workflow-failed'` means the host already
         // treats the spend as committed. Every reply in this app costs Buzz, so a
         // reassurance here is a false statement about the viewer's money.
-        for (const message of [
-          await messageFrom(rejectingSubmit(exceptionError(EXCEPTION_REASON))),
-          await messageFrom(rejectingSubmit(workflowFailedError())),
-        ]) {
+        //
+        // 🔴 TWO ASSERTIONS, AND ONLY THE FIRST IS STRUCTURAL. Today's two arms are
+        // pinned as WHOLE NORMALISED STRINGS — that is what actually forbids a
+        // reassurance being added to either, because any added clause fails the
+        // equality regardless of how it is worded. Doing it here as well as in the
+        // two `surfaces the SERVER's words` cases above is deliberate: it makes
+        // THIS test the one that fails when someone edits these arms, so the
+        // failure names the money claim rather than reading as a copy nit.
+        const exception = await messageFrom(rejectingSubmit(exceptionError(EXCEPTION_REASON)));
+        const workflowFailed = await messageFrom(rejectingSubmit(workflowFailedError()));
+        expect(exception).toBe(`Workflow submit returned no workflow — ${EXCEPTION_REASON}`);
+        expect(workflowFailed).toBe(
+          'Workflow submit failed, and this turn may already have been charged — ' +
+            WORKFLOW_FAILED_REASON,
+        );
+
+        // ⚠️ AND THIS SECOND ASSERTION IS A WEAK NET — KNOWINGLY, AND IT IS ONLY
+        // WORTH KEEPING BECAUSE IT IS REACHABLE. It is a WORD check, so it is walked
+        // around by rewording: "your Buzz was not spent" and "this turn cost you
+        // nothing" both pass it while making exactly the forbidden claim. Treat it
+        // as a tripwire, never as the guarantee — the guarantee is the two
+        // whole-string pins above.
+        //
+        // 🔴 IT IS DRIVEN OVER AN UNRECOGNISED CODE, NOT JUST THE TWO ARMS ABOVE.
+        // A first draft looped over `exception` and `workflowFailed` only, which
+        // made it strictly dead: the whole-string equalities fire first on any edit
+        // to those arms, so the regex could never be the assertion that failed, and
+        // a THIRD arm — the case it exists for — was not in the loop at all.
+        // `WorkflowSubmitErrorCode` is `'exception' | 'workflow-failed'` today, so a
+        // future third code lands on the cautious fall-through arm; feeding one
+        // through the cast is how this net actually covers that arm before it is
+        // written.
+        const FUTURE_CODE = 'idempotency-conflict' as WorkflowSubmitError['code'];
+        const future = await messageFrom(
+          rejectingSubmit(
+            new WorkflowSubmitError(
+              { workflowId: 'wf_01JQZ8K3P7', status: 'failed', error: EXCEPTION_REASON },
+              FUTURE_CODE,
+            ),
+          ),
+        );
+        for (const message of [exception, workflowFailed, future]) {
           expect(message).not.toMatch(/free|no charge|not charged|nothing was charged|refund/i);
         }
       });

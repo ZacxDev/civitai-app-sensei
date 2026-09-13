@@ -150,7 +150,12 @@ recalling from memory.
 one is invisible in the other:
 
 - **`node`** — `src/**/*.test.ts`, pure logic, no DOM. The orchestrator bridge,
-  grounding, tools, sessions, turn records and both lockstep guards live here.
+  grounding, tools, sessions, turn records and all three lockstep guards live
+  here (`toolchain-`, `civitai-dependency-` and `manifest.test.ts`). The
+  dependency one reads the installed `node_modules`, so it is the one gate here
+  that a stale install can make lie — `readlink -f node_modules/@civitai/*`
+  before trusting it, because `pnpm install --frozen-lockfile` prints `Already up
+  to date` over a tree linked to the wrong versions.
 - **`dom`** — `src/**/*.test.tsx`, jsdom + Testing Library, against the SDK mock
   host. The `*.e2e.test.tsx` files drive the real component tree through a full
   send → tool round → reply → persist cycle.
@@ -227,16 +232,30 @@ something that looks unfinished.
   so moving `blocks-react` while leaving `components-react` behind installs
   **two copies of `theme` and two of `components`** — measured, with `pnpm peers
   check` reporting `No peer dependency issues found` the whole time, because
-  nothing here is a *peer* range. **That duplication is not cosmetic:**
-  `orchestrator-bridge.ts` branches with `instanceof WorkflowSubmitError` /
-  `WorkflowEstimateError`, and two copies of `blocks-react` are two class
-  identities, so every such check silently returns false and the viewer is shown
-  the SDK's developer-facing constant instead of the server's reason. The
-  instrument for this question is
-  `pnpm list --depth=10 @civitai/theme @civitai/components` — **exactly one
-  version of each**; and a "no duplicates" reading is only worth quoting
-  alongside a positive control showing the check *can* see duplicates (bump two
-  of the four and look).
+  nothing here is a *peer* range.
+
+  **Do not reach for `pnpm list` for this. `src/civitai-dependency-lockstep.test.ts`
+  is the instrument**, and it is in the suite: it reads `blocks-react`'s own
+  declared pins out of the installed manifest and requires the tree to agree,
+  which is a relationship no version bump can rot. Read its header before
+  reasoning about the skew — it records what the skew was measured to do, and
+  what it was measured *not* to do.
+
+  🔴 **One claim in that header is a RETRACTION, and it was in this file from
+  0.1.22's bump PR: that two copies of `blocks-react` would be two class
+  identities, so `orchestrator-bridge.ts`'s `instanceof WorkflowSubmitError` /
+  `WorkflowEstimateError` branches would silently return false and the viewer
+  would be shown the SDK's developer-facing constant.** That mechanism is
+  **unreachable and was measured false** — no `@civitai` package declares a
+  dependency on `@civitai/blocks-react` at all, so it is in the tree only as this
+  app's *direct* dependency and cannot be duplicated; `app-sdk` likewise (its
+  only in-tree declarer is `blocks-react`, as a *peer*, which resolves to the
+  app's own copy). `theme` and `components` duplicate; neither exports a class
+  this repo branches on. In a deliberately skewed tree all 71
+  `orchestrator-bridge.test.ts` tests pass, those 16 `instanceof` guards
+  included. **If you are here because you bumped `blocks-react` alone: the check
+  that answers your question is the guard named above, not a duplicate count, and
+  certainly not this paragraph's retracted mechanism.**
 - Vite bakes `VITE_*` in at build time and `.env.production` is gitignored, so
   neither of the two that matter is visible in a diff.
   - **`VITE_BLOCK_ALLOWED_PARENT_ORIGINS`** — the origin allowlist. Nothing in
