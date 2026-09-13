@@ -254,11 +254,17 @@ function installedCivitaiVersions(nodeModules: string = NODE_MODULES): Map<strin
       //   - a copy nested INSIDE a package (`bundleDependencies`), which lives at
       //     the first candidate this skips.
       //   - a duplicate reachable only through a NON-`@civitai` intermediary: the
-      //     frontier follows `@civitai → @civitai` edges only. Probed across all
-      //     407 manifests under `node_modules/.pnpm`: the only declarers of a
-      //     `@civitai` dependency are `blocks-react`, `components-react` and
-      //     `components` — 0 non-`@civitai` packages — so there is no such path to
-      //     follow, which is what makes both of these latent rather than live.
+      //     frontier follows `@civitai → @civitai` edges only. Probed by reading
+      //     every `package.json` under `node_modules/.pnpm` WITHOUT following
+      //     symlinks — pnpm links store siblings, so following them visits the same
+      //     manifest repeatedly, which is why the walk strategy has to be stated
+      //     alongside the count: 182 files, 168 of them carrying a `name`. Across
+      //     all four dependency keys of each, the only declarers of a `@civitai`
+      //     dependency are `blocks-react`, `components-react` and `components`, and
+      //     0 non-`@civitai` packages declare one — so there is no such path to
+      //     follow, which is what makes both of these latent rather than live. (An
+      //     earlier version said "407 manifests" with no method attached, and no
+      //     walk reproduces it; the conclusion was right, the denominator was not.)
       //   - a `node-linker=hoisted` install, where `dirname(dirname(resolved))`
       //     lands back on the top-level scope instead of a store sibling. This repo
       //     has no `.npmrc` setting it; nothing here would notice if that changed.

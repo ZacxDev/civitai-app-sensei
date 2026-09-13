@@ -350,6 +350,60 @@ describe('orchestrator-bridge', () => {
       expect(result.choices[0].message.content).toBe('scanned reply');
     });
 
+    // 🔴 WHAT MAKES THE SUBMIT GATE'S NARROWNESS ENFORCED RATHER THAN ADVISORY.
+    // `submitSnap.status === 'failed'` is deliberately NOT the shared
+    // `isTerminalWithoutSuccess`, and until this case nothing pinned that: with the
+    // widening applied, `tsc --noEmit` was clean and the whole suite was green.
+    // `onWorkflow` was referenced by exactly one test file
+    // (`turn-records.e2e.test.tsx`), and by no case that could see it go missing
+    // here. A comment saying "do not do this" that no test enforces is a comment
+    // whose stated reason a reader can disprove and then walk past — which is what
+    // happened; see the gate's own header.
+    //
+    // The behaviour: the submit gate sits IN FRONT OF the `onWorkflow` report, so
+    // widening it throws before the id is ever handed out. That id is what a caller
+    // records a charge against, and a `canceled`/`expired`/unrecognised submit reply
+    // is precisely the shape where a charge may have landed and no answer will
+    // arrive — the turn most worth having an id for.
+    //
+    // 🔴 THE FIXTURE MAKES THE REJECTION MESSAGE IDENTICAL EITHER WAY, ON PURPOSE.
+    // Under the widening the gate throws `snapshotFailureMessage(submitSnap)`, which
+    // is the same `error` string the poll loop produces at head, so the
+    // `rejects.toThrow` line CANNOT be what kills this test and the red is
+    // unambiguously the `onWorkflow` assertion. Watched against the widened gate:
+    // `AssertionError: … expected [] to deeply equal [ 'wf-canceled' ]`, and the full
+    // suite reports `1 failed | 683 passed (684)` — this case alone, with both
+    // anti-vacuity controls (`polls at least once even when submit already reports a
+    // terminal status` above, `polls until terminal status` below) still passing.
+    //
+    // PR #69's priced refusal is unaffected by the widening either way —
+    // `isTerminalWithoutSuccess('failed')` is `true`, so that exit keeps firing at
+    // the same line with the same message. Confirmed by that same run: all four
+    // cases in `a submit-time refusal` pass under the widened gate.
+    it('🔴 reports the workflowId for a terminal submit reply that is not failed', async () => {
+      const STOPPED = 'the host canceled the workflow';
+      const submit = vi
+        .fn()
+        .mockResolvedValue({ workflowId: 'wf-canceled', status: 'canceled', error: STOPPED });
+      const poll = vi.fn().mockResolvedValue({ status: 'canceled', error: STOPPED });
+      const adapter = createBridgeAdapter(mockWorkflowHelpers({ submit, poll }));
+      const reported: string[] = [];
+
+      await expect(
+        adapter.submitChatCompletion(
+          { model: MODEL, messages: [{ role: 'user', content: 'hi' }] },
+          undefined,
+          undefined,
+          (id) => reported.push(id),
+        ),
+      ).rejects.toThrow(STOPPED);
+
+      expect(
+        reported,
+        'the submit gate threw before onWorkflow, so a turn that may have been charged has no id recorded against it',
+      ).toEqual(['wf-canceled']);
+    });
+
     it('polls until terminal status', async () => {
       const poll = vi
         .fn()

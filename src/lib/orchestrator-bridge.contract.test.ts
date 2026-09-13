@@ -696,19 +696,29 @@ describe('orchestrator-bridge — lifecycle contract', () => {
       // first poll. `unassigned` is the same realistic out-of-union value the estimate
       // case above uses, for the same reason.
       //
-      // The Buzz is already spent by the time this loop runs, so nothing here is
-      // about money; what it buys is the viewer seeing the reason instead of waiting
-      // a minute for a non-answer.
+      // 🔴 THE BUZZ IS ALREADY SPENT BY THE TIME THIS LOOP RUNS, AND THAT IS WHY THE
+      // SECOND POLL REPLY IS IN THE FIXTURE. What the consolidation costs on this
+      // path is not only which sentence the viewer gets: the pre-fix loop would have
+      // polled again and RESOLVED with `a late answer`, a reply the viewer had
+      // already paid for. Accepting that is a judgement, argued at the loop itself —
+      // fail-closed on a spent path, bounded by the 60 s deadline, and unreachable
+      // unless the host breaks its own documented status-mapping contract.
       //
-      // 🔴 ITS RED IS A TIMEOUT, NOT AN ASSERTION, AND THAT IS UNAVOIDABLE HERE.
-      // Watched against `7de41a8`'s loop: `Test timed out in 5000ms` — because the
-      // pre-fix behaviour is precisely "keep polling", the call never settles and no
-      // assertion in this body can be reached to carry a better message. Post-fix it
-      // settles on the first poll. So read the pair as the evidence: hangs before,
-      // ~0 ms after.
+      // 🔴 ITS RED IS AN ASSERTION, NOT A TIMEOUT, AND THE TWO-ELEMENT QUEUE IS WHAT
+      // BUYS THAT. Watched against the pre-consolidation loop (the open-coded
+      // `succeeded || failed || expired || canceled` enumeration this replaced):
+      // `AssertionError: promise resolved "{ id: 'wf-1', replay: Promise{…}, …(2) }"
+      // instead of rejecting`, in 1,015 ms. An earlier version of this comment
+      // claimed a timeout was UNAVOIDABLE here because the call never settles. That
+      // is true only of a queue that answers `unassigned` forever — re-measured with
+      // the fixture reduced to a single `mockResolvedValue`: `Error: Test timed out
+      // in 5000ms.`, 5,009 ms — and false of this one, which settles on the second
+      // poll. ~5× cheaper, it names what actually went wrong, and it is the variant
+      // that exhibits the discarded answer above. Green at head, on the first poll.
       const poll = vi
         .fn()
-        .mockResolvedValue({ status: 'unassigned', error: 'orchestrator dropped the workflow' });
+        .mockResolvedValueOnce({ status: 'unassigned', error: 'orchestrator dropped the workflow' })
+        .mockResolvedValueOnce(succeededSnapshot(['a late answer']));
       const helpers = mockWorkflowHelpers({ poll });
       const adapter = createBridgeAdapter(helpers);
 

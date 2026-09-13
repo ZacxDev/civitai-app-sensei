@@ -806,13 +806,40 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       //
       // 🔴 `'failed'` ONLY, NOT EVERY TERMINAL STATUS — AND SPECIFICALLY NOT
       // `isTerminalWithoutSuccess`, which the estimate gate above and the poll loop
-      // below now share. A `succeeded` submit must still poll — the submit reply
-      // structurally cannot carry `textOutputs` (see below) — and that case is
-      // pinned by `polls at least once even when submit already reports a terminal
-      // status`. Reaching for the shared predicate here to "make the file
-      // consistent" would skip the output-moderation scan on the happy path, which
-      // is the opposite of a fix. The consolidation deliberately stops short of
-      // this line.
+      // below now share. THE REASON IS THE `onWorkflow` REPORT BELOW, WHICH THIS
+      // EXIT SITS IN FRONT OF. Widening the gate to the shared predicate would make
+      // a submit reply of `expired`, `canceled` or a status nobody here recognises
+      // throw at THIS line and never reach `onWorkflow?.(workflowId)` — losing the
+      // charge-bookkeeping id on exactly the turns where a charge may already have
+      // landed and no answer is ever going to arrive. That block's own header is the
+      // other half of the argument: a caller recording what the viewer paid for "has
+      // to learn the id at this line", because the returned response only reaches it
+      // on the turns that succeeded.
+      //
+      // 🔴 THE PREVIOUS WORDING HERE NAMED A HARM THIS PREDICATE CANNOT DO, WHICH IS
+      // WORSE THAN NAMING NONE — a reader can disprove it in thirty seconds and then
+      // reasonably conclude the whole prohibition is bogus. It said reaching for the
+      // shared predicate "would skip the output-moderation scan on the happy path"
+      // and cited `polls at least once even when submit already reports a terminal
+      // status` as the pin. Both are false of `isTerminalWithoutSuccess`:
+      // `isTerminalWithoutSuccess('succeeded')` is `false` by construction, so it
+      // cannot touch the happy path at all, and that test's fixture is submit →
+      // `{status:'succeeded'}`, the one case the predicate already excludes — so it
+      // stays green under the widening. Measured by actually applying the forbidden
+      // edit: `tsc --noEmit` is clean and the FULL suite comes back
+      // `1 failed | 683 passed (684)` — the one red being the guard named below,
+      // which is what this round added. Before it existed the same edit was wholly
+      // green. The moderation argument is true of upstream's `TERMINAL_STATUSES`
+      // (`useBuzzWorkflow.js`), which DOES contain `succeeded`, and that set is what
+      // this comment was about before the shared predicate existed; the delta that
+      // introduced the predicate carried the old justification across onto it.
+      //
+      // What makes this prohibition enforced rather than advisory is
+      // `reports the workflowId for a terminal submit reply that is not failed` in
+      // `orchestrator-bridge.test.ts` — a `canceled` submit whose message is
+      // identical either way, so the only assertion that can kill it is the one
+      // naming `onWorkflow`. The consolidation deliberately stops short of this
+      // line.
       if (submitSnap.status === 'failed') {
         throw new Error(snapshotFailureMessage(submitSnap));
       }
@@ -859,13 +886,36 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
         // that enumeration, and the estimate gate above used to be a one-status
         // subset of it — two spellings of one idea, in one file, disagreeing.
         //
-        // 🔴 THIS DOES CHANGE ONE CASE, IN THE FAIL-CLOSED DIRECTION. An
-        // unrecognised status now stops the loop and is reported through
-        // `snapshotFailureMessage` below; before, it read as in-flight and the turn
-        // ran to the 60 s deadline to report a timeout instead of the server's own
-        // words. The Buzz is already spent by this line either way, so the only
-        // thing at stake is which sentence the viewer gets and how long they wait
-        // for it.
+        // 🔴 THIS DOES CHANGE ONE CASE, IN THE FAIL-CLOSED DIRECTION, AND WHAT IT
+        // COSTS IS NOT ONLY A SENTENCE. An unrecognised status now stops the loop and
+        // is reported through `snapshotFailureMessage` below; before, it read as
+        // in-flight and the turn ran to the 60 s deadline to report a timeout instead
+        // of the server's own words. Measured with a poll queue of
+        // `{status:'unassigned'}` → `{status:'succeeded', textOutputs:['a late
+        // answer']}`: the pre-consolidation loop resolved WITH that answer, this one
+        // rejects on the first reply. So a reply the viewer has already been charged
+        // for can be thrown away here — not just relabelled.
+        //
+        // 🔴 THE TWO CALL SITES GENUINELY WANT OPPOSITE ANSWERS ON AN UNKNOWN STATUS
+        // THAT IS STILL IN FLIGHT, AND ONE PREDICATE CANNOT GIVE BOTH. The estimate
+        // gate should refuse — the money is not spent yet, so stopping costs nothing.
+        // This loop should keep polling — the money IS spent, so stopping forfeits
+        // it. Sharing the predicate makes both stop.
+        //
+        // Accepted anyway, for three reasons and not because the trade is free.
+        // Reaching it requires the host to break its own documented mapping
+        // contract: per `BlockWorkflowSnapshot.status`'s docs in
+        // `@civitai/app-sdk/dist/blocks/types.d.ts`, an orchestrator status the host
+        // does not recognise is the HOST's to map onto this union, "typically
+        // `processing` or `failed`" — so no such value should arrive, and `unassigned`
+        // is named there as exactly the kind of internal state the union omits. The
+        // loss is bounded by the same 60 s deadline the old behaviour spent before
+        // reporting nothing. And on a path that has already spent the viewer's Buzz,
+        // fail-closed is the direction to be wrong in. `stops on a status it does not
+        // recognise, rather than polling to the deadline` in
+        // `orchestrator-bridge.contract.test.ts` pins the behaviour, and its fixture
+        // is that two-reply queue, so the discarded answer is on the record rather
+        // than in a footnote.
         if (snap.status === 'succeeded' || isTerminalWithoutSuccess(snap.status)) {
           break;
         }

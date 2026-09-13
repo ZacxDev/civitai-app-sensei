@@ -268,10 +268,26 @@ something that looks unfinished.
   `<style>` at boot, but the CSS they inject travels as a JS *string* —
   `blocks-react/dist/ui/styles.js` imports `componentsCss` from
   `@civitai/components` and `tokensCss` from `@civitai/theme` — so Vite inlines it
-  into the JS chunk. Measured against the 0.1.22 pair-bump PR: every fragment of
-  the 31,970-byte `@civitai/components/styles.css` (head, middle and tail) is
-  present verbatim in `dist/assets/index-*.js`, and `@layer civitai.components`
-  appears **3× in the JS and 0× in `dist/assets/*.css`**.
+  into the JS chunk. Measured against the 0.1.22 pair-bump PR: the 31,970-byte,
+  887-line `@civitai/components/styles.css` is in `dist/assets/index-*.js` head
+  to tail, and `@layer civitai.components` appears **3× in the JS and 0× in
+  `dist/assets/*.css`**. Targets that reproduce it, one match each: its last
+  header line `See MARKUP.md for the full per-component markup + ARIA contract.`,
+  its opening `@layer civitai.components {`, and its final selector
+  `[data-civitai-ui='image'][data-status='error'] [data-civitai-ui-image-fallback]`.
+
+  🔴 **But "verbatim" does NOT hold line-for-line, and the exception is exactly
+  what a grep lands on.** esbuild emits `componentsCss` as a **template literal**,
+  so every backtick in the sheet arrives escaped as backslash-backtick. **73 of
+  the 887 lines contain a backtick, and not one of those 73 is present verbatim**
+  — all 73 are comment prose, **0 CSS declarations are affected**, and each is
+  present in escaped form. Measured: the header line beginning `Contract: style is
+  selected by` (whose next token is a backticked `data-civitai-ui`) gets **0**
+  matches against the bundle, while the same line with each backtick replaced by
+  backslash-backtick gets 1. Two earlier versions of this paragraph were wrong in
+  this very spot, and the trap is self-reinforcing: grep a backtick-bearing line,
+  get 0, conclude the sheet is absent. **Pick a target with no backtick — every
+  CSS declaration and selector qualifies.**
 
   Consequently the build output DOES move with a dependency CSS change, and the
   0.1.22 pair bump is the worked example — the bundle was **not** byte-identical:
@@ -296,9 +312,19 @@ something that looks unfinished.
   live inside the JS chunk. An unchanged CSS hash therefore cannot distinguish "the
   change is confined" from "the diff touched no `.css` input". The **JS** delta is
   the one that carries that claim. Still `diff` the published source stylesheets
-  (`@civitai/components/styles.css`, `blocks-react/dist/ui/styles.js`) across the
-  versions when you want to know *what* moved — a byte count says only that
-  something did.
+  across the versions when you want to know *what* moved — a byte count says only
+  that something did. ⚠️ **`@civitai/components/styles.css` is an export subpath,
+  not a path**: `components` is transitive and pnpm does not hoist it, so
+  `node_modules/@civitai/` holds only the four DIRECT deps and there is no
+  `node_modules/@civitai/components` at all. The file is at
+  `node_modules/.pnpm/@civitai+components@<ver>/node_modules/@civitai/components/styles.css`
+  (`find node_modules/.pnpm -name styles.css -path '*components*'` finds it);
+  `blocks-react` is direct, so `node_modules/@civitai/blocks-react/dist/ui/styles.js`
+  resolves as written. And ⚠️ **`readlink -f` is the wrong instrument for "is this
+  installed"** — it canonicalises a missing leaf, so
+  `readlink -f node_modules/@civitai/components` prints a confident path that does
+  not exist. Use `ls`/`find`. (It is fine for the four direct deps, where the
+  symlink is real.)
 - Vite bakes `VITE_*` in at build time and `.env.production` is gitignored, so
   neither of the two that matter is visible in a diff.
   - **`VITE_BLOCK_ALLOWED_PARENT_ORIGINS`** — the origin allowlist. Nothing in
