@@ -4,6 +4,7 @@ import type { UseAppStorage } from '@civitai/blocks-react';
 import { App } from './App.js';
 import { MAX_TURN_RECORDS, TURNS_PREFIX, turnRecordKey } from './lib/turn-records.js';
 import { claimMessageWrite } from './lib/write-ownership.js';
+import { deleteSessionRow } from './test-dom-helpers.js';
 // @ts-expect-error - plain .mjs with no types, by design. See the file header.
 import { reconcileTurns } from '../eval/reconcile-turns.mjs';
 
@@ -624,7 +625,7 @@ describe('deleting a chat takes its turn records with it', () => {
     await waitFor(() => expect(screen.getByTestId('send-button')).toBeTruthy());
     const second = turnRecords().map((r) => r.sessionId as string).find((s) => s !== first)!;
 
-    fireEvent.click(screen.getByTestId(`delete-session-${first}`));
+    deleteSessionRow(first);
 
     await waitFor(() => expect(turnKeys()).toHaveLength(1));
     // The survivor belongs to the chat that was NOT deleted — a purge that took

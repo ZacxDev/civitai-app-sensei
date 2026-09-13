@@ -6,6 +6,7 @@ import {
   BLOCK_GENERATION_RESOURCE,
   BLOCK_GENERATION_RESOURCE_LOCON,
 } from './test-helpers.js';
+import { deleteFirstSessionRow } from './test-dom-helpers.js';
 import { clearCache } from './lib/research.js';
 import { MENTION_TOOL_CALL_ID, MENTION_TOOL_NAME } from './lib/mentions.js';
 import { MAX_TOOL_RESULT_MESSAGES } from './lib/tools.js';
@@ -534,8 +535,10 @@ describe('composer state belongs to ONE conversation — every route that moves 
     await attach('Checkpoint', A.versionId);
     await screen.findByTestId(`mention-${A.versionId}`);
 
-    const del = screen.getAllByTestId(/^delete-session/)[0];
-    fireEvent.click(del);
+    // Deliberately id-agnostic: this case asserts a ROUTE (`deleteSession` moving
+    // `activeSessionId` without a switcher click), not a particular conversation.
+    // The helper opens the first row's ⋮ menu, which is where Delete now lives.
+    deleteFirstSessionRow();
 
     await waitFor(() => expect(screen.getAllByTestId(/^session-item/).length).toBe(1));
     await waitFor(() => expect(screen.queryByTestId('pending-mentions')).toBeNull());

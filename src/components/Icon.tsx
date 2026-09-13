@@ -149,7 +149,16 @@ export interface IconButtonProps {
   /** Forwarded verbatim. Every caller has one; there is no derived default. */
   testId: string;
   disabled?: boolean;
-  /** Set on a control that opens a menu, together with `aria-haspopup`. */
+  /**
+   * Set on a control that opens a menu — emits `aria-expanded`.
+   *
+   * 🔴 `aria-expanded` ONLY, NOT `aria-haspopup="menu"`. This app's menus are
+   * plain containers of buttons (see `MentionPickerButton`, the in-repo prior
+   * art), not ARIA menus: nothing implements the arrow-key navigation and
+   * roving tabindex that `role="menu"` promises. Claiming `haspopup="menu"`
+   * would announce a widget whose contract the markup does not keep, which is
+   * worse than announcing a disclosure honestly.
+   */
   expanded?: boolean;
   /** `'error'` tints the glyph with the host's error token — used by Delete. */
   tone?: 'default' | 'error';
@@ -189,7 +198,7 @@ export function IconButton({
       disabled={disabled}
       title={label}
       aria-label={label}
-      {...(expanded === undefined ? {} : { 'aria-expanded': expanded, 'aria-haspopup': 'menu' })}
+      {...(expanded === undefined ? {} : { 'aria-expanded': expanded })}
       data-testid={testId}
       style={{
         display: 'inline-flex',

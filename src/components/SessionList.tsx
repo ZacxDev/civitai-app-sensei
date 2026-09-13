@@ -1,11 +1,12 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Button } from '@civitai/blocks-react/ui';
 import type { Session } from '../types.js';
 import { groupSessionsByRecency, formatRelativeTime } from '../lib/sessions.js';
 import { getModelById } from '../lib/models.js';
-import { IconButton } from './Icon.js';
+import { copyText } from '../lib/clipboard.js';
+import { Icon, IconButton, type IconName } from './Icon.js';
 import { useMotion } from '../lib/motion.js';
-import { token, brand, metaText } from '../theme.js';
+import { token, brand, radius, metaText } from '../theme.js';
 
 export interface SessionListProps {
   sessions: Session[];
@@ -40,6 +41,15 @@ export function SessionList({
   currentModel,
   now,
 }: SessionListProps) {
+  /**
+   * Which row's ⋮ menu is open, or `null`.
+   *
+   * 🔴 ONE CELL FOR THE WHOLE LIST, NOT ONE PER ROW, so opening a second menu
+   * closes the first by construction. Per-row state would let two menus stand
+   * open at once — two panels overlapping in a 240px column, each with its own
+   * Delete.
+   */
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const motion = useMotion();
   const at = now ?? Date.now();
   const groups = useMemo(() => groupSessionsByRecency(sessions, at), [sessions, at]);
@@ -151,31 +161,24 @@ export function SessionList({
                     </div>
                   </div>
                   {/*
-                    Row actions. Still buttons, still in the DOM at all times and
-                    still keyboard-reachable — `.sensei-row` only fades them in
-                    on hover/focus-within, so a keyboard user tabbing in reveals
-                    them exactly as a pointer user hovering does.
+                    ONE row action now — the ⋮ that opens the menu. Rename and
+                    Delete moved INSIDE it; see `SessionRowMenu`.
+
+                    🔴 STILL A BUTTON, STILL IN THE DOM AT ALL TIMES, STILL
+                    KEYBOARD-REACHABLE. `.sensei-row-actions` only fades on
+                    hover/focus-within, so a keyboard user tabbing in reveals it
+                    exactly as a pointer user hovering does. That property is
+                    deliberate and pre-existing — do not replace the class with
+                    conditional rendering, which would make the actions
+                    unreachable by keyboard entirely.
                   */}
-                  <div className="sensei-row-actions" style={{ display: 'flex', gap: 2 }}>
-                    <IconButton
-                      label="Rename"
-                      icon="pencil"
-                      testId={`rename-session-${session.id}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onRename(session.id);
-                      }}
-                    />
-                    <IconButton
-                      label="Delete"
-                      icon="trash"
-                      testId={`delete-session-${session.id}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDelete(session.id);
-                      }}
-                    />
-                  </div>
+                  <SessionRowMenu
+                    session={session}
+                    open={openMenuId === session.id}
+                    onOpenChange={(next) => setOpenMenuId(next ? session.id : null)}
+                    onRename={onRename}
+                    onDelete={onDelete}
+                  />
                 </div>
               );
             })}
@@ -194,3 +197,205 @@ export function SessionList({
  * reintroduce a local variant: a third spelling of "an icon-only button" is what
  * the five-site spread was.
  */
+
+/**
+ * THE PER-ROW ⋮ MENU — copy this chat's id, rename it, delete it.
+ *
+ * 🔴 WHY THE ID IS HERE AT ALL. A session id is
+ * `session-<epoch-ms>-<6 base36>` (`lib/sessions.ts`), and it is the only handle
+ * that identifies one conversation in a KV store, a support thread or a bug
+ * report. Nothing surfaced it, so a viewer could not name the chat that went
+ * wrong.
+ *
+ * 🔴 AND WHY IT IS SELECTABLE TEXT *AND* A COPY BUTTON, NOT JUST THE BUTTON.
+ * This block runs in a sandboxed cross-origin iframe where the Async Clipboard
+ * API can be refused outright — see `lib/clipboard.ts`. A copy button is the
+ * convenient path; the rendered id is the one that still works when the
+ * clipboard is blocked, because a viewer can select it by hand. Offering only the
+ * button would make a blocked clipboard mean "this value is unreachable".
+ *
+ * 🔴 RENAME AND DELETE MOVED IN, AND THE ROW KEEPS ITS KEYBOARD PATH. They were
+ * always-visible icon buttons faded by `.sensei-row-actions`; the ⋮ trigger now
+ * sits in that same container with that same class, so tabbing still reveals it.
+ * Delete behind one press is also a small safety gain on a 240px column where it
+ * used to sit ~2px from Rename.
+ */
+function SessionRowMenu({
+  session,
+  open,
+  onOpenChange,
+  onRename,
+  onDelete,
+}: {
+  session: Session;
+  open: boolean;
+  onOpenChange: (next: boolean) => void;
+  onRename: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [copyState, setCopyState] = useState<'idle' | 'done' | 'failed'>('idle');
+
+  const copy = async () => {
+    // Same contract as the message-copy button: the OUTCOME is rendered, never
+    // assumed. `copyText` resolves false rather than throwing.
+    setCopyState((await copyText(session.id)) ? 'done' : 'failed');
+  };
+
+  return (
+    <div
+      className="sensei-row-actions"
+      // 🔴 FORCED VISIBLE WHILE THE MENU IS OPEN, AND THIS IS NOT COSMETIC. The
+      // class sets `opacity: 0` off hover/focus-within, so a menu opened by
+      // pointer would VANISH the moment the pointer left the row while remaining
+      // open, laid out and clickable — an invisible Delete target. Inline style
+      // beats the stylesheet, so this is the narrowest fix that cannot fight the
+      // class.
+      style={{ display: 'flex', gap: 2, position: 'relative', opacity: open ? 1 : undefined }}
+      // Clicks inside the actions area must not also select the row: the panel is
+      // a descendant of the row's own `onClick`.
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && open) {
+          e.stopPropagation();
+          onOpenChange(false);
+        }
+      }}
+    >
+      <IconButton
+        label={`Options for ${session.title}`}
+        icon="more"
+        expanded={open}
+        testId={`session-menu-${session.id}`}
+        onClick={() => {
+          // Reset the copy feedback on every open, so a stale "Copied" from a
+          // previous visit cannot read as this visit's outcome.
+          if (!open) setCopyState('idle');
+          onOpenChange(!open);
+        }}
+      />
+      {open && (
+        <div
+          data-testid={`session-menu-panel-${session.id}`}
+          style={{
+            position: 'absolute',
+            top: '100%',
+            right: 0,
+            marginTop: 4,
+            padding: 6,
+            borderRadius: radius.sm,
+            border: `1px solid ${token.border}`,
+            background: token.surface,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'stretch',
+            gap: 4,
+            zIndex: 5,
+            minWidth: 190,
+            boxShadow: '0 4px 14px rgba(0,0,0,0.18)',
+          }}
+        >
+          <div style={{ ...metaText, fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase' }}>
+            Chat id
+          </div>
+          {/*
+            🔴 SELECTABLE, AND SAID SO EXPLICITLY. `userSelect: 'text'` is set
+            rather than relied upon: the id sits inside a row whose whole job is
+            to be clicked, and a future `user-select: none` on the row (a very
+            ordinary thing to add to a list item to stop drag-selection) would
+            silently take away the fallback this element exists to be.
+            `wordBreak` because the id is 25-ish characters in a 190px panel and
+            an ellipsised id is not a pasteable one.
+          */}
+          <code
+            data-testid={`session-id-${session.id}`}
+            style={{
+              userSelect: 'text',
+              fontSize: 11,
+              color: token.text,
+              wordBreak: 'break-all',
+              lineHeight: 1.4,
+            }}
+          >
+            {session.id}
+          </code>
+          <MenuItem
+            label={
+              copyState === 'done' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy id'
+            }
+            testId={`copy-session-id-${session.id}`}
+            icon={copyState === 'done' ? 'check' : 'copy'}
+            tone={copyState === 'failed' ? 'error' : 'default'}
+            onClick={copy}
+          />
+          <MenuItem
+            label="Rename"
+            testId={`rename-session-${session.id}`}
+            icon="pencil"
+            onClick={() => {
+              onOpenChange(false);
+              onRename(session.id);
+            }}
+          />
+          <MenuItem
+            label="Delete"
+            testId={`delete-session-${session.id}`}
+            icon="trash"
+            tone="error"
+            onClick={() => {
+              onOpenChange(false);
+              onDelete(session.id);
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One row in the ⋮ panel: icon PLUS text.
+ *
+ * 🔴 NOT an `IconButton`. That component is for an icon-ONLY control, where the
+ * accessible name has to come from `aria-label` because there is no text. Here
+ * the text IS the name, so labelling it again would announce the row twice — and
+ * the glyph is decoration, which is why it stays `aria-hidden` via `Icon`.
+ */
+function MenuItem({
+  label,
+  testId,
+  icon,
+  tone = 'default',
+  onClick,
+}: {
+  label: string;
+  testId: string;
+  icon: IconName;
+  tone?: 'default' | 'error';
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      data-testid={testId}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        width: '100%',
+        background: 'none',
+        border: 'none',
+        cursor: 'pointer',
+        color: tone === 'error' ? token.error : token.text,
+        font: 'inherit',
+        fontSize: 12,
+        textAlign: 'left',
+        padding: '4px 6px',
+        borderRadius: radius.sm,
+      }}
+    >
+      <Icon name={icon} size={13} />
+      {label}
+    </button>
+  );
+}
