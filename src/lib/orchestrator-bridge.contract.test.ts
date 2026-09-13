@@ -176,6 +176,76 @@ describe('orchestrator-bridge — lifecycle contract', () => {
       expect(helpers.submit).not.toHaveBeenCalled();
     });
 
+    it('does NOT submit when a FAILED estimate came back carrying a price', async () => {
+      // 🔴 THE ONE DIMENSION THE GATE NEVER CHECKED, AND THE ONLY ONE THAT CAN SPEND
+      // BUZZ. `WorkflowEstimateError.code`'s docs are explicit that a `'failed'`
+      // estimate CAN carry a numeric cost — a whatIf the orchestrator itself reports
+      // as failed maps to `'failed'` through the server's `ORCH_STATUS_MAP` — so a
+      // finite positive number is not evidence the request was priced. Measured
+      // before the fix: this exact snapshot walked both cost gates and the adapter
+      // SUBMITTED (`submit.mock.calls.length === 1`), completing the turn against a
+      // price the server had already disowned.
+      //
+      // 🔴 IT WAS NOT UNREACHABLE — IT WAS GUARDED SOMEWHERE ELSE. In production
+      // `useBuzzWorkflow` rejects this shape before the adapter sees it, so the only
+      // thing standing between this snapshot and a charge was the INSTALLED HOOK
+      // VERSION. Every test in this repo injects its own `WorkflowHelpers`, and so
+      // may any other consumer of `createBridgeAdapter`. The invariant belongs to the
+      // adapter, which is what this pins.
+      //
+      // The fixture is the host's real failure shape: the sentinel `workflowId`, the
+      // server's own prose, and a cost that is unambiguously usable-looking.
+      const estimate = vi.fn().mockResolvedValue({
+        workflowId: 'failed',
+        status: 'failed',
+        error: 'orchestrator whatIf failed',
+        cost: { total: 500 },
+      });
+      const helpers = mockWorkflowHelpers({ estimate });
+      const adapter = createBridgeAdapter(helpers);
+
+      let message: string | undefined;
+      try {
+        await adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE });
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message, 'the estimate gate resolved a FAILED estimate').toBeTypeOf('string');
+
+      // 🔴 THE MONEY ASSERTION. Everything else here is about wording; this is the
+      // one the finding was about.
+      expect(helpers.submit, 'submitted against a FAILED estimate').not.toHaveBeenCalled();
+
+      // Attributed to the ESTIMATE, and carrying the server's own words — the same
+      // derivation `estimateRejectionMessage`'s `'failed'` arm uses, which is what
+      // makes the resolved and rejected routes read alike. The whole string, because
+      // it is also what refuses the three wrong labels for this state in one
+      // assertion: "returned no cost" (false — a number DID come back), "priced this
+      // request at 500" (false — the server disowned that number), and anything
+      // naming the SUBMIT (the 0.1.6 misdiagnosis). Spelled-out `not.toContain`
+      // checks for those alongside this line could never execute.
+      expect(message).toBe('Workflow estimate failed — orchestrator whatIf failed');
+    });
+
+    it('still submits when a NON-failed estimate carries a price — the status gate is not merely closed', async () => {
+      // Positive control for the case above, and specifically for the STATUS half:
+      // `pending` is the status a real priced whatIf comes back with, so a gate that
+      // refused every snapshot carrying a `status` would satisfy the test above and
+      // break every turn. Without this, `if (estimateSnap.status !== undefined)` is a
+      // mutant the suite cannot see.
+      const estimate = vi.fn().mockResolvedValue({
+        workflowId: 'wf_01JQZ8ESTM',
+        status: 'pending',
+        cost: { total: 500 },
+      });
+      const helpers = mockWorkflowHelpers({ estimate });
+      const adapter = createBridgeAdapter(helpers);
+
+      await adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE });
+
+      expect(helpers.submit).toHaveBeenCalledTimes(1);
+    });
+
     it('does NOT submit when the estimate carries no cost at all', async () => {
       // A snapshot with no `cost` object is the shape a failed estimate returns.
       // It must read as zero, not as "unknown, proceed anyway".
@@ -368,14 +438,28 @@ describe('orchestrator-bridge — lifecycle contract', () => {
       ).toBe(false);
     });
 
-    it('does not claim a reason it was not given', async () => {
+    it('does not claim a reason it was not given, nor a rejection that did not happen', async () => {
       // Negative control for the test above: with no `error` on the snapshot the
       // message must fall back, not fabricate. Without this, a hardcoded string
       // containing "unrecognized_keys" would pass the previous test.
+      //
+      // 🔴 AND THE FALLBACK ITSELF WAS A FABRICATION UNTIL THIS ROUND. It read `the
+      // request was rejected before it could be priced`, which this test then pinned
+      // — so the suite was ENFORCING the false claim. Its sibling route, the
+      // `'no-cost'` rejection arm, is documented as *a NON-FAILED reply with no
+      // numeric cost*: nothing is rejected there, and it usually carries no
+      // `snapshot.error`, so the invented sentence was what fired most often.
+      //
+      // 🔴 ONE ASSERTION, DELIBERATELY. This was `not.toContain('unrecognized_keys')`
+      // plus `toMatch(/rejected before it could be priced/i)` — the second of which
+      // meant the suite was ENFORCING the false claim. The whole-string pin is
+      // strictly stronger than both, refuses the fabricated reason AND the fabricated
+      // rejection, and fails if either is reinstated under any spelling or constant
+      // name; keeping the two spelled checks beside it would be two assertions that
+      // can never execute.
       const message = await messageFrom(unpricedEstimate());
 
-      expect(message).not.toContain('unrecognized_keys');
-      expect(message).toMatch(/rejected before it could be priced/i);
+      expect(message).toBe('Workflow estimate returned no cost — the server gave no reason');
     });
   });
 

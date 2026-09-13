@@ -76,12 +76,18 @@
  *     components-react 0.3.0, theme 0.2.0). **So this is an INVARIANT guard with
  *     respect to `trunk`, not regression coverage** — nothing had broken it.
  *   - GREEN at this PR's four (0.39.0 / 0.49.0 / 0.4.1 / 0.3.1).
+ *   - **GREEN over a STALE tree, which is what `installedCivitaiVersions` was
+ *     rewritten for** — install `trunk`'s lockfile, copy this PR's `package.json`
+ *     + `pnpm-lock.yaml` in, `pnpm install --frozen-lockfile`. Orphaned
+ *     `.pnpm/<pkg>@<oldver>` directories survive that install; the guard must not
+ *     read them as second copies. It used to, and went red on a correct tree.
  *   - **RED in the two-package skew state**: 4 of the 7 cases fail, each with its
  *     own message — `@civitai/components is installed 2 times: 0.3.1, 0.4.1`;
  *     `components-react@0.3.1 pins @civitai/components@0.3.1 but
  *     blocks-react@0.49.0 pins 0.4.1`; `bootTokens.test.ts asserts index.html
  *     against @civitai/theme@0.2.1, but blocks-react@0.49.0 renders against
- *     0.3.1`; and the duplicate ledger. Green at two version sets and red at the
+ *     0.3.1`; and the duplicate ledger, which now names `@civitai/components` and
+ *     `@civitai/theme` and NOTHING ELSE. Green at three tree states and red at the
  *     one that is wrong is the whole claim.
  *   - In that same skew state the **entire rest of the suite is green** — 56 files
  *     / 670 tests — which is why this file exists at all.
@@ -90,8 +96,18 @@
  * typed here, so a routine bump moves them together and cannot rot this file into
  * a vacuous pass.
  */
-import { readFileSync, readdirSync, realpathSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -113,51 +129,112 @@ function readManifest(packageJsonPath: string): Manifest {
 }
 
 /**
- * Every `@civitai/*` manifest physically present under `node_modules`, deduped by
- * REALPATH so pnpm's symlink farm is counted once per store entry rather than once
- * per link. Returns name → sorted list of distinct installed versions.
+ * Every `@civitai/*` package the app can actually RESOLVE, keyed by name → sorted
+ * list of distinct versions. Deduped by REALPATH, so pnpm's symlink farm counts
+ * once per store entry rather than once per link.
  *
- * Deliberately a directory walk rather than `pnpm list` output: parsing a tool's
- * text makes its FORMAT an unpinned dependency, and an empty match set would then
- * read as "no duplicates" when it may mean "wrong pattern". `atLeastFivePackages`
- * below is the positive control that this walk finds anything at all.
+ * 🔴 A RESOLUTION WALK, NOT A STORE WALK — AND THE DIFFERENCE IS THE WHOLE POINT.
+ * This function used to `readdirSync` its way down `node_modules` counting every
+ * `@civitai` manifest PHYSICALLY PRESENT. That conflates two states this file
+ * exists to keep apart, because **`pnpm install --frozen-lockfile` does not prune
+ * orphaned `.pnpm/<pkg>@<oldver>` store directories**: they stay on disk, fully
+ * populated, with their own sibling links intact, reachable from nothing.
+ *
+ * So the store walk counted them as second copies, and the failure landed on the
+ * ORDINARY REVIEW FLOW — check out a branch over an existing `node_modules`,
+ * install, test. Measured: install `trunk`'s lockfile, copy this PR's
+ * `package.json` + `pnpm-lock.yaml` in, `pnpm install --frozen-lockfile`. The tree
+ * ends at exactly this PR's four versions (`readlink -f node_modules/@civitai/*`
+ * confirms it, and `pnpm-lock.yaml` references the orphans zero times) — yet the
+ * store walk reported ALL FIVE packages duplicated and 2 of the 7 cases below went
+ * red on a CORRECT tree. A permanently-red gate is worse than no gate.
+ *
+ * 🔴 AND IT MISLED EVEN WHEN IT FIRED CORRECTLY. In the genuine two-package skew
+ * the store walk listed `@civitai/components-react: 0.3.1, 0.4.1` — an orphan —
+ * beside the two REAL duplicates, with nothing in the message marking which was
+ * which. A guard whose output cannot distinguish a skewed tree from a stale one
+ * does not answer the question it is asked. Re-measured in the fix round over a
+ * tree carrying both, the store walk's ledger read:
+ *
+ *     @civitai/app-sdk: 0.31.0, 0.39.0
+ *     @civitai/blocks-react: 0.39.0, 0.49.0
+ *     @civitai/components: 0.3.0, 0.3.1, 0.4.1
+ *     @civitai/theme: 0.2.0, 0.2.1, 0.3.1
+ *     @civitai/components-react: 0.3.0, 0.3.1, 0.4.1
+ *
+ * — i.e. it reported `blocks-react` and `app-sdk` duplicated, which the retraction
+ * paragraph above proves is UNREACHABLE. The resolution walk reports exactly
+ * `@civitai/theme: 0.2.1, 0.3.1` and `@civitai/components: 0.3.1, 0.4.1` on that
+ * same tree: the two that genuinely duplicate, and nothing else.
+ *
+ * What is resolvable is the reachable set, so this walks reachability instead:
+ * start at the app's own top-level `node_modules/@civitai/*` links, and from each
+ * resolved copy follow ITS dependency scope — the `<store>/node_modules` directory
+ * whose `@civitai` entries are the versions THAT copy resolves. An orphan is
+ * excluded because nothing links to it; a real duplicate is still found because
+ * two reachable packages each link their own copy. `orphansAreNotSecondCopies`
+ * below is the control on exactly that, in both directions.
+ *
+ * 🔴 THE ALTERNATIVES, AND WHY NOT. `createRequire().resolve` needs the names
+ * typed here — a spelled list that rots on the next package the starters repo
+ * publishes, and it cannot discover `@civitai/components`, which has no top-level
+ * link. The lockfile's `snapshots` keys describe the LOCKFILE, so they are green by
+ * construction on a tree that disagrees with it — the one hazard `CLAUDE.md` names
+ * about this very gate (`pnpm install --frozen-lockfile` prints `Already up to
+ * date` over a tree linked to the wrong versions). Reading the tree is the point;
+ * reading only the REACHABLE tree is the fix.
+ *
+ * Deliberately not `pnpm list` output either: parsing a tool's text makes its
+ * FORMAT an unpinned dependency, and an empty match set would then read as "no
+ * duplicates" when it may mean "wrong pattern". `atLeastFivePackages` below is the
+ * positive control that this walk finds anything at all.
  */
-function installedCivitaiVersions(): Map<string, string[]> {
+function installedCivitaiVersions(nodeModules: string = NODE_MODULES): Map<string, string[]> {
   const byName = new Map<string, Set<string>>();
-  const seen = new Set<string>();
+  const visitedScopes = new Set<string>();
 
-  const walk = (dir: string, depth: number): void => {
-    if (depth > 6) return;
+  // Each frontier entry is a `node_modules` directory node would resolve a bare
+  // `@civitai/*` specifier from. Seeded with the app's own, which is what makes
+  // this a reachability walk rather than a directory sweep.
+  const frontier: string[] = [nodeModules];
+
+  while (frontier.length > 0) {
+    const scope = frontier.pop() as string;
+    let realScope;
+    try {
+      realScope = realpathSync(scope);
+    } catch {
+      continue;
+    }
+    if (visitedScopes.has(realScope)) continue;
+    visitedScopes.add(realScope);
+
     let entries;
     try {
-      entries = readdirSync(dir, { withFileTypes: true });
+      entries = readdirSync(join(realScope, '@civitai'), { withFileTypes: true });
     } catch {
-      return;
+      continue; // nothing in this scope declares a `@civitai` dependency
     }
+
     for (const entry of entries) {
-      const path = join(dir, entry.name);
-      if (entry.name === '@civitai') {
-        for (const pkg of readdirSync(path, { withFileTypes: true })) {
-          let manifestPath;
-          try {
-            manifestPath = realpathSync(join(path, pkg.name, 'package.json'));
-          } catch {
-            continue;
-          }
-          if (seen.has(manifestPath)) continue;
-          seen.add(manifestPath);
-          const manifest = readManifest(manifestPath);
-          const versions = byName.get(manifest.name) ?? new Set<string>();
-          versions.add(manifest.version);
-          byName.set(manifest.name, versions);
-        }
+      let resolved;
+      try {
+        resolved = realpathSync(join(realScope, '@civitai', entry.name));
+      } catch {
         continue;
       }
-      if (entry.isDirectory()) walk(path, depth + 1);
+      const manifest = readManifest(join(resolved, 'package.json'));
+      const versions = byName.get(manifest.name) ?? new Set<string>();
+      versions.add(manifest.version);
+      byName.set(manifest.name, versions);
+      // pnpm materialises a package at `<store>/node_modules/@civitai/<name>`, so
+      // the sibling links it resolves THROUGH are two levels up. Node's own
+      // algorithm agrees: from that directory the first candidate that is not
+      // itself named `node_modules` is `<store>/node_modules`.
+      frontier.push(dirname(dirname(resolved)));
     }
-  };
+  }
 
-  walk(NODE_MODULES, 0);
   return new Map([...byName].map(([name, versions]) => [name, [...versions].sort()]));
 }
 
@@ -193,6 +270,68 @@ describe('@civitai/* dependency lockstep', () => {
   it('the extractors can fail — a missing package throws rather than reading as absent', () => {
     expect(() => manifestOf('@civitai/not-a-real-package')).toThrow();
     expect(() => soleVersion('@civitai/not-a-real-package')).toThrow(/not installed at all/);
+  });
+
+  it('orphansAreNotSecondCopies — the walk separates a STALE tree from a SKEWED one', () => {
+    // 🔴 THE CONTROL ON THE RESOLUTION WALK, IN BOTH DIRECTIONS — and both halves
+    // are load-bearing. A walk that reported 1 version for the skewed tree too
+    // would make every "exactly one version" assertion below vacuous, which is a
+    // worse failure than the red-on-a-correct-tree one this replaced. So the
+    // fixture is built once and read twice, differing ONLY in whether anything
+    // links the old copy.
+    //
+    // The shape mirrors the real skew exactly: two reachable packages (`holder`
+    // standing in for `components-react`, `root` for `blocks-react`) each with
+    // their own pinned copy of one dependency, laid out the way pnpm lays it out —
+    // relative sibling links three levels up out of `<store>/node_modules/@civitai`.
+    const scratch = mkdtempSync(join(tmpdir(), 'civitai-lockstep-'));
+    try {
+      const storeCopy = (pkg: string, version: string): string => {
+        const dir = join(scratch, '.pnpm', `${pkg}@${version}`, 'node_modules', '@civitai', pkg);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(
+          join(dir, 'package.json'),
+          JSON.stringify({ name: `@civitai/${pkg}`, version }),
+        );
+        return dir;
+      };
+
+      storeCopy('dep', '1.0.0'); // the OLD copy: on disk, linked by nobody yet
+      storeCopy('dep', '2.0.0');
+      storeCopy('holder', '1.0.0');
+
+      // `dep@2.0.0` is the app's own dependency and is the only top-level link.
+      mkdirSync(join(scratch, '@civitai'), { recursive: true });
+      symlinkSync(
+        join('..', '.pnpm', 'dep@2.0.0', 'node_modules', '@civitai', 'dep'),
+        join(scratch, '@civitai', 'dep'),
+      );
+
+      // POINT A — the stale tree the ordinary review flow produces. `dep@1.0.0` is
+      // a fully populated orphan store directory and must not be counted.
+      expect(
+        [...installedCivitaiVersions(scratch)],
+        'an unreachable orphan store directory was counted as a second copy',
+      ).toEqual([['@civitai/dep', ['2.0.0']]]);
+
+      // POINT B — the genuine skew. `holder` becomes reachable and pins the OLD
+      // copy, so two resolvable copies now exist and the walk must say so.
+      symlinkSync(
+        join('..', '.pnpm', 'holder@1.0.0', 'node_modules', '@civitai', 'holder'),
+        join(scratch, '@civitai', 'holder'),
+      );
+      symlinkSync(
+        join('..', '..', '..', 'dep@1.0.0', 'node_modules', '@civitai', 'dep'),
+        join(scratch, '.pnpm', 'holder@1.0.0', 'node_modules', '@civitai', 'dep'),
+      );
+
+      expect(
+        new Map(installedCivitaiVersions(scratch)).get('@civitai/dep'),
+        'the walk cannot see a REAL duplicate — every assertion below is then vacuous',
+      ).toEqual(['1.0.0', '2.0.0']);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 
   it('atLeastFivePackages — the walk actually finds the tree (positive control)', () => {
@@ -267,8 +406,10 @@ describe('@civitai/* dependency lockstep', () => {
 
   it('noSecondCopyOfAnyPackage — one installed version per @civitai package', () => {
     // A second instrument on the same question, failing differently from the
-    // pin-equality assertions above: it needs no manifest to be read correctly,
-    // only the tree to be counted.
+    // pin-equality assertions above: it needs no `dependencies` block to be read
+    // correctly, only the RESOLVABLE tree to be counted. "Resolvable" is the word
+    // that matters — see `installedCivitaiVersions`; counting what is merely on
+    // disk made this the case that fired on a stale install.
     const duplicated = [...INSTALLED].filter(([, versions]) => versions.length > 1);
     expect(
       duplicated.map(([name, versions]) => `${name}: ${versions.join(', ')}`),

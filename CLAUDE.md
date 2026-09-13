@@ -155,7 +155,12 @@ one is invisible in the other:
   dependency one reads the installed `node_modules`, so it is the one gate here
   that a stale install can make lie — `readlink -f node_modules/@civitai/*`
   before trusting it, because `pnpm install --frozen-lockfile` prints `Already up
-  to date` over a tree linked to the wrong versions.
+  to date` over a tree linked to the wrong versions. ⚠️ It reads what the app can
+  RESOLVE, not what is on disk: `pnpm install` never prunes orphaned
+  `.pnpm/<pkg>@<oldver>` directories, so a guard that counted those went red on a
+  correct tree in the ordinary review flow (check out a branch over an existing
+  `node_modules`, install, test). Its header records the fix and the two-point
+  measurement; do not "simplify" it back into a directory sweep.
 - **`dom`** — `src/**/*.test.tsx`, jsdom + Testing Library, against the SDK mock
   host. The `*.e2e.test.tsx` files drive the real component tree through a full
   send → tool round → reply → persist cycle.
@@ -256,6 +261,17 @@ something that looks unfinished.
   included. **If you are here because you bumped `blocks-react` alone: the check
   that answers your question is the guard named above, not a duplicate count, and
   certainly not this paragraph's retracted mechanism.**
+
+  ⚠️ **"The bundle is byte-identical" is not "nothing on screen moves" — a
+  dependency's stylesheet is INJECTED at runtime and is not in the bundle.**
+  `@civitai/components` and `@civitai/blocks-react` each inject their own
+  `<style>`; `vite build`'s hashes and byte counts say nothing about either. On
+  the 0.1.22 pair bump the bundle was byte-identical while
+  `[data-civitai-ui='group']` gained three declarations and `blocks-react`'s sheet
+  gained a whole `resource-card` block. So make the two claims separately, and
+  `diff` the injected stylesheets (`@civitai/components/styles.css`,
+  `blocks-react/dist/ui/styles.js`) across the versions rather than inferring
+  from the build output.
 - Vite bakes `VITE_*` in at build time and `.env.production` is gitignored, so
   neither of the two that matter is visible in a diff.
   - **`VITE_BLOCK_ALLOWED_PARENT_ORIGINS`** — the origin allowlist. Nothing in

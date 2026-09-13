@@ -316,8 +316,10 @@ export function buildChatCompletionBody(request: ChatCompletionRequest): Workflo
   // ⚠️ AND THE RESOLVED-BUT-UNPRICED SHAPE NO LONGER ARRIVES FROM THE HOOK AT ALL.
   // `blocks-react` ≥ 0.43.0 rejects it with `WorkflowEstimateError` instead, so on
   // the real path the 0.1.6 narrative would land on `createBridgeAdapter`'s
-  // `'no-cost'` rejection arm rather than on its resolved gate. Both spell the same
-  // sentence, so what the viewer would have seen is unchanged; the route is not.
+  // `'no-cost'` rejection arm rather than on its resolved gate. Both still spell the
+  // same sentence, so the two routes remain indistinguishable on screen; only the
+  // route differs. (What that sentence SAYS changed this round — see
+  // `NO_SERVER_REASON`.)
   //
   // The exact accepted key set is pinned in `orchestrator-bridge.test.ts`, so a
   // future rename fails here rather than in production.
@@ -460,21 +462,26 @@ function snapshotFailureMessage(
  *
  * Deliberately says the SERVER gave no reason rather than inventing one, and
  * deliberately says nothing about money — see `submitRejectionMessage`.
+ *
+ * 🔴 THIS IS NOW THE FALLBACK ON THE UNPRICED ROUTES TOO, AND THAT REPLACED A
+ * SENTENCE THAT WAS FALSE ON THE CASE IT FIRED MOST OFTEN. Until this round the
+ * unpriced gate below and the `'no-cost'` rejection arm shared a separate constant,
+ * `UNPRICED_REASON = 'the request was rejected before it could be priced'`. Per
+ * `WorkflowEstimateError.code`'s docs `'no-cost'` is *a NON-FAILED reply with no
+ * numeric `cost.total`* — the usual producer is `{status:'pending'}` with no `error`
+ * at all — so **nothing was rejected**, and because that arm usually carries no
+ * `snapshot.error` the inaccurate sentence was the one the viewer actually got.
+ * Meanwhile `'failed'`, the code that genuinely IS a refusal, got this one.
+ *
+ * 🔴 THE ROUTING WAS RIGHT AND IS UNCHANGED — ONLY THE SENTENCE MOVED. `'no-cost'`
+ * still gets the "returned no cost" prefix and `'failed'` still gets "failed": that
+ * prefix IS the estimate-attribution split, and it is what distinguishes the two.
+ * What the shared tail was for — the resolved gate and the `'no-cost'` arm reading
+ * IDENTICALLY, so two routes to one state cannot drift into two messages — is
+ * preserved by them sharing THIS constant instead. The claim about a rejection is
+ * simply gone, because on those routes there was not one.
  */
 const NO_SERVER_REASON = 'the server gave no reason';
-
-/**
- * The pre-0.43 fallback for an estimate that came back unpriced, kept VERBATIM.
- *
- * It is asserted by `does not claim a reason it was not given` in
- * `orchestrator-bridge.contract.test.ts`, which is the negative control proving the
- * unpriced message does not fabricate a reason. That test drives the adapter with a
- * RESOLVED unpriced snapshot — a shape the real hook no longer produces but any
- * `WorkflowHelpers` implementation still can — so the string is reachable from both
- * the resolved gate below and the `'no-cost'` rejection arm, and it must read the
- * same way on either.
- */
-const UNPRICED_REASON = 'the request was rejected before it could be priced';
 
 /**
  * Viewer-facing text for an `estimate` REJECTION (`blocks-react` ≥ 0.43.0).
@@ -498,7 +505,7 @@ const UNPRICED_REASON = 'the request was rejected before it could be priced';
  */
 function estimateRejectionMessage(err: WorkflowEstimateError): string {
   return err.code === 'no-cost'
-    ? `Workflow estimate returned no cost — ${snapshotFailureMessage(err.snapshot, UNPRICED_REASON)}`
+    ? `Workflow estimate returned no cost — ${snapshotFailureMessage(err.snapshot, NO_SERVER_REASON)}`
     : `Workflow estimate failed — ${snapshotFailureMessage(err.snapshot, NO_SERVER_REASON)}`;
 }
 
@@ -630,9 +637,56 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       if (typeof total !== 'number' || !Number.isFinite(total)) {
         // Same derivation, same fallback string as the `'no-cost'` rejection arm
         // above — the resolved and rejected routes to "no usable price" must read
-        // identically, and they do because both call one function.
+        // identically, and they do because both call one function with one constant.
+        // That constant used to CLAIM A REJECTION that had not happened; see
+        // `NO_SERVER_REASON` for why it no longer does.
         throw new Error(
-          `Workflow estimate returned no cost — ${snapshotFailureMessage(estimateSnap, UNPRICED_REASON)}`,
+          `Workflow estimate returned no cost — ${snapshotFailureMessage(estimateSnap, NO_SERVER_REASON)}`,
+        );
+      }
+
+      // 🔴 A FAILED ESTIMATE IS NOT A QUOTE YOU MAY SPEND AGAINST, AND A NUMBER
+      // ARRIVING WITH IT DOES NOT MAKE IT ONE. Per `WorkflowEstimateError.code`'s
+      // own docs, `'failed'` is not only "the host threw": a whatIf the orchestrator
+      // itself reports as failed maps to `'failed'` through the server's
+      // `ORCH_STATUS_MAP`, and **such a reply CAN carry a numeric `cost`** —
+      // upstream's words for why it is rejected anyway are "a failed estimate is not
+      // a quote you may spend against, whether or not a number came back with it".
+      //
+      // 🔴 THIS GATE WAS MISSING, AND THE ONLY THING STOPPING THE SPEND WAS THE
+      // INSTALLED HOOK. Measured on the PR that bumped to `blocks-react@0.49.0`: an
+      // `estimate` resolving `{workflowId:'failed', status:'failed',
+      // error:'orchestrator whatIf failed', cost:{total:500}}` walked both gates
+      // above — `500` is a finite number greater than zero — and the adapter
+      // SUBMITTED, spending Buzz against a price the server had already disowned. In
+      // production `useBuzzWorkflow` rejects that shape first, so it was unreachable
+      // through the hook; every test in this repo injects its own `WorkflowHelpers`,
+      // and so may any other consumer. That is the same argument the `typeof total
+      // !== 'number'` half above is kept on, applied to the dimension that can
+      // actually spend money instead of the one that cannot.
+      //
+      // 🔴 ORDER IS LOAD-BEARING: THIS SITS AFTER THE UNPRICED GATE, NOT BEFORE IT.
+      // A failed estimate with NO usable number is already refused above, and its
+      // wording is pinned as a whole string by `does not claim a reason it was not
+      // given, nor a rejection that did not happen` — whose fixture is exactly
+      // `{status:'failed'}`. Hoisting this check would relabel that case from
+      // "returned no cost" to "failed" and break that pin, along with the
+      // `'no-cost'`-arm pin that must read identically to it. What was unguarded is a
+      // failed estimate that DID carry a finite positive number, so that is where the
+      // check goes — by this line `total` is known to be one.
+      //
+      // 🔴 ESTIMATE ONLY. The `status === 'failed'` guard on the SUBMIT reply below
+      // is a different exit with a different rule: a budget / spend-cap refusal
+      // RESOLVES there carrying the price it refused to charge, and #69's fix is
+      // that it must keep resolving so the viewer sees the server's own reason and
+      // can top up. Do not merge the two.
+      //
+      // Same derivation as `estimateRejectionMessage`'s `'failed'` arm, so the
+      // resolved and rejected routes to "the estimate did not succeed" read
+      // identically — the same reason every route here shares `NO_SERVER_REASON`.
+      if (estimateSnap.status === 'failed') {
+        throw new Error(
+          `Workflow estimate failed — ${snapshotFailureMessage(estimateSnap, NO_SERVER_REASON)}`,
         );
       }
 

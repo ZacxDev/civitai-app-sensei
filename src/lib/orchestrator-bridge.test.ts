@@ -924,12 +924,22 @@ describe('orchestrator-bridge', () => {
         );
       });
 
-      it("reuses the pre-0.43 unpriced wording when 'no-cost' carries no words", async () => {
-        // The same fallback the RESOLVED unpriced gate uses, which is what makes the
-        // two routes to "no usable price" read identically. Pinned as one string in
-        // `orchestrator-bridge.contract.test.ts` for the resolved route.
+      it("claims no rejection when 'no-cost' carries no words — it claims no reason", async () => {
+        // 🔴 THE CASE THIS ARM HITS MOST OFTEN, AND IT USED TO LIE ON IT. Per
+        // `WorkflowEstimateError.code`, `'no-cost'` is a NON-FAILED reply with no
+        // numeric `cost.total` — usually `{status:'pending'}` with no `error` at all,
+        // which is exactly this fixture. The wording here was `the request was
+        // rejected before it could be priced`; nothing was rejected, and with no
+        // `snapshot.error` to override it that false sentence was the one the viewer
+        // got. It now falls back to what is actually true: the server said nothing.
+        //
+        // Still the same fallback the RESOLVED unpriced gate uses, which is what makes
+        // the two routes to "no usable price" read identically; the resolved route is
+        // pinned as one string in `orchestrator-bridge.contract.test.ts`. The whole
+        // normalised string is what refuses the retired claim under ANY spelling or
+        // constant name — a `not.toContain('rejected')` beside it could never execute.
         expect(await messageFrom(estimateError('no-cost'))).toBe(
-          'Workflow estimate returned no cost — the request was rejected before it could be priced',
+          'Workflow estimate returned no cost — the server gave no reason',
         );
       });
 
