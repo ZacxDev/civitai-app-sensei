@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { ChatArea, type ChatAreaProps } from './ChatArea.js';
+import { ChatArea, BUBBLE_MAX_WIDTH, type ChatAreaProps } from './ChatArea.js';
 import type { Message } from '../types.js';
 import type { ResolvedResource } from '../lib/mentions.js';
 import { BLOCK_GENERATION_RESOURCE, BLOCK_GENERATION_RESOURCE_LOCON } from '../test-helpers.js';
@@ -331,5 +331,83 @@ describe('the mention affordance in the composer (clawgate #434, criterion 3)', 
     renderChat({ sendGate: 'consent', pendingMentions: [A], onRemoveMention });
     fireEvent.click(screen.getByTestId(`remove-mention-${A.versionId}`));
     expect(onRemoveMention).toHaveBeenCalledWith(A.versionId);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 THE TRANSCRIPT'S SHAPE — viewer right, replies left, both bounded.
+//
+// The bubble `max-width` is the ONLY thing governing line length in this app:
+// the host's 1600px page cap was lifted for it upstream (civitai#4804), so the
+// container is full-bleed and a 2560px display gives the chat pane ~2320px. An
+// unbounded transcript there is a ~280-character line.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('🔴 ChatArea — bubble alignment and measure', () => {
+  const transcript = [makeMessage('user', 'Hello'), makeMessage('assistant', 'Hi there!')];
+
+  function wraps() {
+    return screen.getAllByTestId('bubble-wrap') as HTMLElement[];
+  }
+
+  it('aligns the viewer RIGHT and the reply LEFT, with align-self', () => {
+    renderChat({ messages: transcript });
+    const [user, assistant] = wraps();
+    expect(user.dataset.bubbleRole).toBe('user');
+    expect(user.style.alignSelf).toBe('flex-end');
+    expect(assistant.dataset.bubbleRole).toBe('assistant');
+    expect(assistant.style.alignSelf).toBe('flex-start');
+  });
+
+  it('🔴 every bubble is bounded BELOW 100% of the pane', () => {
+    // Derived from the exported constant rather than mirroring a literal, and then
+    // the constant's own PROPERTY is checked — so this fails both when the DOM
+    // stops using it and when someone widens it to the full pane.
+    renderChat({ messages: transcript });
+    for (const w of wraps()) expect(w.style.maxWidth).toBe(BUBBLE_MAX_WIDTH);
+
+    // No arm of the expression may reach the pane width. Parsed, not pattern-
+    // matched: a `toContain('%')` passes for `100%`.
+    const percentages = [...BUBBLE_MAX_WIDTH.matchAll(/([\d.]+)%/g)].map((m) => Number(m[1]));
+    expect(percentages.length).toBeGreaterThan(0);
+    for (const p of percentages) expect(p).toBeLessThan(100);
+
+    // And there IS a font-relative cap, which is the half that actually bounds the
+    // measure on a wide screen — a percentage alone still scales with the pane.
+    const chCaps = [...BUBBLE_MAX_WIDTH.matchAll(/([\d.]+)ch/g)].map((m) => Number(m[1]));
+    expect(chCaps.length).toBeGreaterThan(0);
+    // 45–75 characters is the readable range; `ch` is the advance of "0", which is
+    // wider than the average glyph, so the ceiling is expressed generously.
+    for (const c of chCaps) expect(c).toBeLessThanOrEqual(80);
+  });
+
+  it('🔴 READING ORDER STILL EQUALS DOM ORDER — the row-reverse guard for the transcript', () => {
+    // The companion to the input row's two order guards. `align-self` was chosen
+    // over `row-reverse` precisely so this stays true: a reversal would put the
+    // viewer's message on the right while leaving assistive tech hearing the
+    // conversation in an order the screen does not show. jsdom computes no
+    // geometry, so DOM order is what a test can actually read.
+    renderChat({ messages: transcript });
+    const [user, assistant] = wraps();
+    expect(
+      user.compareDocumentPosition(assistant) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // …and neither the container nor any wrapper may break that equivalence
+    // without moving the node.
+    const container = screen.getByTestId('messages-container') as HTMLElement;
+    expect(container.style.flexDirection).toBe('column');
+    for (const w of wraps()) {
+      expect(w.style.order).toBe('');
+      expect(w.style.flexDirection).not.toBe('row-reverse');
+    }
+  });
+
+  it('the wrapper can shrink below its content — a long URL cannot push past the cap', () => {
+    // A flex item's default `min-width: auto` refuses to shrink below its content,
+    // so a single unbroken token (a model URL) would overflow the max-width it was
+    // just given. INVARIANT guard: nothing is known to have hit this, it is pinned
+    // because the cap is worthless without it.
+    renderChat({ messages: transcript });
+    for (const w of wraps()) expect(w.style.minWidth).toBe('0');
   });
 });
