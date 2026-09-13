@@ -59,6 +59,14 @@ vi.mock('@civitai/blocks-react', () => ({
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
   useBlockResize: () => {},
+  // 🔴 FAIL-CLOSED SFW, WHICH IS WHAT A GREEN/BLUE-DOMAIN VIEWER REALLY GETS —
+  // and also what the hook returns before BLOCK_INIT lands. So every case in this
+  // file runs with NSFW mode hidden and the SFW arm on the wire, which is the
+  // production default. The real policy math is tested against the SDK's own
+  // `isLevelAllowed`/`effectiveBrowsingCeiling` in `lib/maturity.test.ts`, and the
+  // component gate (including the red-domain-but-viewer-opted-out case) in
+  // `components/SettingsBar.test.tsx`. Do not read this literal as the contract.
+  useDomainMaturity: () => ({ isSfw: true, isLevelAllowed: () => false }),
   useRequestConsent: () => ({ requestConsent: vi.fn() }),
   useRequestSignIn: () => ({ requestSignIn: vi.fn() }),
   useResourcePicker: () => ({ open: vi.fn().mockResolvedValue(null) }),

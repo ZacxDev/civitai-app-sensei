@@ -67,11 +67,18 @@ export const CHAT_COMPLETION_STEP_ID = 'chat-completion';
  * that a fabricated model name is quoted the declared floor, CHARGED it, and
  * then fails at execution with no output and no refund. The enum is what stops an app typo
  * from burning a viewer's Buzz.
+ *
+ * 🔴 APPENDED, NEVER INSERTED. The host asserts its own `CHAT_COMPLETION_MODELS`
+ * as a whole ORDERED array, so this mirror follows the same discipline: a new
+ * registration goes on the END. Re-ordering the first three would turn the other
+ * side of the wire red for no reason. `deepseek/deepseek-v4-flash-0731` is the
+ * fourth, registered by civitai#4803.
  */
 export const CHAT_COMPLETION_MODELS = [
   'deepseek/deepseek-chat',
   'cognitivecomputations/dolphin-mistral-24b-venice-edition',
   'openai/gpt-4o-mini',
+  'deepseek/deepseek-v4-flash-0731',
 ] as const;
 
 export type ChatCompletionModel = (typeof CHAT_COMPLETION_MODELS)[number];
