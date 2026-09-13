@@ -227,23 +227,104 @@ describe('orchestrator-bridge — lifecycle contract', () => {
       expect(message).toBe('Workflow estimate failed — orchestrator whatIf failed');
     });
 
-    it('still submits when a NON-failed estimate carries a price — the status gate is not merely closed', async () => {
-      // Positive control for the case above, and specifically for the STATUS half:
-      // `pending` is the status a real priced whatIf comes back with, so a gate that
-      // refused every snapshot carrying a `status` would satisfy the test above and
-      // break every turn. Without this, `if (estimateSnap.status !== undefined)` is a
-      // mutant the suite cannot see.
-      const estimate = vi.fn().mockResolvedValue({
-        workflowId: 'wf_01JQZ8ESTM',
-        status: 'pending',
-        cost: { total: 500 },
-      });
-      const helpers = mockWorkflowHelpers({ estimate });
-      const adapter = createBridgeAdapter(helpers);
+    it('does NOT submit when a PRICED estimate came back on any status but a usable one', async () => {
+      // 🔴 THE SIBLINGS THE FIRST VERSION OF THAT GATE LET THROUGH. It tested
+      // `status === 'failed'` and nothing else, so the three other ways an estimate
+      // can arrive already decided still spent Buzz. Measured at `7de41a8` with this
+      // exact fixture, one status at a time:
+      //
+      //     failed      submits=0   (the case above; the gate worked)
+      //     canceled    submits=1   ← turn completed, Buzz spent
+      //     expired     submits=1   ← same
+      //     unassigned  submits=1   ← same
+      //
+      // 🔴 REACHABLE THROUGH THE INSTALLED HOOK, WHICH IS WHY IT IS NOT MERELY
+      // DEFENSIVE. `useBuzzWorkflow.estimate`'s guard is `status === 'failed'` OR "no
+      // numeric `cost.total`"; `{status:'canceled', cost:{total:500}}` satisfies
+      // neither clause and RESOLVES out of the hook into this adapter. Upstream's own
+      // comment says `canceled`/`expired` "are covered by the same clause (they carry
+      // no cost)" — an assertion about what the server sends today, not an invariant
+      // anything enforces.
+      //
+      // 🔴 `unassigned` IS THE DELIBERATE DEPARTURE FROM THIS FILE'S FIXTURE
+      // DISCIPLINE, and it is chosen rather than invented. `BlockWorkflowSnapshot`'s
+      // own docs say the union "omits orchestrator-internal states like
+      // `unassigned`" and that the HOST is responsible for mapping such a state onto
+      // one of the six — i.e. the union is a host-maintained mapping, and a value
+      // outside it reaching this adapter is a host bug or a status added after this
+      // build. A textbook `'frobnicated'` would test the same branch while proving
+      // nothing about a shape the stack can produce. It reaches the adapter only
+      // because `mockResolvedValue` is untyped — which is the hazard restated: the
+      // union is a compile-time claim, and nothing enforces it at runtime.
+      //
+      // 🔴 THE ASSERTIONS ARE ORDERED SO THE RED NAMES THE STATUS. Written with
+      // `rejects.toThrow` first, a narrow predicate failed on "promise resolved
+      // instead of rejecting" — true, but it names no status, so the one red line
+      // could not say WHICH sibling leaked. Capturing the outcome and asserting the
+      // MONEY first puts the status in every message, which is also the file's own
+      // order of importance: the wording is secondary to whether Buzz moved.
+      const NOT_USABLE = ['failed', 'canceled', 'expired', 'unassigned'] as const;
 
-      await adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE });
+      for (const status of NOT_USABLE) {
+        const estimate = vi.fn().mockResolvedValue({
+          workflowId: 'failed',
+          status,
+          error: 'orchestrator whatIf failed',
+          cost: { total: 500 },
+        });
+        const helpers = mockWorkflowHelpers({ estimate });
+        const adapter = createBridgeAdapter(helpers);
 
-      expect(helpers.submit).toHaveBeenCalledTimes(1);
+        let message: string | undefined;
+        try {
+          await adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE });
+        } catch (err) {
+          message = (err as Error).message;
+        }
+
+        // 🔴 THE MONEY ASSERTION, per status, naming the status.
+        expect(helpers.submit, `submitted against a ${status} estimate`).not.toHaveBeenCalled();
+        expect(
+          message,
+          `a ${status} estimate carrying a price was accepted as a quote`,
+        ).toBe('Workflow estimate failed — orchestrator whatIf failed');
+      }
+    });
+
+    it('still submits when a usable estimate carries a price — the status gate is not merely closed', async () => {
+      // Positive control for the two cases above, and specifically for the STATUS
+      // half: a gate that refused every snapshot carrying a `status` would satisfy
+      // both and break every turn. Each entry kills a distinct mutant of
+      // `isTerminalWithoutSuccess`, which is why this is a list and not one fixture:
+      //
+      //   - `pending`    — the status a real priced whatIf comes back with. Drop it
+      //     from `IN_FLIGHT_STATUSES` and every turn dies.
+      //   - `processing` — the other in-flight status. Nothing else in the suite
+      //     exercises it on the ESTIMATE, so without it `IN_FLIGHT_STATUSES` can be
+      //     narrowed to `['pending']` and stay green.
+      //   - `succeeded`  — kills the mutant that drops the `!== 'succeeded'` clause,
+      //     which would otherwise refuse an estimate that reported success.
+      //   - `undefined`  — no `status` field at all, which is what the mock host and
+      //     every other fixture in this repo produce. Kills the mutant that drops
+      //     the `status !== undefined` clause and refuses the happy path.
+      const USABLE = ['pending', 'processing', 'succeeded', undefined] as const;
+
+      for (const status of USABLE) {
+        const estimate = vi.fn().mockResolvedValue({
+          workflowId: 'wf_01JQZ8ESTM',
+          ...(status === undefined ? {} : { status }),
+          cost: { total: 500 },
+        });
+        const helpers = mockWorkflowHelpers({ estimate });
+        const adapter = createBridgeAdapter(helpers);
+
+        await adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE });
+
+        expect(
+          helpers.submit,
+          `refused to submit against an estimate whose status was ${String(status)}`,
+        ).toHaveBeenCalledTimes(1);
+      }
     });
 
     it('does NOT submit when the estimate carries no cost at all', async () => {
@@ -599,6 +680,47 @@ describe('orchestrator-bridge — lifecycle contract', () => {
       await expect(
         adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE }),
       ).rejects.toThrow('Workflow failed');
+    });
+
+    it('stops on a status it does not recognise, rather than polling to the deadline', async () => {
+      // 🔴 WHAT PINS THE SECOND HALF OF THE CONSOLIDATION. The estimate gate and this
+      // loop now share `isTerminalWithoutSuccess`; without this case the loop can be
+      // reverted to its old open-coded `succeeded || failed || expired || canceled`
+      // enumeration and the whole suite stays green — i.e. the two spellings this
+      // round merged would be free to diverge again, silently, on the money path.
+      //
+      // The behaviour it pins is the fail-closed direction of that merge. Before it,
+      // an unrecognised status read as in-flight: the loop kept going for the full
+      // 60 s deadline and then reported `timed out before the first poll`'s sibling
+      // timeout — throwing away the server's own words, which were in hand on the
+      // first poll. `unassigned` is the same realistic out-of-union value the estimate
+      // case above uses, for the same reason.
+      //
+      // The Buzz is already spent by the time this loop runs, so nothing here is
+      // about money; what it buys is the viewer seeing the reason instead of waiting
+      // a minute for a non-answer.
+      //
+      // 🔴 ITS RED IS A TIMEOUT, NOT AN ASSERTION, AND THAT IS UNAVOIDABLE HERE.
+      // Watched against `7de41a8`'s loop: `Test timed out in 5000ms` — because the
+      // pre-fix behaviour is precisely "keep polling", the call never settles and no
+      // assertion in this body can be reached to carry a better message. Post-fix it
+      // settles on the first poll. So read the pair as the evidence: hangs before,
+      // ~0 ms after.
+      const poll = vi
+        .fn()
+        .mockResolvedValue({ status: 'unassigned', error: 'orchestrator dropped the workflow' });
+      const helpers = mockWorkflowHelpers({ poll });
+      const adapter = createBridgeAdapter(helpers);
+
+      await expect(
+        adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE }),
+      ).rejects.toThrow('orchestrator dropped the workflow');
+
+      // ONE poll, not sixty: the loop broke on the first reply rather than treating
+      // an unknown status as "still working".
+      expect(helpers.poll, 'kept polling a workflow that had already stopped').toHaveBeenCalledTimes(
+        1,
+      );
     });
   });
 

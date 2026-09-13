@@ -218,19 +218,50 @@ function installedCivitaiVersions(nodeModules: string = NODE_MODULES): Map<strin
 
     for (const entry of entries) {
       let resolved;
+      let manifest;
       try {
         resolved = realpathSync(join(realScope, '@civitai', entry.name));
+        // 🔴 BOTH READS INSIDE THE `try`, AND THE STRAY-FILE CASE IS WHY. A
+        // non-directory entry in a scope — `.DS_Store`, a `.yaml`, an editor swap
+        // file — realpaths FINE, so realpathSync alone does not filter it; the
+        // failure lands on `<entry>/package.json` with `ENOTDIR`. With that read
+        // outside the `try` it escaped `installedCivitaiVersions`, which runs at
+        // MODULE LOAD, so the whole file aborted before a single test name printed:
+        // `Test Files 1 failed`, `Tests no tests` — including
+        // `atLeastFivePackages`, the positive control. Fail-closed, but the
+        // diagnostic reads as a broken gate rather than as one stray byte on disk,
+        // and a reader has nothing to tell them which. The store walk this replaced
+        // tolerated the entry and ran its cases; with both reads inside the `try`,
+        // so does this — measured with the stray file in the real tree, all 9 green.
+        manifest = readManifest(join(resolved, 'package.json'));
       } catch {
         continue;
       }
-      const manifest = readManifest(join(resolved, 'package.json'));
       const versions = byName.get(manifest.name) ?? new Set<string>();
       versions.add(manifest.version);
       byName.set(manifest.name, versions);
       // pnpm materialises a package at `<store>/node_modules/@civitai/<name>`, so
-      // the sibling links it resolves THROUGH are two levels up. Node's own
-      // algorithm agrees: from that directory the first candidate that is not
-      // itself named `node_modules` is `<store>/node_modules`.
+      // the sibling links it resolves THROUGH are two levels up.
+      //
+      // 🔴 STATED AS THE WALK'S REACH, NOT AS NODE'S ALGORITHM — an earlier version
+      // of this comment claimed "Node's own algorithm agrees", which overclaims.
+      // `NODE_MODULES_PATHS` yields `<resolved>/node_modules` FIRST, then
+      // `<resolved>/../node_modules`, and only then this directory; the walk jumps
+      // straight to the third candidate. What it therefore covers is exactly the
+      // pnpm isolated layout: an `@civitai` package's own dependency scope is its
+      // store sibling directory. Three states it CANNOT see, recorded rather than
+      // chased (all three latent today, and the reason for that is measured):
+      //   - a copy nested INSIDE a package (`bundleDependencies`), which lives at
+      //     the first candidate this skips.
+      //   - a duplicate reachable only through a NON-`@civitai` intermediary: the
+      //     frontier follows `@civitai → @civitai` edges only. Probed across all
+      //     407 manifests under `node_modules/.pnpm`: the only declarers of a
+      //     `@civitai` dependency are `blocks-react`, `components-react` and
+      //     `components` — 0 non-`@civitai` packages — so there is no such path to
+      //     follow, which is what makes both of these latent rather than live.
+      //   - a `node-linker=hoisted` install, where `dirname(dirname(resolved))`
+      //     lands back on the top-level scope instead of a store sibling. This repo
+      //     has no `.npmrc` setting it; nothing here would notice if that changed.
       frontier.push(dirname(dirname(resolved)));
     }
   }
@@ -329,6 +360,60 @@ describe('@civitai/* dependency lockstep', () => {
         new Map(installedCivitaiVersions(scratch)).get('@civitai/dep'),
         'the walk cannot see a REAL duplicate — every assertion below is then vacuous',
       ).toEqual(['1.0.0', '2.0.0']);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('a stray non-directory entry is skipped — the read that used to abort this file at load', () => {
+    // 🔴 THE FAILURE MODE IS THE DIAGNOSTIC, NOT THE VERDICT. `installedCivitaiVersions`
+    // runs at MODULE LOAD, so anything it throws aborts this file before a single test
+    // name prints. Measured at `7de41a8`: `touch node_modules/@civitai/.DS_Store` then
+    // run the guard →
+    //
+    //     Error: ENOTDIR … '@civitai/.DS_Store/package.json'
+    //     Test Files  1 failed
+    //     Tests       no tests
+    //
+    // — `atLeastFivePackages`, the positive control, never ran either. Fail-closed, so
+    // it blocks nothing that should pass; but "the dependency gate is broken" and
+    // "somebody's file manager wrote a dot-file" are indistinguishable in that output,
+    // and the store walk this replaced tolerated the entry. With the fix and the same
+    // stray file present, all 9 cases in this file run and pass.
+    //
+    // 🔴 SCOPE, STATED SO IT IS NOT READ AS MORE. This calls the walk DIRECTLY on a
+    // fixture, so pre-fix it reports as one red case rather than reproducing the
+    // file-level abort — the abort needs the entry in the REAL tree, where the walk
+    // runs at import. What it pins is the cause of both: a non-directory entry is
+    // skipped rather than thrown out of.
+    //
+    // The two halves are both load-bearing. The FIRST proves the walk survives the
+    // entry; the SECOND proves it still sees the tree around it — a `catch` that
+    // swallowed the whole scope would satisfy the first alone and silently reduce
+    // every "exactly one version" assertion to a vacuous pass over an empty map.
+    const scratch = mkdtempSync(join(tmpdir(), 'civitai-lockstep-stray-'));
+    try {
+      const dir = join(scratch, '.pnpm', 'dep@1.0.0', 'node_modules', '@civitai', 'dep');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, 'package.json'),
+        JSON.stringify({ name: '@civitai/dep', version: '1.0.0' }),
+      );
+      mkdirSync(join(scratch, '@civitai'), { recursive: true });
+      symlinkSync(
+        join('..', '.pnpm', 'dep@1.0.0', 'node_modules', '@civitai', 'dep'),
+        join(scratch, '@civitai', 'dep'),
+      );
+
+      // The stray byte: a plain FILE where the walk expects a package directory.
+      // `realpathSync` resolves it happily — which is exactly why realpath alone is
+      // not the filter — and it is the manifest read that used to blow up.
+      writeFileSync(join(scratch, '@civitai', '.DS_Store'), 'stray');
+
+      expect(
+        [...installedCivitaiVersions(scratch)],
+        'a stray non-directory entry aborted the walk instead of being skipped',
+      ).toEqual([['@civitai/dep', ['1.0.0']]]);
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }

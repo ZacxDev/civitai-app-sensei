@@ -458,6 +458,58 @@ function snapshotFailureMessage(
 }
 
 /**
+ * The only `BlockWorkflowSnapshot.status` values a workflow can still MOVE OFF.
+ *
+ * Spelled as the IN-FLIGHT set rather than as the terminal one, and that choice is
+ * the whole reason `isTerminalWithoutSuccess` below is fail-closed. `status` is a
+ * closed union in the `.d.ts` (`pending | processing | succeeded | failed | expired
+ * | canceled`) but it is a HOST-MAINTAINED MAPPING at runtime: the type's own docs
+ * say "if the orchestrator gains a status the host doesn't recognize, the host is
+ * responsible for mapping it to one of the values here". A set of the states that
+ * are NOT yet decided therefore treats a value nobody here has heard of as decided
+ * — which on the estimate path means "not a quote you may spend against" — whereas
+ * enumerating the terminal states would wave it through.
+ */
+const IN_FLIGHT_STATUSES = new Set<string>(['pending', 'processing']);
+
+/**
+ * The workflow has STOPPED, and not on success.
+ *
+ * 🔴 ONE PREDICATE FOR TWO CALL SITES THAT HAD DRIFTED APART, which is the same
+ * argument `snapshotFailureMessage` is built on. Until this round the estimate gate
+ * tested `status === 'failed'` while the poll loop open-coded `succeeded || failed
+ * || expired || canceled` fifty lines below, so the file held two spellings of one
+ * idea and they disagreed — and the disagreement was on the money path. Measured at
+ * `7de41a8` by injecting a `WorkflowHelpers` whose `estimate` resolves
+ * `{workflowId:'failed', status:<s>, error:…, cost:{total:500}}`: `s='failed'`
+ * refused with 0 submits, while `'canceled'`, `'expired'` and an unrecognised
+ * status each SUBMITTED — the turn completed and the viewer's Buzz was spent
+ * against a price the server had stopped standing behind.
+ *
+ * 🔴 IT WAS REACHABLE THROUGH THE INSTALLED HOOK, not only through an injected
+ * fake. `useBuzzWorkflow.estimate`'s guard is `status === 'failed'` OR "no numeric
+ * `cost.total`", so `{status:'canceled', cost:{total:500}}` satisfies neither
+ * clause and RESOLVES out of the hook straight into this adapter. Upstream's
+ * comment says `canceled`/`expired` "are covered by the same clause (they carry no
+ * cost)" — but that is an assertion about what the server sends, not an invariant
+ * anything enforces, and it says nothing at all about a status upstream adds later.
+ *
+ * 🔴 `undefined` IS ADMITTED, DELIBERATELY AND UNCHANGED. A priced whatIf reply is
+ * routinely `{cost:{total:n}}` with no `status` field at all — that is the happy
+ * path every test in this repo and the mock host both produce — so a snapshot that
+ * says nothing about its status is not evidence it stopped. Both call sites treated
+ * it that way before this consolidation and both still do; the poll loop stays
+ * fail-closed on it anyway, because a status-less snapshot never satisfies its
+ * `=== 'succeeded'` exit.
+ *
+ * 🔴 NOT FOR THE SUBMIT REPLY. `submitSnap.status === 'failed'` below is
+ * deliberately narrower and must stay that way — see the comment there.
+ */
+function isTerminalWithoutSuccess(status: string | undefined): boolean {
+  return status !== undefined && status !== 'succeeded' && !IN_FLIGHT_STATUSES.has(status);
+}
+
+/**
  * What to say when the snapshot carries no server words at all.
  *
  * Deliberately says the SERVER gave no reason rather than inventing one, and
@@ -665,26 +717,46 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       // !== 'number'` half above is kept on, applied to the dimension that can
       // actually spend money instead of the one that cannot.
       //
+      // 🔴 AND ITS FIRST VERSION WAS ONE STATUS WIDE, WHICH LEFT THREE SIBLINGS
+      // SPENDING. `status === 'failed'` was the whole test; re-measured with the
+      // same fixture at `status` of `'canceled'`, `'expired'` and an unrecognised
+      // value, each one SUBMITTED. Those are reachable THROUGH THE HOOK, not just
+      // through an injected fake — `useBuzzWorkflow.estimate` rejects on
+      // `status === 'failed'` or on a missing numeric cost, and a canceled reply
+      // carrying `cost.total` satisfies neither. `isTerminalWithoutSuccess` is now
+      // the single spelling of that idea, shared with the poll loop below, which had
+      // the full terminal set open-coded all along.
+      //
       // 🔴 ORDER IS LOAD-BEARING: THIS SITS AFTER THE UNPRICED GATE, NOT BEFORE IT.
       // A failed estimate with NO usable number is already refused above, and its
       // wording is pinned as a whole string by `does not claim a reason it was not
       // given, nor a rejection that did not happen` — whose fixture is exactly
       // `{status:'failed'}`. Hoisting this check would relabel that case from
-      // "returned no cost" to "failed" and break that pin, along with the
-      // `'no-cost'`-arm pin that must read identically to it. What was unguarded is a
-      // failed estimate that DID carry a finite positive number, so that is where the
-      // check goes — by this line `total` is known to be one.
+      // "returned no cost" to "failed" and break that pin. Measured by actually
+      // hoisting it: exactly 1 of the 106 cases across this module's two test files
+      // fails, and it is that one. (An earlier version of this line also claimed the
+      // `'no-cost'`-arm pin would break with it. That is false — that pin exercises
+      // `estimateRejectionMessage`, a path no ordering of the gates in this function
+      // can reach, and per the hook's docs a `'no-cost'` error can never carry
+      // `status:'failed'` anyway, so the identity requirement does not apply to its
+      // fixture. A comment claiming coverage it does not have is what stops the next
+      // reader from checking.) What was unguarded is a non-successful estimate that
+      // DID carry a finite positive number, so that is where the check goes — by this
+      // line `total` is known to be one.
       //
       // 🔴 ESTIMATE ONLY. The `status === 'failed'` guard on the SUBMIT reply below
       // is a different exit with a different rule: a budget / spend-cap refusal
       // RESOLVES there carrying the price it refused to charge, and #69's fix is
       // that it must keep resolving so the viewer sees the server's own reason and
-      // can top up. Do not merge the two.
+      // can top up. It is therefore the ONE call site the shared predicate must not
+      // reach. Do not merge the two.
       //
       // Same derivation as `estimateRejectionMessage`'s `'failed'` arm, so the
       // resolved and rejected routes to "the estimate did not succeed" read
       // identically — the same reason every route here shares `NO_SERVER_REASON`.
-      if (estimateSnap.status === 'failed') {
+      // One sentence covers all four rejected statuses because that arm's own docs
+      // gloss code `'failed'` as exactly this: "the estimate did not succeed".
+      if (isTerminalWithoutSuccess(estimateSnap.status)) {
         throw new Error(
           `Workflow estimate failed — ${snapshotFailureMessage(estimateSnap, NO_SERVER_REASON)}`,
         );
@@ -732,12 +804,15 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       // three days of server logs carried `workflowId: 'failed'` — i.e. the poll
       // below threw the reason away while it was already in hand at this line.
       //
-      // 🔴 `'failed'` ONLY, NOT EVERY TERMINAL STATUS. A `succeeded` submit must
-      // still poll — the submit reply structurally cannot carry `textOutputs`
-      // (see below) — and that case is pinned by `polls at least once even when
-      // submit already reports a terminal status`. Widening this to
-      // `TERMINAL_STATUSES` would skip the output-moderation scan on the happy
-      // path, which is the opposite of a fix.
+      // 🔴 `'failed'` ONLY, NOT EVERY TERMINAL STATUS — AND SPECIFICALLY NOT
+      // `isTerminalWithoutSuccess`, which the estimate gate above and the poll loop
+      // below now share. A `succeeded` submit must still poll — the submit reply
+      // structurally cannot carry `textOutputs` (see below) — and that case is
+      // pinned by `polls at least once even when submit already reports a terminal
+      // status`. Reaching for the shared predicate here to "make the file
+      // consistent" would skip the output-moderation scan on the happy path, which
+      // is the opposite of a fix. The consolidation deliberately stops short of
+      // this line.
       if (submitSnap.status === 'failed') {
         throw new Error(snapshotFailureMessage(submitSnap));
       }
@@ -779,12 +854,19 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
         if (signal?.aborted) throw new Error('Aborted');
         snap = await workflow.poll(workflowId);
         polled = true;
-        if (
-          snap.status === 'succeeded' ||
-          snap.status === 'failed' ||
-          snap.status === 'expired' ||
-          snap.status === 'canceled'
-        ) {
+        // The terminal set, spelled as "succeeded, or stopped without succeeding"
+        // rather than as a second enumeration of the four statuses. It used to be
+        // that enumeration, and the estimate gate above used to be a one-status
+        // subset of it — two spellings of one idea, in one file, disagreeing.
+        //
+        // 🔴 THIS DOES CHANGE ONE CASE, IN THE FAIL-CLOSED DIRECTION. An
+        // unrecognised status now stops the loop and is reported through
+        // `snapshotFailureMessage` below; before, it read as in-flight and the turn
+        // ran to the 60 s deadline to report a timeout instead of the server's own
+        // words. The Buzz is already spent by this line either way, so the only
+        // thing at stake is which sentence the viewer gets and how long they wait
+        // for it.
+        if (snap.status === 'succeeded' || isTerminalWithoutSuccess(snap.status)) {
           break;
         }
         await delay(POLL_INTERVAL_MS);

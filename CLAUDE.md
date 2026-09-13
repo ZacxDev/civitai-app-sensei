@@ -262,16 +262,43 @@ something that looks unfinished.
   that answers your question is the guard named above, not a duplicate count, and
   certainly not this paragraph's retracted mechanism.**
 
-  ⚠️ **"The bundle is byte-identical" is not "nothing on screen moves" — a
-  dependency's stylesheet is INJECTED at runtime and is not in the bundle.**
+  ⚠️ **A dependency's stylesheet is injected at runtime AND is in the bundle —
+  so the JS byte count is a usable signal for it, not a blind one.**
   `@civitai/components` and `@civitai/blocks-react` each inject their own
-  `<style>`; `vite build`'s hashes and byte counts say nothing about either. On
-  the 0.1.22 pair bump the bundle was byte-identical while
-  `[data-civitai-ui='group']` gained three declarations and `blocks-react`'s sheet
-  gained a whole `resource-card` block. So make the two claims separately, and
-  `diff` the injected stylesheets (`@civitai/components/styles.css`,
-  `blocks-react/dist/ui/styles.js`) across the versions rather than inferring
-  from the build output.
+  `<style>` at boot, but the CSS they inject travels as a JS *string* —
+  `blocks-react/dist/ui/styles.js` imports `componentsCss` from
+  `@civitai/components` and `tokensCss` from `@civitai/theme` — so Vite inlines it
+  into the JS chunk. Measured against the 0.1.22 pair-bump PR: every fragment of
+  the 31,970-byte `@civitai/components/styles.css` (head, middle and tail) is
+  present verbatim in `dist/assets/index-*.js`, and `@layer civitai.components`
+  appears **3× in the JS and 0× in `dist/assets/*.css`**.
+
+  Consequently the build output DOES move with a dependency CSS change, and the
+  0.1.22 pair bump is the worked example — the bundle was **not** byte-identical:
+
+  | | JS | CSS |
+  |---|---|---|
+  | `6fd63c0` (trunk) | `index-DjI_Rh2G.js`, 331,941 B | `index-BaQG15Xi.css`, 4,659 B |
+  | `4d57c43` (the pair bump) | `index-CjPIP-BA.js`, 346,904 B | `index-DEzy6Xgc.css`, 4,772 B |
+
+  Both hashes changed. `resource-card` went 0 → 25 occurrences in the JS and
+  `data-civitai-ui` 232 → 277; the CSS asset moved because `main.tsx`'s
+  `import '@civitai/theme/styles.css'` is a real CSS import and `theme` bumped
+  0.2.0 → 0.3.1 — its tell is `--civitai-bp-`, 0 → 5 occurrences, which is exactly
+  the five variables that release added. (If you find a note claiming a
+  byte-identical bundle on the pair bump, it is a **mis-attribution of `4d00b34`**,
+  the prose-only commit next to it — that one's two assets really are
+  `cmp`-identical to `4d57c43`'s.)
+
+  🔴 **So do not lean on "the CSS hash is unchanged" as evidence a change is
+  confined.** `dist/assets/*.css` is 4.77 kB — the app's own CSS plus the theme
+  tokens, nothing else — while the ~32 kB components sheet and `blocks-ui`'s sheet
+  live inside the JS chunk. An unchanged CSS hash therefore cannot distinguish "the
+  change is confined" from "the diff touched no `.css` input". The **JS** delta is
+  the one that carries that claim. Still `diff` the published source stylesheets
+  (`@civitai/components/styles.css`, `blocks-react/dist/ui/styles.js`) across the
+  versions when you want to know *what* moved — a byte count says only that
+  something did.
 - Vite bakes `VITE_*` in at build time and `.env.production` is gitignored, so
   neither of the two that matter is visible in a diff.
   - **`VITE_BLOCK_ALLOWED_PARENT_ORIGINS`** — the origin allowlist. Nothing in
