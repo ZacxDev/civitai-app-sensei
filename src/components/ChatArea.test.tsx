@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { ChatArea, BUBBLE_MAX_WIDTH, type ChatAreaProps } from './ChatArea.js';
 import type { Message } from '../types.js';
 import type { ResolvedResource } from '../lib/mentions.js';
+import { resourceDisplayName } from '@civitai/blocks-react/ui';
 import { BLOCK_GENERATION_RESOURCE, BLOCK_GENERATION_RESOURCE_LOCON } from '../test-helpers.js';
 
 function makeMessage(role: Message['role'], content: string): Message {
@@ -200,6 +201,87 @@ describe('the mention affordance in the composer (clawgate #434, criterion 3)', 
     fireEvent.click(screen.getByTestId(`remove-mention-${B.versionId}`));
     expect(onRemoveMention).toHaveBeenCalledWith(B.versionId);
   });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 🔴 THE CHIP IS THE PACK'S `ResourceCard`, NOT A HAND-ROLLED ONE.
+  //
+  // ⚠️ GREP FOR THE SUFFIX, NEVER FOR THE COMPOSED VALUE. `ResourceCard` DERIVES
+  // every inner hook from the root testid, so `mention-8765-name` appears nowhere
+  // in source as a literal — a search for it returns zero whether the selector
+  // works or has just been deleted. That is the component's own warning, and it
+  // is why these assertions build the id from the same parts the component does.
+  // ───────────────────────────────────────────────────────────────────────────
+  it('🔴 the chip renders through ResourceCard — the derived testids are present', () => {
+    renderChat({ pendingMentions: [A] });
+    const root = screen.getByTestId(`mention-${A.versionId}`);
+    // The name hook, and the name itself — `resourceDisplayName`, whose whole
+    // purpose is that an absent `modelName` becomes `#<versionId>` rather than an
+    // empty chip indistinguishable from a broken one.
+    const name = screen.getByTestId(`mention-${A.versionId}-name`);
+    expect(root.contains(name)).toBe(true);
+    expect(name.textContent).toBe(resourceDisplayName(A));
+    // The actions slot exists ONLY because we passed something into it.
+    expect(screen.getByTestId(`mention-${A.versionId}-actions`)).toBeInTheDocument();
+  });
+
+  it('🔴 an absent modelName becomes `#<versionId>`, not an empty chip', () => {
+    // The reason to adopt the component at all. `modelName` is typed `string`
+    // (REQUIRED) and that type is optimistic — a first-party block has already
+    // seen it absent at runtime. Whitespace-only counts as absent, which is the
+    // case the local card rendered as a bordered box with no text.
+    //
+    // ⚠️ THE FIXTURE IS WHITESPACE, NOT `''`, AND THE DIFFERENCE MATTERS. A first
+    // mutant that re-introduced an app-side placeholder as
+    // `modelName || 'Untitled model'` SURVIVED this test, because `'   '` is
+    // TRUTHY so the `||` never fired and the fixture could only ever produce the
+    // expected value anyway. The same mutant written `.trim() || 'Untitled model'`
+    // — the way anyone would actually write it — dies here with
+    // `expected 'Untitled model' to be '#5678'`. Whitespace is kept as the fixture
+    // because it is the harder case the component explicitly handles; the lesson is
+    // that the mutant has to be the realistic one.
+    const nameless = { ...A, modelName: '   ' } as ResolvedResource;
+    renderChat({ pendingMentions: [nameless] });
+    expect(screen.getByTestId(`mention-${A.versionId}-name`).textContent).toBe(
+      `#${A.versionId}`,
+    );
+  });
+
+  it('the remove control is a SIBLING of the hit area, never nested in it', () => {
+    // The whole reason `actions` exists. A `<button>` inside a `<button>` is
+    // invalid HTML: the parser REPARENTS it, so the inner control becomes
+    // keyboard-unreachable and its click is eaten by the outer one. Asserted
+    // structurally, because a click test alone passes in jsdom — which does not
+    // reparent the way a real parser does.
+    //
+    // ⚠️ AN INVARIANT GUARD, NOT REGRESSION COVERAGE, AND MEASURED AS SUCH. The
+    // hazard is UNREACHABLE from this call site: `actions` renders as a sibling of
+    // the hit area by construction, so it holds whether or not the card is
+    // interactive. Mutant K — adding `interactive` + `onSelect`, which really does
+    // make the card itself a `<button>` — SURVIVED this assertion and the whole
+    // 32-test file, because the component's structure is doing the work. What this
+    // guard is actually for is the regression where someone hand-rolls the chip
+    // again and wraps their own control inside a clickable card, which is the state
+    // this commit replaced.
+    renderChat({ pendingMentions: [A], onRemoveMention: vi.fn() });
+    const remove = screen.getByTestId(`remove-mention-${A.versionId}`);
+    expect(remove.tagName).toBe('BUTTON');
+    expect(remove.parentElement?.closest('button')).toBeNull();
+  });
+
+  it('🔴 remove STILL FIRES after the refactor, with the right versionId', () => {
+    // The behavioural half. A structural check type-checks past a wrong argument,
+    // so the callback's payload is pinned too.
+    const onRemoveMention = vi.fn();
+    renderChat({ pendingMentions: [A, B], onRemoveMention });
+    fireEvent.click(screen.getByTestId(`remove-mention-${A.versionId}`));
+    expect(onRemoveMention).toHaveBeenCalledTimes(1);
+    expect(onRemoveMention).toHaveBeenCalledWith(A.versionId);
+  });
+
+  // The negative control for `-actions` — a chip with NO remove control — cannot
+  // be driven from here: a composer chip is always removable, so `ChatArea` always
+  // passes `onRemove`. It lives in `MessageBubble.test.tsx`, against the
+  // transcript chip, which deliberately has none.
 
   it('renders no chip row when nothing is attached', () => {
     renderChat();

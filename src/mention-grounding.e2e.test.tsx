@@ -574,7 +574,19 @@ describe('the message enhancement — what the viewer sees, and what survives a 
     const enhancement = bubble.querySelector('[data-testid="message-mentions"]');
     expect(enhancement).toBeTruthy();
     expect(enhancement!.textContent).toContain(B.modelName);
-    expect(enhancement!.textContent).toContain(B.modelType);
+
+    // 🔴 REPOINTED FOR `ResourceCard`, AND THE OLD EXPECTATION WAS PINNING OUR OWN
+    // FORMATTING RATHER THAN A CONTRACT. It asserted the raw `B.modelType`
+    // (`'LoCon'`) appeared verbatim. The pack's `TYPE_LABELS` maps
+    // locon/lycoris/dora/lora all to `'LoRA'` — a FROZEN decision, on the argument
+    // that a LoCon IS a LoRA-family resource and three apps disagreeing about the
+    // label is three apps telling one viewer different things about the same model.
+    // So the honest assertion is that the type pill is PRESENT and carries
+    // something, not that it spells the wire value. An unknown type still renders
+    // verbatim, which is what keeps this from hiding a Controlnet as "LoRA".
+    const type = enhancement!.querySelector(`[data-testid="mention-${B.versionId}-type"]`);
+    expect(type).toBeTruthy();
+    expect((type!.textContent ?? '').trim().length).toBeGreaterThan(0);
   });
 
   it('the composer is cleared of attachments once they are sent', async () => {

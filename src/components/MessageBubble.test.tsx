@@ -1,7 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { resourceDisplayName } from '@civitai/blocks-react/ui';
 import { MessageBubble } from './MessageBubble.js';
 import { failureBody } from '../lib/chat.js';
+import { BLOCK_GENERATION_RESOURCE } from '../test-helpers.js';
+import type { ResolvedResource } from '../lib/mentions.js';
 import type { Message } from '../types.js';
 
 function makeMsg(role: Message['role'], content: string): Message {
@@ -162,6 +165,31 @@ describe('🔴 MessageBubble — the copy button reports the REAL outcome', () =
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Copy failed' })).toBeInTheDocument(),
     );
+  });
+});
+
+describe('🔴 MessageBubble — the transcript chip has NO remove control', () => {
+  // The negative control for `ChatArea`'s `-actions` assertions, and it can only
+  // live here: a COMPOSER chip is always removable, so `ChatArea` always passes
+  // `onRemove`. A chip already SENT must not be, or the viewer would appear able
+  // to un-attach grounding from a turn that has already been charged for.
+  const msg: Message = {
+    ...makeMsg('user', 'What is this?'),
+    mentions: [BLOCK_GENERATION_RESOURCE as ResolvedResource],
+  };
+
+  it('renders the chip, with the actions slot ABSENT', () => {
+    render(<MessageBubble message={msg} />);
+    const id = BLOCK_GENERATION_RESOURCE.versionId;
+    // Present: the chip and its derived name hook — so "no actions" is not
+    // satisfied by a chip that failed to render at all.
+    expect(screen.getByTestId(`mention-${id}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`mention-${id}-name`).textContent).toBe(
+      resourceDisplayName(BLOCK_GENERATION_RESOURCE as ResolvedResource),
+    );
+    // Absent: the slot, and the control.
+    expect(screen.queryByTestId(`mention-${id}-actions`)).toBeNull();
+    expect(screen.queryByTestId(`remove-mention-${id}`)).toBeNull();
   });
 });
 

@@ -1,17 +1,55 @@
-import { Button } from '@civitai/blocks-react/ui';
+import { Button, ResourceCard, resourceDisplayName } from '@civitai/blocks-react/ui';
 import type { ResolvedResource } from '../lib/mentions.js';
-import { mentionLabel, mentionUrl } from '../lib/mentions.js';
 import { IconButton } from './Icon.js';
-import { token, radius, mutedText } from '../theme.js';
+import { token, radius } from '../theme.js';
 
 /**
- * One attached resource, rendered from its RESOLVED projection.
+ * One attached resource, rendered by the PACK'S OWN `ResourceCard`.
  *
  * 🔴 EVERY FIELD HERE CAME BACK FROM `GET /api/v1/blocks/generation-resources`,
  * which is maturity-clamped and `hasAccess`-filtered server-side. Nothing is
  * carried over from the picker result and nothing is synthesised for an id the
  * endpoint declined to return — a card the viewer can see is a card the clamp
  * released. That is why `resolveMentions` drops rather than placeholders.
+ *
+ * 🔴 HAND-ROLLED UNTIL NOW, AND THAT WAS THE DEFECT RATHER THAN A STYLE CHOICE.
+ * `ResourceCard` + `resourceDisplayName` are new at `@civitai/blocks-react`
+ * 0.49.0 and exist for exactly this case: a list of already-picked resources.
+ * What the local version was getting WRONG, from that component's own header:
+ *
+ *  - `modelName` is typed `string` (REQUIRED) and that type is optimistic — a
+ *    first-party block has already seen it absent at runtime. The local card
+ *    rendered it raw, so an absent name produced a chip with a border and no
+ *    text: indistinguishable from a broken card, with nothing telling the viewer
+ *    which of the two it was. `resourceDisplayName` falls back to `#<versionId>`
+ *    — still wrong-LOOKING, but it identifies the resource and can be pasted
+ *    into a URL. Whitespace-only counts as absent.
+ *  - The name fallback, the type label, the missing-thumbnail copy, the
+ *    non-colour selected mark and the accessible-name composition are all
+ *    deliberately NOT props: each is a statement about what a resource IS, and
+ *    three apps disagreeing about it is three apps telling one viewer different
+ *    things about the same model.
+ *
+ * 🔴 `variant="row"` IS REQUIRED AND PASSED AS A LITERAL. There is no defensible
+ * default, so the prop is a discriminant — and a widened `string`/`boolean`
+ * VARIABLE narrows to no arm and fails with an opaque `TS2322` naming nothing
+ * useful. Literals here, always.
+ *
+ * 🔴 THE REMOVE CONTROL GOES IN `actions`, AND THAT SLOT EXISTS FOR A REASON THIS
+ * FILE MUST NOT REDISCOVER. `actions` renders as a SIBLING of the card's
+ * interactive hit area. A `<button>` nested inside a `<button>` is invalid HTML:
+ * the parser REPARENTS it, so the inner control becomes unreachable by keyboard
+ * and its click is eaten by the outer one. Wrapping our own control around the
+ * card, or dropping it into any other slot, recreates exactly that.
+ *
+ * 🔴 WHAT THIS GIVES UP: the chip is no longer a LINK. `ResourceCard` is
+ * deliberately not one — a block renders in a sandboxed iframe where a
+ * top-level navigation is host-mediated (`useCivitaiNavigate`), so an `<a href>`
+ * would either be inert or punch the viewer out of the app mid-task. That is a
+ * real (small) loss of affordance, accepted rather than worked around:
+ * re-adding an anchor would put back a control that is inert in the embedded
+ * case, which is the "reads as a gate and is not" shape this repo keeps
+ * removing. `mentionUrl` is still used on the wire side — see `lib/mentions.ts`.
  */
 export function ResourceMentionCard({
   resource,
@@ -21,52 +59,37 @@ export function ResourceMentionCard({
   onRemove?: () => void;
 }) {
   return (
-    <div
+    <ResourceCard
+      variant="row"
+      // `ResolvedResource` IS the host's projection — `projectSafeGenerationResource`
+      // builds both this endpoint's `items[]` and `RESOURCE_PICKER_RESULT.selected`
+      // — so it is passed through, not re-shaped. The component's own doc says:
+      // do not pre-format it and do not re-type it locally.
+      resource={resource}
+      // No `thumbnailUrl`: `BlockResourceInfo` carries no image field and the
+      // host's picker returns none, so the absence is the NORMAL case and the
+      // component is built for it.
       data-testid={`mention-${resource.versionId}`}
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 8,
-        padding: '4px 8px',
-        borderRadius: radius.sm,
-        border: `1px solid ${token.border}`,
-        background: token.body,
-        maxWidth: '100%',
-      }}
-    >
-      <span style={{ fontSize: 11, color: token.primary, fontWeight: 600 }}>
-        {resource.modelType}
-      </span>
-      <a
-        href={mentionUrl(resource)}
-        target="_blank"
-        rel="noreferrer noopener"
-        style={{
-          fontSize: 12,
-          color: token.text,
-          textDecoration: 'none',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-        title={`${mentionLabel(resource)} — ${resource.baseModel}`}
-      >
-        {mentionLabel(resource)}
-      </a>
-      <span style={{ ...mutedText, fontSize: 11 }}>{resource.baseModel}</span>
-      {onRemove && (
-        // 🔴 THE NAME IS RESOURCE-SPECIFIC, NOT "Remove". A composer can carry up
-        // to `MAX_MENTIONS` chips, and eight controls all announced as "Remove"
-        // are eight indistinguishable targets to a screen-reader user.
-        <IconButton
-          label={`Remove ${resource.modelName}`}
-          icon="close"
-          onClick={onRemove}
-          testId={`remove-mention-${resource.versionId}`}
-          size={13}
-        />
-      )}
-    </div>
+      style={{ maxWidth: '100%' }}
+      actions={
+        onRemove ? (
+          // 🔴 THE NAME IS RESOURCE-SPECIFIC, NOT "Remove". A composer can carry
+          // up to `MAX_MENTIONS` (8) chips, and eight controls all announced as
+          // "Remove" are eight indistinguishable targets to a screen-reader user.
+          // `resourceDisplayName` rather than `resource.modelName` so the control
+          // and the card agree about what this resource is CALLED even when the
+          // name is absent — a button announced "Remove " is worse than one
+          // announced "Remove #8765".
+          <IconButton
+            label={`Remove ${resourceDisplayName(resource)}`}
+            icon="close"
+            onClick={onRemove}
+            testId={`remove-mention-${resource.versionId}`}
+            size={13}
+          />
+        ) : undefined
+      }
+    />
   );
 }
 
