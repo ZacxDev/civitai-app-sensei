@@ -1,6 +1,7 @@
 import { Button } from '@civitai/blocks-react/ui';
 import type { ResolvedResource } from '../lib/mentions.js';
 import { mentionLabel, mentionUrl } from '../lib/mentions.js';
+import { IconButton } from './Icon.js';
 import { token, radius, mutedText } from '../theme.js';
 
 /**
@@ -54,22 +55,16 @@ export function ResourceMentionCard({
       </a>
       <span style={{ ...mutedText, fontSize: 11 }}>{resource.baseModel}</span>
       {onRemove && (
-        <button
+        // 🔴 THE NAME IS RESOURCE-SPECIFIC, NOT "Remove". A composer can carry up
+        // to `MAX_MENTIONS` chips, and eight controls all announced as "Remove"
+        // are eight indistinguishable targets to a screen-reader user.
+        <IconButton
+          label={`Remove ${resource.modelName}`}
+          icon="close"
           onClick={onRemove}
-          aria-label={`Remove ${resource.modelName}`}
-          data-testid={`remove-mention-${resource.versionId}`}
-          style={{
-            background: 'none',
-            border: 'none',
-            cursor: 'pointer',
-            color: token.dimmed,
-            fontSize: 12,
-            padding: 0,
-            lineHeight: 1,
-          }}
-        >
-          ✕
-        </button>
+          testId={`remove-mention-${resource.versionId}`}
+          size={13}
+        />
       )}
     </div>
   );

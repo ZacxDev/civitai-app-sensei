@@ -3,8 +3,9 @@ import { Button } from '@civitai/blocks-react/ui';
 import type { Session } from '../types.js';
 import { groupSessionsByRecency, formatRelativeTime } from '../lib/sessions.js';
 import { getModelById } from '../lib/models.js';
+import { IconButton } from './Icon.js';
 import { useMotion } from '../lib/motion.js';
-import { token, brand, radius, metaText } from '../theme.js';
+import { token, brand, metaText } from '../theme.js';
 
 export interface SessionListProps {
   sessions: Session[];
@@ -156,26 +157,24 @@ export function SessionList({
                     them exactly as a pointer user hovering does.
                   */}
                   <div className="sensei-row-actions" style={{ display: 'flex', gap: 2 }}>
-                    <RowAction
+                    <IconButton
                       label="Rename"
+                      icon="pencil"
                       testId={`rename-session-${session.id}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         onRename(session.id);
                       }}
-                    >
-                      ✏️
-                    </RowAction>
-                    <RowAction
+                    />
+                    <IconButton
                       label="Delete"
+                      icon="trash"
                       testId={`delete-session-${session.id}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         onDelete(session.id);
                       }}
-                    >
-                      🗑️
-                    </RowAction>
+                    />
                   </div>
                 </div>
               );
@@ -187,35 +186,11 @@ export function SessionList({
   );
 }
 
-function RowAction({
-  label,
-  testId,
-  onClick,
-  children,
-}: {
-  label: string;
-  testId: string;
-  onClick: (e: React.MouseEvent) => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      style={{
-        background: 'none',
-        border: 'none',
-        cursor: 'pointer',
-        color: token.dimmed,
-        fontSize: 12,
-        lineHeight: 1,
-        padding: 3,
-        borderRadius: radius.sm,
-      }}
-      title={label}
-      aria-label={label}
-      data-testid={testId}
-    >
-      {children}
-    </button>
-  );
-}
+/*
+ * 🔴 `RowAction` LIVED HERE AND IS NOW `IconButton` IN `./Icon.tsx` — PROMOTED,
+ * NOT REWRITTEN. It was the only one of the app's five icon-only controls that
+ * already carried `title`, `aria-label` AND `data-testid`, so the other four were
+ * the versions with the defect and this was the version to lift. Do not
+ * reintroduce a local variant: a third spelling of "an icon-only button" is what
+ * the five-site spread was.
+ */

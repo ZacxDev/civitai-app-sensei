@@ -24,7 +24,7 @@ import * as sessionsLib from './lib/sessions.js';
 import * as toolsLib from './lib/tools.js';
 import * as mentionsLib from './lib/mentions.js';
 import type { ResolvedResource } from './lib/mentions.js';
-import { generateMessageId, withSystemPrompt } from './lib/chat.js';
+import { failureBody, generateMessageId, withSystemPrompt } from './lib/chat.js';
 import { generateTitle } from './lib/sessions.js';
 import { claimMessageWrite, ownsMessageWrite } from './lib/write-ownership.js';
 import * as turnRecordsLib from './lib/turn-records.js';
@@ -2368,9 +2368,15 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // reporting a bug. The reason is deliberately generic and never names the
       // labels that triggered.
       const withheld = e instanceof TextOutputWithheldError;
+      // 🔴 THE PREFIX IS A BINDING, NOT A LITERAL, AND THAT IS WHAT MAKES THE
+      // RENDERER'S PLAIN BRANCH A RELATIONSHIP. `MessageBubble` decides whether
+      // to route a body around `MarkdownText` via `isPlainBody`, which tests THIS
+      // prefix; both sides dereference `FAILURE_BODY_PREFIX` in `lib/chat.ts`, so
+      // a rewording here cannot silently put server text back through the
+      // markdown parser. Spelling `Error: ` inline again re-opens that gap.
       const body = withheld
         ? (e as TextOutputWithheldError).reason
-        : `Error: ${e instanceof Error ? e.message : 'Failed to get response'}`;
+        : failureBody(e instanceof Error ? e.message : 'Failed to get response');
       // 🔴 A FAILED OR WITHHELD TURN STILL CARRIES ITS EVIDENCE. Its tool rounds
       // may already have returned catalog ids — the model asked, the catalog
       // answered, and only the FINAL completion failed — and `recordGrounded`

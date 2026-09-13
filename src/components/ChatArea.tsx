@@ -9,6 +9,7 @@ import {
   ResourceMentionCard,
   type MentionPickerType,
 } from './ResourceMention.js';
+import { copyText } from '../lib/clipboard.js';
 import { useMotion } from '../lib/motion.js';
 import { token, brand, mutedText, metaText } from '../theme.js';
 
@@ -216,7 +217,16 @@ export function ChatArea({
                 message={msg}
                 groundedModelIds={groundedModelIds}
                 onRegenerate={msg.role === 'assistant' ? () => onRegenerate?.(msg.id) : undefined}
-                onCopy={() => navigator.clipboard.writeText(msg.content)}
+                // 🔴 THE GUARDED HELPER, AND THE `return` IS LOAD-BEARING. This
+                // was `() => navigator.clipboard.writeText(msg.content)` — not
+                // awaited, not caught, returning nothing — while the bubble
+                // flipped to a tick regardless. In this sandboxed cross-origin
+                // iframe that promise can reject on permissions policy or missing
+                // transient activation, so the button claimed success having
+                // copied nothing, with an unhandled rejection behind it.
+                // `copyText` resolves to whether the write LANDED and the bubble
+                // renders that; see `lib/clipboard.ts`.
+                onCopy={() => copyText(msg.content)}
               />
             </div>
           );
