@@ -3,6 +3,30 @@ import type { ToolCall } from './tools.js';
 import type { OrchestratorAdapter } from './orchestrator.js';
 import { simulateStreaming } from './streaming.js';
 import type { WorkflowBody, WorkflowBodyStep, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks';
+// 🔴 VALUE IMPORTS, AND `instanceof` IS THE DOCUMENTED BRANCH. Both classes are
+// re-exported from the package root (`dist/index.js`), and neither pulls in a DOM
+// — the module they live in imports only `useCallback`/`useState`, so this file
+// stays importable from the `node` vitest project.
+//
+// 🔴 RETRACTED, DO NOT RE-DERIVE: THIS COMMENT USED TO WARN THAT A SECOND COPY OF
+// `@civitai/blocks-react` WOULD GIVE TWO CLASS IDENTITIES AND SILENTLY FALSIFY
+// EVERY `instanceof` BELOW. The hazard is real for a package that CAN be installed
+// twice; `blocks-react` cannot be. Measured: no `@civitai` package declares a
+// dependency on `@civitai/blocks-react` at all — `app-sdk` declares no dependencies,
+// `blocks-react` and `components-react` each depend on `{theme, components}`,
+// `components` on `{theme}`, `theme` on nothing — so `blocks-react` reaches the tree
+// only as this app's DIRECT dependency and no transitive path can duplicate it.
+// `app-sdk`'s only in-tree declarer is `blocks-react`, as a PEER, which resolves to
+// the app's own copy. It is `theme` and `components` that duplicate on a partial
+// bump, and neither exports a class this file branches on. Confirmed behaviourally:
+// with the tree deliberately skewed (blocks-react 0.49.0 against components-react
+// 0.3.1 / theme 0.2.1) all 71 tests in `orchestrator-bridge.test.ts` pass, these
+// `instanceof` branches included.
+//
+// The skew is still worth refusing, for a different and smaller reason, and
+// `src/civitai-dependency-lockstep.test.ts` is the guard that refuses it — see its
+// header, and the `sdk-pair-bump` entry in `taste.json`.
+import { WorkflowEstimateError, WorkflowSubmitError } from '@civitai/blocks-react';
 
 export type {
   ChatCompletionRequest,
@@ -91,8 +115,10 @@ const POLL_TIMEOUT_MS = 60_000;
  * The poll snapshot, widened with the two fields the host attaches for a
  * `'textOutput'` posture step.
  *
- * 🔴 NOT IN `@civitai/app-sdk` 0.31.0 — verified against the published dist,
- * which mentions neither field. The host DOES send them (`blocks.router`'s poll
+ * 🔴 STILL NOT IN `@civitai/app-sdk` — re-verified against the installed 0.39.0
+ * dist, whose `BlockWorkflowSnapshot` (`dist/blocks/types.d.ts`) mentions none of
+ * the three. It said "0.31.0" before the pair bump; the version moved and the
+ * gap did not. The host DOES send them (`blocks.router`'s poll
  * wraps every snapshot in `attachModeratedStepTextOutputs`) and the SDK
  * transport resolves the raw postMessage payload verbatim with no validation or
  * key-stripping, so they arrive at runtime; only the TYPE is missing. Widening
@@ -287,6 +313,14 @@ export function buildChatCompletionBody(request: ChatCompletionRequest): Workflo
   // 400 surfacing as a resolved-but-unpriced snapshot depends on the host replying
   // with an ESTIMATE_RESULT rather than an error. Left as the 0.1.6 narrative.
   //
+  // ⚠️ AND THE RESOLVED-BUT-UNPRICED SHAPE NO LONGER ARRIVES FROM THE HOOK AT ALL.
+  // `blocks-react` ≥ 0.43.0 rejects it with `WorkflowEstimateError` instead, so on
+  // the real path the 0.1.6 narrative would land on `createBridgeAdapter`'s
+  // `'no-cost'` rejection arm rather than on its resolved gate. Both still spell the
+  // same sentence, so the two routes remain indistinguishable on screen; only the
+  // route differs. (What that sentence SAYS changed this round — see
+  // `NO_SERVER_REASON`.)
+  //
   // The exact accepted key set is pinned in `orchestrator-bridge.test.ts`, so a
   // future rename fails here rather than in production.
   return {
@@ -406,10 +440,157 @@ function delay(ms: number): Promise<void> {
  *
  * A blank or non-string `error` falls back to the status, because `new
  * Error('')` renders as a bare `Error:` and names nothing at all.
+ *
+ * 🔴 THE `fallback` PARAMETER IS WHAT KEPT THE TWO REJECTION PATHS ON THIS ONE
+ * DERIVATION. `blocks-react@0.43.0` added two more refusal points (`estimate` and
+ * `submit` now REJECT rather than resolving an unusable reply), and each wants a
+ * different sentence when the server said nothing at all — `Workflow failed` reads
+ * as a non-answer inside "…returned no cost — Workflow failed". Passing the
+ * fallback in beats copying the `error`-extraction rule into four call sites, which
+ * is the drift this function was created to end. Omitted → the status, unchanged.
  */
-function snapshotFailureMessage(snap: { status?: string; error?: unknown }): string {
+function snapshotFailureMessage(
+  snap: { status?: string; error?: unknown },
+  fallback?: string,
+): string {
   if (typeof snap.error === 'string' && snap.error.trim() !== '') return snap.error.trim();
-  return `Workflow ${snap.status ?? 'failed'}`;
+  return fallback ?? `Workflow ${snap.status ?? 'failed'}`;
+}
+
+/**
+ * The only `BlockWorkflowSnapshot.status` values a workflow can still MOVE OFF.
+ *
+ * Spelled as the IN-FLIGHT set rather than as the terminal one, and that choice is
+ * the whole reason `isTerminalWithoutSuccess` below is fail-closed. `status` is a
+ * closed union in the `.d.ts` (`pending | processing | succeeded | failed | expired
+ * | canceled`) but it is a HOST-MAINTAINED MAPPING at runtime: the type's own docs
+ * say "if the orchestrator gains a status the host doesn't recognize, the host is
+ * responsible for mapping it to one of the values here". A set of the states that
+ * are NOT yet decided therefore treats a value nobody here has heard of as decided
+ * — which on the estimate path means "not a quote you may spend against" — whereas
+ * enumerating the terminal states would wave it through.
+ */
+const IN_FLIGHT_STATUSES = new Set<string>(['pending', 'processing']);
+
+/**
+ * The workflow has STOPPED, and not on success.
+ *
+ * 🔴 ONE PREDICATE FOR TWO CALL SITES THAT HAD DRIFTED APART, which is the same
+ * argument `snapshotFailureMessage` is built on. Until this round the estimate gate
+ * tested `status === 'failed'` while the poll loop open-coded `succeeded || failed
+ * || expired || canceled` fifty lines below, so the file held two spellings of one
+ * idea and they disagreed — and the disagreement was on the money path. Measured at
+ * `7de41a8` by injecting a `WorkflowHelpers` whose `estimate` resolves
+ * `{workflowId:'failed', status:<s>, error:…, cost:{total:500}}`: `s='failed'`
+ * refused with 0 submits, while `'canceled'`, `'expired'` and an unrecognised
+ * status each SUBMITTED — the turn completed and the viewer's Buzz was spent
+ * against a price the server had stopped standing behind.
+ *
+ * 🔴 IT WAS REACHABLE THROUGH THE INSTALLED HOOK, not only through an injected
+ * fake. `useBuzzWorkflow.estimate`'s guard is `status === 'failed'` OR "no numeric
+ * `cost.total`", so `{status:'canceled', cost:{total:500}}` satisfies neither
+ * clause and RESOLVES out of the hook straight into this adapter. Upstream's
+ * comment says `canceled`/`expired` "are covered by the same clause (they carry no
+ * cost)" — but that is an assertion about what the server sends, not an invariant
+ * anything enforces, and it says nothing at all about a status upstream adds later.
+ *
+ * 🔴 `undefined` IS ADMITTED, DELIBERATELY AND UNCHANGED. A priced whatIf reply is
+ * routinely `{cost:{total:n}}` with no `status` field at all — that is the happy
+ * path every test in this repo and the mock host both produce — so a snapshot that
+ * says nothing about its status is not evidence it stopped. Both call sites treated
+ * it that way before this consolidation and both still do; the poll loop stays
+ * fail-closed on it anyway, because a status-less snapshot never satisfies its
+ * `=== 'succeeded'` exit.
+ *
+ * 🔴 NOT FOR THE SUBMIT REPLY. `submitSnap.status === 'failed'` below is
+ * deliberately narrower and must stay that way — see the comment there.
+ */
+function isTerminalWithoutSuccess(status: string | undefined): boolean {
+  return status !== undefined && status !== 'succeeded' && !IN_FLIGHT_STATUSES.has(status);
+}
+
+/**
+ * What to say when the snapshot carries no server words at all.
+ *
+ * Deliberately says the SERVER gave no reason rather than inventing one, and
+ * deliberately says nothing about money — see `submitRejectionMessage`.
+ *
+ * 🔴 THIS IS NOW THE FALLBACK ON THE UNPRICED ROUTES TOO, AND THAT REPLACED A
+ * SENTENCE THAT WAS FALSE ON THE CASE IT FIRED MOST OFTEN. Until this round the
+ * unpriced gate below and the `'no-cost'` rejection arm shared a separate constant,
+ * `UNPRICED_REASON = 'the request was rejected before it could be priced'`. Per
+ * `WorkflowEstimateError.code`'s docs `'no-cost'` is *a NON-FAILED reply with no
+ * numeric `cost.total`* — the usual producer is `{status:'pending'}` with no `error`
+ * at all — so **nothing was rejected**, and because that arm usually carries no
+ * `snapshot.error` the inaccurate sentence was the one the viewer actually got.
+ * Meanwhile `'failed'`, the code that genuinely IS a refusal, got this one.
+ *
+ * 🔴 THE ROUTING WAS RIGHT AND IS UNCHANGED — ONLY THE SENTENCE MOVED. `'no-cost'`
+ * still gets the "returned no cost" prefix and `'failed'` still gets "failed": that
+ * prefix IS the estimate-attribution split, and it is what distinguishes the two.
+ * What the shared tail was for — the resolved gate and the `'no-cost'` arm reading
+ * IDENTICALLY, so two routes to one state cannot drift into two messages — is
+ * preserved by them sharing THIS constant instead. The claim about a rejection is
+ * simply gone, because on those routes there was not one.
+ */
+const NO_SERVER_REASON = 'the server gave no reason';
+
+/**
+ * Viewer-facing text for an `estimate` REJECTION (`blocks-react` ≥ 0.43.0).
+ *
+ * 🔴 THE REASON COMES OFF `err.snapshot`, NEVER OFF `err.message`. `err.message` is
+ * a developer-facing CONSTANT with only `code` interpolated —
+ * `estimate did not return a usable price (no-cost) — reason on .snapshot.error` —
+ * and upstream records two apps piping exactly that into rendered UI on their
+ * 0.43.0 migration (civitai/civitai-app-starters#253). Its wording is explicitly
+ * not a contract, so a UI built on it rots silently. `err.code` is the only stable
+ * branch target, and `err.snapshot.error` is where the server's own words live.
+ *
+ * 🔴 THE TWO ARMS ARE THE ESTIMATE-ATTRIBUTION SPLIT, ONE LAYER UP. The split that
+ * already separates "never priced" from "priced at nothing" in the gate below is
+ * the same distinction the hook's `code` now carries, so it is preserved rather
+ * than collapsed: `'no-cost'` is a reply that did not carry a price, `'failed'` is
+ * an estimate that did not SUCCEED — and per the class docs a `'failed'` reply CAN
+ * carry a numeric cost, so calling it "no cost" would be false.
+ *
+ * An unrecognised future code falls to the `'failed'` arm, which claims less.
+ */
+function estimateRejectionMessage(err: WorkflowEstimateError): string {
+  return err.code === 'no-cost'
+    ? `Workflow estimate returned no cost — ${snapshotFailureMessage(err.snapshot, NO_SERVER_REASON)}`
+    : `Workflow estimate failed — ${snapshotFailureMessage(err.snapshot, NO_SERVER_REASON)}`;
+}
+
+/**
+ * Viewer-facing text for a `submit` REJECTION (`blocks-react` ≥ 0.43.0).
+ *
+ * Same three-audience rule as `estimateRejectionMessage`: the reason comes off
+ * `err.snapshot`, the branch comes off `err.code`, and `err.message` is never shown.
+ *
+ * 🔴 NEITHER ARM SAYS THE TURN WAS FREE, AND THAT IS THE LOAD-BEARING PART. Every
+ * reply here spends Buzz, and upstream is explicit that NEITHER code guarantees
+ * nothing was charged:
+ *   - `'exception'` — the host had no workflow to report. USUALLY nothing was
+ *     queued, but a lost response or an in-progress idempotency conflict lands on
+ *     the same shape, so this arm reports what is actually known (no workflow came
+ *     back) and stays silent about money rather than reassuring.
+ *   - `'workflow-failed'` — a real-ish id came back already failed and unpriced.
+ *     The host treats ANY resolved submit as money-COMMITTED and does not refund on
+ *     a non-throwing failed snapshot, so the spend may already have happened. This
+ *     arm says so.
+ *
+ * An unrecognised future code falls to the `'workflow-failed'` arm — the cautious
+ * one — mirroring how the hook itself routes an unknown workflow id.
+ *
+ * 🔴 NO RETRY IS ATTEMPTED ON EITHER ARM. `submit()` mints a fresh
+ * `idempotencyKey` per call, so an automatic retry would be a SECOND reservation
+ * rather than a second attempt at the first one.
+ */
+function submitRejectionMessage(err: WorkflowSubmitError): string {
+  const reason = snapshotFailureMessage(err.snapshot, NO_SERVER_REASON);
+  return err.code === 'exception'
+    ? `Workflow submit returned no workflow — ${reason}`
+    : `Workflow submit failed, and this turn may already have been charged — ${reason}`;
 }
 
 /**
@@ -447,7 +628,20 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
     ): Promise<ChatCompletionResult> {
       const body = buildChatCompletionBody(request);
 
-      const estimateSnap = await workflow.estimate(body);
+      // 🔴 `estimate` REJECTS AS OF `blocks-react@0.43.0`, AND THE REASON IS ON THE
+      // ERROR RATHER THAN ON A SNAPSHOT. Before that it RESOLVED an unusable reply
+      // and the gate below read the reason off `estimateSnap.error`; now the hook
+      // throws `WorkflowEstimateError` and that snapshot never reaches this scope.
+      // Without this catch the rejection propagates as the developer-facing
+      // constant on `err.message` and the server's own words are lost — the exact
+      // shape PR #69 fixed at the submit refusal, arriving at the estimate.
+      let estimateSnap: BlockWorkflowSnapshot;
+      try {
+        estimateSnap = await workflow.estimate(body);
+      } catch (e) {
+        if (e instanceof WorkflowEstimateError) throw new Error(estimateRejectionMessage(e));
+        throw e;
+      }
 
       // 🔴 TWO DIFFERENT FAILURES USED TO SHARE ONE MESSAGE, AND ONLY ONE OF THEM
       // IS ABOUT MONEY. `cost` ABSENT means the host never priced the request;
@@ -480,24 +674,123 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       // every input the old gate refused, this one still refuses.
       // `estimate-gate-rejects-every-value-that-is-not-a-finite-number` below
       // pins the rejections; the `total <= 0` branch is pinned separately.
+      //
+      // 🔴 THIS GATE IS NOT REDUNDANT AFTER THE 0.43 REJECTION ABOVE, and the reason
+      // is the `Number.isFinite` half. The hook's own test is `typeof
+      // snapshot.cost?.total === 'number'` — which ADMITS `NaN` and `±Infinity`,
+      // because both are numbers by `typeof`. So the hook resolves them and this
+      // line is the only thing that refuses them. The `typeof total !== 'number'`
+      // half is no longer reachable through `useBuzzWorkflow` (the hook rejects it
+      // first), but it IS reachable through any other `WorkflowHelpers`
+      // implementation — every test in this repo injects one — and removing it would
+      // make the adapter's contract narrower than its interface. Fail-closed, kept.
       const total = estimateSnap.cost?.total;
 
       if (typeof total !== 'number' || !Number.isFinite(total)) {
-        const reason =
-          typeof estimateSnap.error === 'string' && estimateSnap.error.trim() !== ''
-            ? estimateSnap.error.trim()
-            : 'the request was rejected before it could be priced';
-        throw new Error(`Workflow estimate returned no cost — ${reason}`);
+        // Same derivation, same fallback string as the `'no-cost'` rejection arm
+        // above — the resolved and rejected routes to "no usable price" must read
+        // identically, and they do because both call one function with one constant.
+        // That constant used to CLAIM A REJECTION that had not happened; see
+        // `NO_SERVER_REASON` for why it no longer does.
+        throw new Error(
+          `Workflow estimate returned no cost — ${snapshotFailureMessage(estimateSnap, NO_SERVER_REASON)}`,
+        );
+      }
+
+      // 🔴 A FAILED ESTIMATE IS NOT A QUOTE YOU MAY SPEND AGAINST, AND A NUMBER
+      // ARRIVING WITH IT DOES NOT MAKE IT ONE. Per `WorkflowEstimateError.code`'s
+      // own docs, `'failed'` is not only "the host threw": a whatIf the orchestrator
+      // itself reports as failed maps to `'failed'` through the server's
+      // `ORCH_STATUS_MAP`, and **such a reply CAN carry a numeric `cost`** —
+      // upstream's words for why it is rejected anyway are "a failed estimate is not
+      // a quote you may spend against, whether or not a number came back with it".
+      //
+      // 🔴 THIS GATE WAS MISSING, AND THE ONLY THING STOPPING THE SPEND WAS THE
+      // INSTALLED HOOK. Measured on the PR that bumped to `blocks-react@0.49.0`: an
+      // `estimate` resolving `{workflowId:'failed', status:'failed',
+      // error:'orchestrator whatIf failed', cost:{total:500}}` walked both gates
+      // above — `500` is a finite number greater than zero — and the adapter
+      // SUBMITTED, spending Buzz against a price the server had already disowned. In
+      // production `useBuzzWorkflow` rejects that shape first, so it was unreachable
+      // through the hook; every test in this repo injects its own `WorkflowHelpers`,
+      // and so may any other consumer. That is the same argument the `typeof total
+      // !== 'number'` half above is kept on, applied to the dimension that can
+      // actually spend money instead of the one that cannot.
+      //
+      // 🔴 AND ITS FIRST VERSION WAS ONE STATUS WIDE, WHICH LEFT THREE SIBLINGS
+      // SPENDING. `status === 'failed'` was the whole test; re-measured with the
+      // same fixture at `status` of `'canceled'`, `'expired'` and an unrecognised
+      // value, each one SUBMITTED. Those are reachable THROUGH THE HOOK, not just
+      // through an injected fake — `useBuzzWorkflow.estimate` rejects on
+      // `status === 'failed'` or on a missing numeric cost, and a canceled reply
+      // carrying `cost.total` satisfies neither. `isTerminalWithoutSuccess` is now
+      // the single spelling of that idea, shared with the poll loop below, which had
+      // the full terminal set open-coded all along.
+      //
+      // 🔴 ORDER IS LOAD-BEARING: THIS SITS AFTER THE UNPRICED GATE, NOT BEFORE IT.
+      // A failed estimate with NO usable number is already refused above, and its
+      // wording is pinned as a whole string by `does not claim a reason it was not
+      // given, nor a rejection that did not happen` — whose fixture is exactly
+      // `{status:'failed'}`. Hoisting this check would relabel that case from
+      // "returned no cost" to "failed" and break that pin. Measured by actually
+      // hoisting it: exactly 1 of the 106 cases across this module's two test files
+      // fails, and it is that one. (An earlier version of this line also claimed the
+      // `'no-cost'`-arm pin would break with it. That is false — that pin exercises
+      // `estimateRejectionMessage`, a path no ordering of the gates in this function
+      // can reach, and per the hook's docs a `'no-cost'` error can never carry
+      // `status:'failed'` anyway, so the identity requirement does not apply to its
+      // fixture. A comment claiming coverage it does not have is what stops the next
+      // reader from checking.) What was unguarded is a non-successful estimate that
+      // DID carry a finite positive number, so that is where the check goes — by this
+      // line `total` is known to be one.
+      //
+      // 🔴 ESTIMATE ONLY. The `status === 'failed'` guard on the SUBMIT reply below
+      // is a different exit with a different rule: a budget / spend-cap refusal
+      // RESOLVES there carrying the price it refused to charge, and #69's fix is
+      // that it must keep resolving so the viewer sees the server's own reason and
+      // can top up. It is therefore the ONE call site the shared predicate must not
+      // reach. Do not merge the two.
+      //
+      // Same derivation as `estimateRejectionMessage`'s `'failed'` arm, so the
+      // resolved and rejected routes to "the estimate did not succeed" read
+      // identically — the same reason every route here shares `NO_SERVER_REASON`.
+      // One sentence covers all four rejected statuses because that arm's own docs
+      // gloss code `'failed'` as exactly this: "the estimate did not succeed".
+      if (isTerminalWithoutSuccess(estimateSnap.status)) {
+        throw new Error(
+          `Workflow estimate failed — ${snapshotFailureMessage(estimateSnap, NO_SERVER_REASON)}`,
+        );
       }
 
       if (total <= 0) {
         throw new Error(`Workflow estimate priced this request at ${total} — nothing to submit`);
       }
 
-      const submitSnap = await workflow.submit(body);
+      // 🔴 `submit` ALSO REJECTS AS OF `blocks-react@0.43.0` — but ONLY on a
+      // failure-shaped reply with NO price. The budget / spend-cap refusal still
+      // RESOLVES and is handled at the `status === 'failed'` guard below; see there.
+      // These two exits are therefore complements, not alternatives: this catch
+      // owns the unpriced rejections, that guard owns the priced refusal, and both
+      // derive their text from `snapshotFailureMessage` so they cannot drift.
+      let submitSnap: BlockWorkflowSnapshot;
+      try {
+        submitSnap = await workflow.submit(body);
+      } catch (e) {
+        if (e instanceof WorkflowSubmitError) throw new Error(submitRejectionMessage(e));
+        throw e;
+      }
 
       // 🔴 A REFUSAL RESOLVES — IT DOES NOT REJECT — AND THE ID IT CARRIES IS NOT
-      // POLLABLE. `useBuzzWorkflow.submit` rejects a failure-shaped reply only
+      // POLLABLE. THIS IS NOW LITERALLY TRUE OF THE INSTALLED HOOK, not just of the
+      // contract: the sentence below described `blocks-react` ≥ 0.43's guard while
+      // this app was pinned at 0.39.0, where `submit` resolved EVERY reply and the
+      // rejection arm did not exist. The pair bump to 0.49.0 is what made the
+      // comment describe the code that runs. `useBuzzWorkflow.submit`'s guard, read
+      // off the installed dist, is verbatim:
+      //
+      //     if (snapshot.status === 'failed' && typeof snapshot.cost?.total !== 'number')
+      //
+      // — so it rejects a failure-shaped reply only
       // when it has NO numeric cost; a budget / spend-cap rejection quotes the
       // price it refused to charge, so it carries one and is handed back here as
       // an ordinary resolved snapshot with `status: 'failed'`. Its `workflowId` is
@@ -511,12 +804,42 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       // three days of server logs carried `workflowId: 'failed'` — i.e. the poll
       // below threw the reason away while it was already in hand at this line.
       //
-      // 🔴 `'failed'` ONLY, NOT EVERY TERMINAL STATUS. A `succeeded` submit must
-      // still poll — the submit reply structurally cannot carry `textOutputs`
-      // (see below) — and that case is pinned by `polls at least once even when
-      // submit already reports a terminal status`. Widening this to
-      // `TERMINAL_STATUSES` would skip the output-moderation scan on the happy
-      // path, which is the opposite of a fix.
+      // 🔴 `'failed'` ONLY, NOT EVERY TERMINAL STATUS — AND SPECIFICALLY NOT
+      // `isTerminalWithoutSuccess`, which the estimate gate above and the poll loop
+      // below now share. THE REASON IS THE `onWorkflow` REPORT BELOW, WHICH THIS
+      // EXIT SITS IN FRONT OF. Widening the gate to the shared predicate would make
+      // a submit reply of `expired`, `canceled` or a status nobody here recognises
+      // throw at THIS line and never reach `onWorkflow?.(workflowId)` — losing the
+      // charge-bookkeeping id on exactly the turns where a charge may already have
+      // landed and no answer is ever going to arrive. That block's own header is the
+      // other half of the argument: a caller recording what the viewer paid for "has
+      // to learn the id at this line", because the returned response only reaches it
+      // on the turns that succeeded.
+      //
+      // 🔴 THE PREVIOUS WORDING HERE NAMED A HARM THIS PREDICATE CANNOT DO, WHICH IS
+      // WORSE THAN NAMING NONE — a reader can disprove it in thirty seconds and then
+      // reasonably conclude the whole prohibition is bogus. It said reaching for the
+      // shared predicate "would skip the output-moderation scan on the happy path"
+      // and cited `polls at least once even when submit already reports a terminal
+      // status` as the pin. Both are false of `isTerminalWithoutSuccess`:
+      // `isTerminalWithoutSuccess('succeeded')` is `false` by construction, so it
+      // cannot touch the happy path at all, and that test's fixture is submit →
+      // `{status:'succeeded'}`, the one case the predicate already excludes — so it
+      // stays green under the widening. Measured by actually applying the forbidden
+      // edit: `tsc --noEmit` is clean and the FULL suite comes back
+      // `1 failed | 683 passed (684)` — the one red being the guard named below,
+      // which is what this round added. Before it existed the same edit was wholly
+      // green. The moderation argument is true of upstream's `TERMINAL_STATUSES`
+      // (`useBuzzWorkflow.js`), which DOES contain `succeeded`, and that set is what
+      // this comment was about before the shared predicate existed; the delta that
+      // introduced the predicate carried the old justification across onto it.
+      //
+      // What makes this prohibition enforced rather than advisory is
+      // `reports the workflowId for a terminal submit reply that is not failed` in
+      // `orchestrator-bridge.test.ts` — a `canceled` submit whose message is
+      // identical either way, so the only assertion that can kill it is the one
+      // naming `onWorkflow`. The consolidation deliberately stops short of this
+      // line.
       if (submitSnap.status === 'failed') {
         throw new Error(snapshotFailureMessage(submitSnap));
       }
@@ -558,12 +881,42 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
         if (signal?.aborted) throw new Error('Aborted');
         snap = await workflow.poll(workflowId);
         polled = true;
-        if (
-          snap.status === 'succeeded' ||
-          snap.status === 'failed' ||
-          snap.status === 'expired' ||
-          snap.status === 'canceled'
-        ) {
+        // The terminal set, spelled as "succeeded, or stopped without succeeding"
+        // rather than as a second enumeration of the four statuses. It used to be
+        // that enumeration, and the estimate gate above used to be a one-status
+        // subset of it — two spellings of one idea, in one file, disagreeing.
+        //
+        // 🔴 THIS DOES CHANGE ONE CASE, IN THE FAIL-CLOSED DIRECTION, AND WHAT IT
+        // COSTS IS NOT ONLY A SENTENCE. An unrecognised status now stops the loop and
+        // is reported through `snapshotFailureMessage` below; before, it read as
+        // in-flight and the turn ran to the 60 s deadline to report a timeout instead
+        // of the server's own words. Measured with a poll queue of
+        // `{status:'unassigned'}` → `{status:'succeeded', textOutputs:['a late
+        // answer']}`: the pre-consolidation loop resolved WITH that answer, this one
+        // rejects on the first reply. So a reply the viewer has already been charged
+        // for can be thrown away here — not just relabelled.
+        //
+        // 🔴 THE TWO CALL SITES GENUINELY WANT OPPOSITE ANSWERS ON AN UNKNOWN STATUS
+        // THAT IS STILL IN FLIGHT, AND ONE PREDICATE CANNOT GIVE BOTH. The estimate
+        // gate should refuse — the money is not spent yet, so stopping costs nothing.
+        // This loop should keep polling — the money IS spent, so stopping forfeits
+        // it. Sharing the predicate makes both stop.
+        //
+        // Accepted anyway, for three reasons and not because the trade is free.
+        // Reaching it requires the host to break its own documented mapping
+        // contract: per `BlockWorkflowSnapshot.status`'s docs in
+        // `@civitai/app-sdk/dist/blocks/types.d.ts`, an orchestrator status the host
+        // does not recognise is the HOST's to map onto this union, "typically
+        // `processing` or `failed`" — so no such value should arrive, and `unassigned`
+        // is named there as exactly the kind of internal state the union omits. The
+        // loss is bounded by the same 60 s deadline the old behaviour spent before
+        // reporting nothing. And on a path that has already spent the viewer's Buzz,
+        // fail-closed is the direction to be wrong in. `stops on a status it does not
+        // recognise, rather than polling to the deadline` in
+        // `orchestrator-bridge.contract.test.ts` pins the behaviour, and its fixture
+        // is that two-reply queue, so the discarded answer is on the record rather
+        // than in a footnote.
+        if (snap.status === 'succeeded' || isTerminalWithoutSuccess(snap.status)) {
           break;
         }
         await delay(POLL_INTERVAL_MS);

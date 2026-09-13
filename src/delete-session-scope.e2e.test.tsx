@@ -558,17 +558,28 @@ describe('deleting a chat takes its transcript with it', () => {
 
   it('🔴 A TURN THAT FAILS INSIDE THE READ WINDOW LANDS ON THE CLEARED TRANSCRIPT', () => {
     return (async () => {
-      // The error exit is a third updater with the same shape. A `running`
+      // The error exit is a third updater with the same shape. A non-terminal
       // snapshot buys the bridge's 1 s poll gap to delete inside; the failure
       // then arrives while the successor read (1.5 s) is still out, so the
       // "Error: …" write meets `[]`. Reaches the `catch` updater.
+      //
+      // 🔴 `processing`, NOT `running` — AND THE DIFFERENCE WAS INVISIBLE UNTIL THE
+      // POLL LOOP STOPPED ENUMERATING TERMINAL STATUSES. `running` is not a
+      // `BlockWorkflowSnapshot.status`; the union is `pending | processing |
+      // succeeded | failed | expired | canceled`. It worked here only because the
+      // loop's old break-condition listed the four TERMINAL statuses, so anything
+      // unrecognised fell through as "keep polling" by accident. Now that the loop
+      // asks `isTerminalWithoutSuccess` — which treats a status it does not know as
+      // decided, deliberately, so an unknown one cannot be mistaken for progress —
+      // this fixture stopped the turn on the first poll and the streaming indicator
+      // never appeared. `processing` is the real status this test always meant.
       const { grounded, other } = await twoChatsGroundedFirst();
       const uncaught = captureUncaught();
       try {
         const delayed = delayMessageReads(1500);
 
         pollQueue = [
-          { workflowId: 'wf-run', status: 'running' },
+          { workflowId: 'wf-run', status: 'processing' },
           { workflowId: 'wf-run', status: 'failed', error: 'the workflow failed' },
         ];
         await startTurn('tell me more');

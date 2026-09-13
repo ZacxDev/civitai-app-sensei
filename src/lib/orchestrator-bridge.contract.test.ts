@@ -176,6 +176,157 @@ describe('orchestrator-bridge — lifecycle contract', () => {
       expect(helpers.submit).not.toHaveBeenCalled();
     });
 
+    it('does NOT submit when a FAILED estimate came back carrying a price', async () => {
+      // 🔴 THE ONE DIMENSION THE GATE NEVER CHECKED, AND THE ONLY ONE THAT CAN SPEND
+      // BUZZ. `WorkflowEstimateError.code`'s docs are explicit that a `'failed'`
+      // estimate CAN carry a numeric cost — a whatIf the orchestrator itself reports
+      // as failed maps to `'failed'` through the server's `ORCH_STATUS_MAP` — so a
+      // finite positive number is not evidence the request was priced. Measured
+      // before the fix: this exact snapshot walked both cost gates and the adapter
+      // SUBMITTED (`submit.mock.calls.length === 1`), completing the turn against a
+      // price the server had already disowned.
+      //
+      // 🔴 IT WAS NOT UNREACHABLE — IT WAS GUARDED SOMEWHERE ELSE. In production
+      // `useBuzzWorkflow` rejects this shape before the adapter sees it, so the only
+      // thing standing between this snapshot and a charge was the INSTALLED HOOK
+      // VERSION. Every test in this repo injects its own `WorkflowHelpers`, and so
+      // may any other consumer of `createBridgeAdapter`. The invariant belongs to the
+      // adapter, which is what this pins.
+      //
+      // The fixture is the host's real failure shape: the sentinel `workflowId`, the
+      // server's own prose, and a cost that is unambiguously usable-looking.
+      const estimate = vi.fn().mockResolvedValue({
+        workflowId: 'failed',
+        status: 'failed',
+        error: 'orchestrator whatIf failed',
+        cost: { total: 500 },
+      });
+      const helpers = mockWorkflowHelpers({ estimate });
+      const adapter = createBridgeAdapter(helpers);
+
+      let message: string | undefined;
+      try {
+        await adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE });
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message, 'the estimate gate resolved a FAILED estimate').toBeTypeOf('string');
+
+      // 🔴 THE MONEY ASSERTION. Everything else here is about wording; this is the
+      // one the finding was about.
+      expect(helpers.submit, 'submitted against a FAILED estimate').not.toHaveBeenCalled();
+
+      // Attributed to the ESTIMATE, and carrying the server's own words — the same
+      // derivation `estimateRejectionMessage`'s `'failed'` arm uses, which is what
+      // makes the resolved and rejected routes read alike. The whole string, because
+      // it is also what refuses the three wrong labels for this state in one
+      // assertion: "returned no cost" (false — a number DID come back), "priced this
+      // request at 500" (false — the server disowned that number), and anything
+      // naming the SUBMIT (the 0.1.6 misdiagnosis). Spelled-out `not.toContain`
+      // checks for those alongside this line could never execute.
+      expect(message).toBe('Workflow estimate failed — orchestrator whatIf failed');
+    });
+
+    it('does NOT submit when a PRICED estimate came back on any status but a usable one', async () => {
+      // 🔴 THE SIBLINGS THE FIRST VERSION OF THAT GATE LET THROUGH. It tested
+      // `status === 'failed'` and nothing else, so the three other ways an estimate
+      // can arrive already decided still spent Buzz. Measured at `7de41a8` with this
+      // exact fixture, one status at a time:
+      //
+      //     failed      submits=0   (the case above; the gate worked)
+      //     canceled    submits=1   ← turn completed, Buzz spent
+      //     expired     submits=1   ← same
+      //     unassigned  submits=1   ← same
+      //
+      // 🔴 REACHABLE THROUGH THE INSTALLED HOOK, WHICH IS WHY IT IS NOT MERELY
+      // DEFENSIVE. `useBuzzWorkflow.estimate`'s guard is `status === 'failed'` OR "no
+      // numeric `cost.total`"; `{status:'canceled', cost:{total:500}}` satisfies
+      // neither clause and RESOLVES out of the hook into this adapter. Upstream's own
+      // comment says `canceled`/`expired` "are covered by the same clause (they carry
+      // no cost)" — an assertion about what the server sends today, not an invariant
+      // anything enforces.
+      //
+      // 🔴 `unassigned` IS THE DELIBERATE DEPARTURE FROM THIS FILE'S FIXTURE
+      // DISCIPLINE, and it is chosen rather than invented. `BlockWorkflowSnapshot`'s
+      // own docs say the union "omits orchestrator-internal states like
+      // `unassigned`" and that the HOST is responsible for mapping such a state onto
+      // one of the six — i.e. the union is a host-maintained mapping, and a value
+      // outside it reaching this adapter is a host bug or a status added after this
+      // build. A textbook `'frobnicated'` would test the same branch while proving
+      // nothing about a shape the stack can produce. It reaches the adapter only
+      // because `mockResolvedValue` is untyped — which is the hazard restated: the
+      // union is a compile-time claim, and nothing enforces it at runtime.
+      //
+      // 🔴 THE ASSERTIONS ARE ORDERED SO THE RED NAMES THE STATUS. Written with
+      // `rejects.toThrow` first, a narrow predicate failed on "promise resolved
+      // instead of rejecting" — true, but it names no status, so the one red line
+      // could not say WHICH sibling leaked. Capturing the outcome and asserting the
+      // MONEY first puts the status in every message, which is also the file's own
+      // order of importance: the wording is secondary to whether Buzz moved.
+      const NOT_USABLE = ['failed', 'canceled', 'expired', 'unassigned'] as const;
+
+      for (const status of NOT_USABLE) {
+        const estimate = vi.fn().mockResolvedValue({
+          workflowId: 'failed',
+          status,
+          error: 'orchestrator whatIf failed',
+          cost: { total: 500 },
+        });
+        const helpers = mockWorkflowHelpers({ estimate });
+        const adapter = createBridgeAdapter(helpers);
+
+        let message: string | undefined;
+        try {
+          await adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE });
+        } catch (err) {
+          message = (err as Error).message;
+        }
+
+        // 🔴 THE MONEY ASSERTION, per status, naming the status.
+        expect(helpers.submit, `submitted against a ${status} estimate`).not.toHaveBeenCalled();
+        expect(
+          message,
+          `a ${status} estimate carrying a price was accepted as a quote`,
+        ).toBe('Workflow estimate failed — orchestrator whatIf failed');
+      }
+    });
+
+    it('still submits when a usable estimate carries a price — the status gate is not merely closed', async () => {
+      // Positive control for the two cases above, and specifically for the STATUS
+      // half: a gate that refused every snapshot carrying a `status` would satisfy
+      // both and break every turn. Each entry kills a distinct mutant of
+      // `isTerminalWithoutSuccess`, which is why this is a list and not one fixture:
+      //
+      //   - `pending`    — the status a real priced whatIf comes back with. Drop it
+      //     from `IN_FLIGHT_STATUSES` and every turn dies.
+      //   - `processing` — the other in-flight status. Nothing else in the suite
+      //     exercises it on the ESTIMATE, so without it `IN_FLIGHT_STATUSES` can be
+      //     narrowed to `['pending']` and stay green.
+      //   - `succeeded`  — kills the mutant that drops the `!== 'succeeded'` clause,
+      //     which would otherwise refuse an estimate that reported success.
+      //   - `undefined`  — no `status` field at all, which is what the mock host and
+      //     every other fixture in this repo produce. Kills the mutant that drops
+      //     the `status !== undefined` clause and refuses the happy path.
+      const USABLE = ['pending', 'processing', 'succeeded', undefined] as const;
+
+      for (const status of USABLE) {
+        const estimate = vi.fn().mockResolvedValue({
+          workflowId: 'wf_01JQZ8ESTM',
+          ...(status === undefined ? {} : { status }),
+          cost: { total: 500 },
+        });
+        const helpers = mockWorkflowHelpers({ estimate });
+        const adapter = createBridgeAdapter(helpers);
+
+        await adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE });
+
+        expect(
+          helpers.submit,
+          `refused to submit against an estimate whose status was ${String(status)}`,
+        ).toHaveBeenCalledTimes(1);
+      }
+    });
+
     it('does NOT submit when the estimate carries no cost at all', async () => {
       // A snapshot with no `cost` object is the shape a failed estimate returns.
       // It must read as zero, not as "unknown, proceed anyway".
@@ -368,14 +519,28 @@ describe('orchestrator-bridge — lifecycle contract', () => {
       ).toBe(false);
     });
 
-    it('does not claim a reason it was not given', async () => {
+    it('does not claim a reason it was not given, nor a rejection that did not happen', async () => {
       // Negative control for the test above: with no `error` on the snapshot the
       // message must fall back, not fabricate. Without this, a hardcoded string
       // containing "unrecognized_keys" would pass the previous test.
+      //
+      // 🔴 AND THE FALLBACK ITSELF WAS A FABRICATION UNTIL THIS ROUND. It read `the
+      // request was rejected before it could be priced`, which this test then pinned
+      // — so the suite was ENFORCING the false claim. Its sibling route, the
+      // `'no-cost'` rejection arm, is documented as *a NON-FAILED reply with no
+      // numeric cost*: nothing is rejected there, and it usually carries no
+      // `snapshot.error`, so the invented sentence was what fired most often.
+      //
+      // 🔴 ONE ASSERTION, DELIBERATELY. This was `not.toContain('unrecognized_keys')`
+      // plus `toMatch(/rejected before it could be priced/i)` — the second of which
+      // meant the suite was ENFORCING the false claim. The whole-string pin is
+      // strictly stronger than both, refuses the fabricated reason AND the fabricated
+      // rejection, and fails if either is reinstated under any spelling or constant
+      // name; keeping the two spelled checks beside it would be two assertions that
+      // can never execute.
       const message = await messageFrom(unpricedEstimate());
 
-      expect(message).not.toContain('unrecognized_keys');
-      expect(message).toMatch(/rejected before it could be priced/i);
+      expect(message).toBe('Workflow estimate returned no cost — the server gave no reason');
     });
   });
 
@@ -515,6 +680,57 @@ describe('orchestrator-bridge — lifecycle contract', () => {
       await expect(
         adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE }),
       ).rejects.toThrow('Workflow failed');
+    });
+
+    it('stops on a status it does not recognise, rather than polling to the deadline', async () => {
+      // 🔴 WHAT PINS THE SECOND HALF OF THE CONSOLIDATION. The estimate gate and this
+      // loop now share `isTerminalWithoutSuccess`; without this case the loop can be
+      // reverted to its old open-coded `succeeded || failed || expired || canceled`
+      // enumeration and the whole suite stays green — i.e. the two spellings this
+      // round merged would be free to diverge again, silently, on the money path.
+      //
+      // The behaviour it pins is the fail-closed direction of that merge. Before it,
+      // an unrecognised status read as in-flight: the loop kept going for the full
+      // 60 s deadline and then reported `timed out before the first poll`'s sibling
+      // timeout — throwing away the server's own words, which were in hand on the
+      // first poll. `unassigned` is the same realistic out-of-union value the estimate
+      // case above uses, for the same reason.
+      //
+      // 🔴 THE BUZZ IS ALREADY SPENT BY THE TIME THIS LOOP RUNS, AND THAT IS WHY THE
+      // SECOND POLL REPLY IS IN THE FIXTURE. What the consolidation costs on this
+      // path is not only which sentence the viewer gets: the pre-fix loop would have
+      // polled again and RESOLVED with `a late answer`, a reply the viewer had
+      // already paid for. Accepting that is a judgement, argued at the loop itself —
+      // fail-closed on a spent path, bounded by the 60 s deadline, and unreachable
+      // unless the host breaks its own documented status-mapping contract.
+      //
+      // 🔴 ITS RED IS AN ASSERTION, NOT A TIMEOUT, AND THE TWO-ELEMENT QUEUE IS WHAT
+      // BUYS THAT. Watched against the pre-consolidation loop (the open-coded
+      // `succeeded || failed || expired || canceled` enumeration this replaced):
+      // `AssertionError: promise resolved "{ id: 'wf-1', replay: Promise{…}, …(2) }"
+      // instead of rejecting`, in 1,015 ms. An earlier version of this comment
+      // claimed a timeout was UNAVOIDABLE here because the call never settles. That
+      // is true only of a queue that answers `unassigned` forever — re-measured with
+      // the fixture reduced to a single `mockResolvedValue`: `Error: Test timed out
+      // in 5000ms.`, 5,009 ms — and false of this one, which settles on the second
+      // poll. ~5× cheaper, it names what actually went wrong, and it is the variant
+      // that exhibits the discarded answer above. Green at head, on the first poll.
+      const poll = vi
+        .fn()
+        .mockResolvedValueOnce({ status: 'unassigned', error: 'orchestrator dropped the workflow' })
+        .mockResolvedValueOnce(succeededSnapshot(['a late answer']));
+      const helpers = mockWorkflowHelpers({ poll });
+      const adapter = createBridgeAdapter(helpers);
+
+      await expect(
+        adapter.submitChatCompletion({ model: MODEL, messages: ONE_MESSAGE }),
+      ).rejects.toThrow('orchestrator dropped the workflow');
+
+      // ONE poll, not sixty: the loop broke on the first reply rather than treating
+      // an unknown status as "still working".
+      expect(helpers.poll, 'kept polling a workflow that had already stopped').toHaveBeenCalledTimes(
+        1,
+      );
     });
   });
 

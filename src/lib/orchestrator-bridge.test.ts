@@ -15,6 +15,11 @@ import {
   type WorkflowHelpers,
 } from './orchestrator-bridge.js';
 import { AVAILABLE_MODELS } from './models.js';
+// 🔴 THE REAL CLASSES FROM THE INSTALLED PACKAGE, not local look-alikes. The
+// adapter branches with `instanceof`, so a stand-in would silently exercise its
+// generic rethrow arm and every rejection assertion below would pass while
+// measuring the wrong code path.
+import { WorkflowEstimateError, WorkflowSubmitError } from '@civitai/blocks-react';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 🔴 EVERY FIXTURE HERE MIRRORS THE REAL HOST CONTRACT, and that is the whole
@@ -345,6 +350,60 @@ describe('orchestrator-bridge', () => {
       expect(result.choices[0].message.content).toBe('scanned reply');
     });
 
+    // 🔴 WHAT MAKES THE SUBMIT GATE'S NARROWNESS ENFORCED RATHER THAN ADVISORY.
+    // `submitSnap.status === 'failed'` is deliberately NOT the shared
+    // `isTerminalWithoutSuccess`, and until this case nothing pinned that: with the
+    // widening applied, `tsc --noEmit` was clean and the whole suite was green.
+    // `onWorkflow` was referenced by exactly one test file
+    // (`turn-records.e2e.test.tsx`), and by no case that could see it go missing
+    // here. A comment saying "do not do this" that no test enforces is a comment
+    // whose stated reason a reader can disprove and then walk past — which is what
+    // happened; see the gate's own header.
+    //
+    // The behaviour: the submit gate sits IN FRONT OF the `onWorkflow` report, so
+    // widening it throws before the id is ever handed out. That id is what a caller
+    // records a charge against, and a `canceled`/`expired`/unrecognised submit reply
+    // is precisely the shape where a charge may have landed and no answer will
+    // arrive — the turn most worth having an id for.
+    //
+    // 🔴 THE FIXTURE MAKES THE REJECTION MESSAGE IDENTICAL EITHER WAY, ON PURPOSE.
+    // Under the widening the gate throws `snapshotFailureMessage(submitSnap)`, which
+    // is the same `error` string the poll loop produces at head, so the
+    // `rejects.toThrow` line CANNOT be what kills this test and the red is
+    // unambiguously the `onWorkflow` assertion. Watched against the widened gate:
+    // `AssertionError: … expected [] to deeply equal [ 'wf-canceled' ]`, and the full
+    // suite reports `1 failed | 683 passed (684)` — this case alone, with both
+    // anti-vacuity controls (`polls at least once even when submit already reports a
+    // terminal status` above, `polls until terminal status` below) still passing.
+    //
+    // PR #69's priced refusal is unaffected by the widening either way —
+    // `isTerminalWithoutSuccess('failed')` is `true`, so that exit keeps firing at
+    // the same line with the same message. Confirmed by that same run: all four
+    // cases in `a submit-time refusal` pass under the widened gate.
+    it('🔴 reports the workflowId for a terminal submit reply that is not failed', async () => {
+      const STOPPED = 'the host canceled the workflow';
+      const submit = vi
+        .fn()
+        .mockResolvedValue({ workflowId: 'wf-canceled', status: 'canceled', error: STOPPED });
+      const poll = vi.fn().mockResolvedValue({ status: 'canceled', error: STOPPED });
+      const adapter = createBridgeAdapter(mockWorkflowHelpers({ submit, poll }));
+      const reported: string[] = [];
+
+      await expect(
+        adapter.submitChatCompletion(
+          { model: MODEL, messages: [{ role: 'user', content: 'hi' }] },
+          undefined,
+          undefined,
+          (id) => reported.push(id),
+        ),
+      ).rejects.toThrow(STOPPED);
+
+      expect(
+        reported,
+        'the submit gate threw before onWorkflow, so a turn that may have been charged has no id recorded against it',
+      ).toEqual(['wf-canceled']);
+    });
+
     it('polls until terminal status', async () => {
       const poll = vi
         .fn()
@@ -631,6 +690,322 @@ describe('orchestrator-bridge', () => {
       // reports a terminal status` (a `succeeded` submit, which still needs the
       // output-moderation scan the poll performs) and `polls until terminal
       // status` (a `pending` submit).
+
+      // 🔴 THE OTHER HALF OF THE ANTI-VACUITY PAIR, AND IT BELONGS HERE BECAUSE THE
+      // BUMP PUT A `catch` AROUND THE `submit` CALL ABOVE. The refusal fixtures in
+      // this block RESOLVE. `blocks-react` ≥ 0.43.0 also makes `submit` REJECT on a
+      // failure-shaped reply with no price, and the adapter now catches that — so a
+      // handler that answered BOTH by routing everything through the rejection arm
+      // would satisfy every assertion above while relabelling a priced refusal as
+      // "may already have been charged", which is a different and wrong claim about
+      // the viewer's money. The whole normalised string is pinned, not a substring,
+      // so a prefix creeping onto the resolved path fails here.
+      it('🔴 a PRICED refusal resolves — its message carries no rejection prefix', async () => {
+        const helpers = mockWorkflowHelpers({ submit: refusedSubmit(), poll: sentinelPoll() });
+        const adapter = createBridgeAdapter(helpers);
+
+        let message: string | undefined;
+        try {
+          await adapter.submitChatCompletion({
+            model: MODEL,
+            messages: [{ role: 'user', content: 'hi' }],
+          });
+        } catch (err) {
+          message = (err as Error).message;
+        }
+
+        // The server's words, and NOTHING ELSE. `toThrow` above is a substring
+        // match and would pass with either rejection prefix bolted on the front.
+        expect(message).toBe(REFUSAL);
+      });
+    });
+
+    // ── THE `blocks-react@0.43.0` REJECTION CONTRACT. ────────────────────────
+    //
+    // 0.43.0 added two error classes and changed `estimate`/`submit` from resolving
+    // an unusable reply to REJECTING with one. This app was pinned at
+    // `blocks-react@0.39.0`, where neither class existed, until the four-package
+    // pair bump; these cases are what makes the migration observable.
+    //
+    // 🔴 THEY USE THE REAL CLASSES, IMPORTED FROM THE INSTALLED PACKAGE. A local
+    // look-alike would prove nothing: the adapter branches with `instanceof`, so a
+    // hand-rolled stand-in would exercise the generic rethrow arm instead and every
+    // assertion below would be measuring the wrong path. Constructing the real
+    // class also means `err.message` in these tests is the real developer-facing
+    // constant, which is what the "never shown to a viewer" case reads.
+    //
+    // 🔴 WHY THE SERVER'S WORDS AND NOT AN APP-OWNED STRING. Upstream's own guidance
+    // is to derive viewer copy from `code` alone. This app deliberately does not:
+    // PR #69 measured, in production, a viewer whose per-app Buzz limit refused a
+    // turn being shown `Error: Not Found` instead of the server's `app Buzz limit
+    // reached: … your limit for this app is 1` — a number-bearing, actionable
+    // sentence the server authored precisely so the viewer could act on it. The
+    // rejection arms keep that decision; `snapshotFailureMessage` is the one place
+    // it is implemented, for both the resolved refusal above and the rejections here.
+    describe('a submit REJECTION (blocks-react ≥ 0.43.0)', () => {
+      // The moderator-review nack, which the class docs name as a non-catch
+      // short-circuit that still produces the `'exception'` shape: the host
+      // synthesised the reply itself, so the id is the `'failed'` sentinel and there
+      // is no cost.
+      const EXCEPTION_REASON = 'not available in review preview';
+      // The realistic UNSANITISED fixture — upstream pins this family because
+      // `snapshot.error` can carry raw Prisma/`pg` text. A real orchestrator id, so
+      // the hook classifies it `'workflow-failed'` rather than `'exception'`.
+      const WORKFLOW_FAILED_REASON =
+        'Unique constraint failed: Key (email)=(viewer@example.test) already exists';
+
+      const rejectingSubmit = (err: WorkflowSubmitError) => vi.fn().mockRejectedValue(err);
+
+      const exceptionError = (error?: string) =>
+        new WorkflowSubmitError(
+          { workflowId: 'failed', status: 'failed', ...(error === undefined ? {} : { error }) },
+          'exception',
+        );
+
+      const workflowFailedError = () =>
+        new WorkflowSubmitError(
+          { workflowId: 'wf_01JQZ8K3P7', status: 'failed', error: WORKFLOW_FAILED_REASON },
+          'workflow-failed',
+        );
+
+      const messageFrom = async (submit: WorkflowHelpers['submit']): Promise<string> => {
+        const adapter = createBridgeAdapter(mockWorkflowHelpers({ submit }));
+        try {
+          await adapter.submitChatCompletion({
+            model: MODEL,
+            messages: [{ role: 'user', content: 'hi' }],
+          });
+        } catch (err) {
+          return (err as Error).message;
+        }
+        throw new Error('expected the submit rejection to reject, but it resolved');
+      };
+
+      it("🔴 code 'exception' surfaces the SERVER's words", async () => {
+        expect(await messageFrom(rejectingSubmit(exceptionError(EXCEPTION_REASON)))).toBe(
+          `Workflow submit returned no workflow — ${EXCEPTION_REASON}`,
+        );
+      });
+
+      it("🔴 code 'workflow-failed' surfaces the SERVER's words and warns about the charge", async () => {
+        expect(await messageFrom(rejectingSubmit(workflowFailedError()))).toBe(
+          'Workflow submit failed, and this turn may already have been charged — ' +
+            WORKFLOW_FAILED_REASON,
+        );
+      });
+
+      it('🔴 the two codes are actually DISTINGUISHED, not collapsed', async () => {
+        // 🔴 ONE REASON, TWO CODES — AND THAT IS THE WHOLE POINT OF THE FIXTURE.
+        // Written first with each code carrying its own `snapshot.error`, this test
+        // SURVIVED a mutant that collapsed the `code` branch to a single arm: the
+        // two messages still differed, by the reason rather than by the code, so the
+        // assertion was measuring the interpolation it shares with the two cases
+        // above instead of the branch it exists to pin. Holding `error` constant
+        // leaves `code` as the only thing that can move the output.
+        const SHARED = 'the host declined this turn';
+        const exception = await messageFrom(rejectingSubmit(exceptionError(SHARED)));
+        const workflowFailed = await messageFrom(
+          rejectingSubmit(
+            new WorkflowSubmitError(
+              { workflowId: 'wf_01JQZ8K3P7', status: 'failed', error: SHARED },
+              'workflow-failed',
+            ),
+          ),
+        );
+
+        expect(exception).not.toBe(workflowFailed);
+      });
+
+      it('🔴 NEITHER code tells the viewer the turn was free', async () => {
+        // Upstream is explicit that neither code guarantees nothing was spent:
+        // `'exception'` is reachable via a lost response or an in-progress
+        // idempotency conflict, and `'workflow-failed'` means the host already
+        // treats the spend as committed. Every reply in this app costs Buzz, so a
+        // reassurance here is a false statement about the viewer's money.
+        //
+        // 🔴 TWO ASSERTIONS, AND ONLY THE FIRST IS STRUCTURAL. Today's two arms are
+        // pinned as WHOLE NORMALISED STRINGS — that is what actually forbids a
+        // reassurance being added to either, because any added clause fails the
+        // equality regardless of how it is worded. Doing it here as well as in the
+        // two `surfaces the SERVER's words` cases above is deliberate: it makes
+        // THIS test the one that fails when someone edits these arms, so the
+        // failure names the money claim rather than reading as a copy nit.
+        const exception = await messageFrom(rejectingSubmit(exceptionError(EXCEPTION_REASON)));
+        const workflowFailed = await messageFrom(rejectingSubmit(workflowFailedError()));
+        expect(exception).toBe(`Workflow submit returned no workflow — ${EXCEPTION_REASON}`);
+        expect(workflowFailed).toBe(
+          'Workflow submit failed, and this turn may already have been charged — ' +
+            WORKFLOW_FAILED_REASON,
+        );
+
+        // ⚠️ AND THIS SECOND ASSERTION IS A WEAK NET — KNOWINGLY, AND IT IS ONLY
+        // WORTH KEEPING BECAUSE IT IS REACHABLE. It is a WORD check, so it is walked
+        // around by rewording: "your Buzz was not spent" and "this turn cost you
+        // nothing" both pass it while making exactly the forbidden claim. Treat it
+        // as a tripwire, never as the guarantee — the guarantee is the two
+        // whole-string pins above.
+        //
+        // 🔴 IT IS DRIVEN OVER AN UNRECOGNISED CODE, NOT JUST THE TWO ARMS ABOVE.
+        // A first draft looped over `exception` and `workflowFailed` only, which
+        // made it strictly dead: the whole-string equalities fire first on any edit
+        // to those arms, so the regex could never be the assertion that failed, and
+        // a THIRD arm — the case it exists for — was not in the loop at all.
+        // `WorkflowSubmitErrorCode` is `'exception' | 'workflow-failed'` today, so a
+        // future third code lands on the cautious fall-through arm; feeding one
+        // through the cast is how this net actually covers that arm before it is
+        // written.
+        const FUTURE_CODE = 'idempotency-conflict' as WorkflowSubmitError['code'];
+        const future = await messageFrom(
+          rejectingSubmit(
+            new WorkflowSubmitError(
+              { workflowId: 'wf_01JQZ8K3P7', status: 'failed', error: EXCEPTION_REASON },
+              FUTURE_CODE,
+            ),
+          ),
+        );
+        for (const message of [exception, workflowFailed, future]) {
+          expect(message).not.toMatch(/free|no charge|not charged|nothing was charged|refund/i);
+        }
+      });
+
+      it('🔴 never shows the developer-facing err.message', async () => {
+        // 🔴 THE EXPECTATION IS READ OFF THE REAL CLASS, NOT SPELLED. `err.message`
+        // is a constant whose wording upstream says is NOT a contract, so a literal
+        // copied here would rot into a vacuous pass on the next bump. Upstream
+        // records two apps piping exactly this string into rendered UI on their
+        // 0.43.0 migration (civitai/civitai-app-starters#253).
+        const err = exceptionError(EXCEPTION_REASON);
+        expect(err.message).toContain('reason on .snapshot.error'); // the instrument works
+        expect(await messageFrom(rejectingSubmit(err))).not.toContain(err.message);
+      });
+
+      it('falls back to a plain no-reason line when the snapshot carries no words', async () => {
+        expect(await messageFrom(rejectingSubmit(exceptionError()))).toBe(
+          'Workflow submit returned no workflow — the server gave no reason',
+        );
+      });
+
+      it('rethrows a NON-WorkflowSubmitError untouched', async () => {
+        // The generic arm. A transport failure is not a submit rejection and must
+        // not be relabelled as one — relabelling it would put "may already have been
+        // charged" on a request that never left the block.
+        expect(await messageFrom(vi.fn().mockRejectedValue(new Error('transport exploded')))).toBe(
+          'transport exploded',
+        );
+      });
+
+      it('does not poll after a submit rejection', async () => {
+        // There is no workflow to poll on either arm — `'exception'` carries the
+        // sentinel id and `'workflow-failed'` may carry `'whatif'`. Same defect
+        // shape as the sentinel poll #69 removed, one exit over.
+        const helpers = mockWorkflowHelpers({
+          submit: rejectingSubmit(exceptionError(EXCEPTION_REASON)),
+        });
+        const adapter = createBridgeAdapter(helpers);
+
+        await expect(
+          adapter.submitChatCompletion({
+            model: MODEL,
+            messages: [{ role: 'user', content: 'hi' }],
+          }),
+        ).rejects.toThrow();
+
+        expect(helpers.poll).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('an estimate REJECTION (blocks-react ≥ 0.43.0)', () => {
+      const FAILED_REASON = 'chat-completion is temporarily unavailable';
+      const NO_COST_REASON = 'the whatIf reply carried no price for this model';
+
+      const estimateError = (code: 'failed' | 'no-cost', error?: string) =>
+        new WorkflowEstimateError(
+          {
+            workflowId: code === 'failed' ? 'failed' : 'wf_01JQZ8ESTM',
+            status: code === 'failed' ? 'failed' : 'pending',
+            ...(error === undefined ? {} : { error }),
+          },
+          code,
+        );
+
+      const messageFrom = async (err: unknown): Promise<string> => {
+        const helpers = mockWorkflowHelpers({ estimate: vi.fn().mockRejectedValue(err) });
+        const adapter = createBridgeAdapter(helpers);
+        try {
+          await adapter.submitChatCompletion({
+            model: MODEL,
+            messages: [{ role: 'user', content: 'hi' }],
+          });
+        } catch (e) {
+          // Nothing may be submitted when the price never landed. This is the money
+          // gate, so it is asserted on every case rather than in one of its own.
+          expect(helpers.submit).not.toHaveBeenCalled();
+          return (e as Error).message;
+        }
+        throw new Error('expected the estimate rejection to reject, but it resolved');
+      };
+
+      it("🔴 code 'failed' surfaces the SERVER's words, attributed to the ESTIMATE", async () => {
+        expect(await messageFrom(estimateError('failed', FAILED_REASON))).toBe(
+          `Workflow estimate failed — ${FAILED_REASON}`,
+        );
+      });
+
+      it("🔴 code 'no-cost' surfaces the SERVER's words and says no cost came back", async () => {
+        expect(await messageFrom(estimateError('no-cost', NO_COST_REASON))).toBe(
+          `Workflow estimate returned no cost — ${NO_COST_REASON}`,
+        );
+      });
+
+      it("🔴 does NOT report itself as a SUBMIT failure", async () => {
+        // The estimate-attribution split, preserved across the rejection arms. An
+        // estimate that never priced the turn reads as a billing failure if it is
+        // labelled a submit — the exact 0.1.6 misdiagnosis recorded on
+        // `buildChatCompletionBody`.
+        for (const code of ['failed', 'no-cost'] as const) {
+          const message = await messageFrom(estimateError(code, FAILED_REASON));
+          expect(message).toContain('estimate');
+          expect(message).not.toContain('submit');
+        }
+      });
+
+      it("keeps 'failed' and 'no-cost' distinguishable", async () => {
+        // A `'failed'` reply CAN carry a numeric cost per the class docs, so calling
+        // it "returned no cost" would be false. Collapsing the arms is the mutation
+        // this refuses.
+        expect(await messageFrom(estimateError('failed', FAILED_REASON))).not.toBe(
+          await messageFrom(estimateError('no-cost', FAILED_REASON)),
+        );
+      });
+
+      it("claims no rejection when 'no-cost' carries no words — it claims no reason", async () => {
+        // 🔴 THE CASE THIS ARM HITS MOST OFTEN, AND IT USED TO LIE ON IT. Per
+        // `WorkflowEstimateError.code`, `'no-cost'` is a NON-FAILED reply with no
+        // numeric `cost.total` — usually `{status:'pending'}` with no `error` at all,
+        // which is exactly this fixture. The wording here was `the request was
+        // rejected before it could be priced`; nothing was rejected, and with no
+        // `snapshot.error` to override it that false sentence was the one the viewer
+        // got. It now falls back to what is actually true: the server said nothing.
+        //
+        // Still the same fallback the RESOLVED unpriced gate uses, which is what makes
+        // the two routes to "no usable price" read identically; the resolved route is
+        // pinned as one string in `orchestrator-bridge.contract.test.ts`. The whole
+        // normalised string is what refuses the retired claim under ANY spelling or
+        // constant name — a `not.toContain('rejected')` beside it could never execute.
+        expect(await messageFrom(estimateError('no-cost'))).toBe(
+          'Workflow estimate returned no cost — the server gave no reason',
+        );
+      });
+
+      it('never shows the developer-facing err.message', async () => {
+        const err = estimateError('failed', FAILED_REASON);
+        expect(err.message).toContain('reason on .snapshot.error'); // the instrument works
+        expect(await messageFrom(err)).not.toContain(err.message);
+      });
+
+      it('rethrows a NON-WorkflowEstimateError untouched', async () => {
+        expect(await messageFrom(new Error('transport exploded'))).toBe('transport exploded');
+      });
     });
 
     it('throws when a succeeded workflow released nothing at all', async () => {

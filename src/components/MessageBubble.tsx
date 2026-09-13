@@ -128,10 +128,13 @@ export function MessageBubble({
         }}
         data-testid="message-content"
       >
-        {/* 🔴 THE WITHHELD/ERROR BRANCH STAYS PLAIN. A withhold reason and an
-            `Error: …` string are FIRST-PARTY text with no markdown in them, and
-            running them through the renderer would let a future host-authored
-            reason string be parsed as markup. Only model prose is rendered. */}
+        {/* 🔴 ONLY THE WITHHELD BRANCH STAYS PLAIN. This tests `message.withheld`,
+            which `App`'s catch sets only for a `TextOutputWithheldError`; every
+            other failure is `Error: <message>` with `withheld: false` and goes
+            through `MarkdownText` — and since PR #69 that message is the SERVER's
+            own words. The exposure is measured and the decision deferred under
+            `error-text-through-markdown` in `taste.json`; read it there before
+            changing this, and do not change it here. */}
         {message.content
           ? message.withheld
             ? message.content
