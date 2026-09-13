@@ -537,6 +537,102 @@ describe('orchestrator-bridge', () => {
       ).rejects.toThrow('workflowId');
     });
 
+    // ── A REFUSAL AT SUBMIT. Measured in production 2026-09-12. ──────────────
+    //
+    // A viewer set a per-app Buzz limit of 1 on this app and sent a prompt. The
+    // server refused the turn, charged nothing, and built a message naming what
+    // had been spent and what their own limit was. The viewer was shown
+    // `Error: Not Found`.
+    //
+    // The refusal RESOLVES out of `submit` rather than rejecting — it quotes the
+    // price it refused to charge, and `useBuzzWorkflow` rejects a failure-shaped
+    // reply only when there is NO numeric cost, because blocks are meant to
+    // recover from a spend cap. What comes back is a resolved snapshot carrying
+    // the host contract's failure sentinel `workflowId: 'failed'`, and the poll
+    // loop asked the orchestrator for a workflow by that name. The single
+    // `blocks.pollWorkflow` NOT_FOUND in three days of server logs carried
+    // `workflowId: 'failed'`, timestamped inside that run.
+    describe('a submit-time refusal', () => {
+      const REFUSAL =
+        'app Buzz limit reached: 0 already spent today by this app on your behalf, ' +
+        'this generation costs 4, your limit for this app is 1';
+
+      // The real host contract for a consent-budget rejection, verbatim: a
+      // RESOLVED snapshot, a numeric cost, the sentinel id, the server's words.
+      const refusedSubmit = () =>
+        vi.fn().mockResolvedValue({
+          workflowId: 'failed',
+          status: 'failed',
+          cost: { total: 4 },
+          error: REFUSAL,
+        });
+
+      // What the sentinel does on the wire: `blocks.pollWorkflow` asks the
+      // orchestrator for a workflow called `failed`, gets a 404, and raises a
+      // TRPCError whose message is exactly `Not Found`.
+      const sentinelPoll = () => vi.fn().mockRejectedValue(new Error('Not Found'));
+
+      it('🔴 surfaces the server’s own reason, not the sentinel poll’s 404', async () => {
+        const helpers = mockWorkflowHelpers({ submit: refusedSubmit(), poll: sentinelPoll() });
+        const adapter = createBridgeAdapter(helpers);
+
+        await expect(
+          adapter.submitChatCompletion({
+            model: MODEL,
+            messages: [{ role: 'user', content: 'hi' }],
+          }),
+        ).rejects.toThrow(REFUSAL);
+      });
+
+      it('🔴 never asks the orchestrator for the sentinel at all', async () => {
+        // Stronger than the assertion above and independent of any wording: the
+        // defect is a REQUEST that should never have been made. A fix that
+        // caught the 404 and re-reported the reason would pass the message test
+        // and still ask for a workflow named `failed` on every refusal.
+        const helpers = mockWorkflowHelpers({ submit: refusedSubmit(), poll: sentinelPoll() });
+        const adapter = createBridgeAdapter(helpers);
+
+        await expect(
+          adapter.submitChatCompletion({
+            model: MODEL,
+            messages: [{ role: 'user', content: 'hi' }],
+          }),
+        ).rejects.toThrow();
+
+        expect(helpers.poll).not.toHaveBeenCalled();
+      });
+
+      it('falls back to the status when the refusal carries no words', async () => {
+        // `new Error('')` renders as a bare `Error:` and names nothing — worse
+        // than the status it replaced. A blank string is a string, so `typeof`
+        // alone does not catch it.
+        const submit = vi.fn().mockResolvedValue({
+          workflowId: 'failed',
+          status: 'failed',
+          cost: { total: 4 },
+          error: '   ',
+        });
+        const adapter = createBridgeAdapter(
+          mockWorkflowHelpers({ submit, poll: sentinelPoll() }),
+        );
+
+        await expect(
+          adapter.submitChatCompletion({
+            model: MODEL,
+            messages: [{ role: 'user', content: 'hi' }],
+          }),
+        ).rejects.toThrow('Workflow failed');
+      });
+
+      // 🔴 THE ANTI-VACUITY HALF IS NOT IN THIS BLOCK, deliberately — a guard
+      // that skipped the poll on EVERY submit would satisfy all three cases
+      // above and break the product. Two existing tests are the control and
+      // must keep passing: `polls at least once even when submit already
+      // reports a terminal status` (a `succeeded` submit, which still needs the
+      // output-moderation scan the poll performs) and `polls until terminal
+      // status` (a `pending` submit).
+    });
+
     it('throws when a succeeded workflow released nothing at all', async () => {
       const poll = vi.fn().mockResolvedValue({ status: 'succeeded' });
       const adapter = createBridgeAdapter(mockWorkflowHelpers({ poll }));

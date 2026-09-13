@@ -388,6 +388,31 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
+ * The viewer-facing reason a snapshot did not succeed.
+ *
+ * 🔴 ONE DERIVATION FOR BOTH REFUSAL POINTS, and that is the point rather than
+ * tidiness. A turn can be refused at SUBMIT (a budget / spend-cap rejection,
+ * which resolves) or after a POLL (an orchestrator failure). Both had to answer
+ * the same question — "do the server's own words survive?" — and only the second
+ * one did, so a viewer whose per-app Buzz limit refused the turn was shown a
+ * message about something else entirely. Deriving both here means the two
+ * cannot drift apart again.
+ *
+ * `error` is server-authored prose and is used VERBATIM when it says anything:
+ * on the refusal path it is the consent-budget rejection, which names the amount
+ * already spent and the viewer's own limit. It is deliberately number-bearing —
+ * the server's comment on it says hiding the number "would make the rejection
+ * unactionable" — so summarising or replacing it defeats its purpose.
+ *
+ * A blank or non-string `error` falls back to the status, because `new
+ * Error('')` renders as a bare `Error:` and names nothing at all.
+ */
+function snapshotFailureMessage(snap: { status?: string; error?: unknown }): string {
+  if (typeof snap.error === 'string' && snap.error.trim() !== '') return snap.error.trim();
+  return `Workflow ${snap.status ?? 'failed'}`;
+}
+
+/**
  * Create a bridge adapter that uses the host-mediated useBuzzWorkflow helpers to
  * reach the orchestrator's `chat-completion` step over postMessage.
  *
@@ -470,6 +495,32 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
       }
 
       const submitSnap = await workflow.submit(body);
+
+      // 🔴 A REFUSAL RESOLVES — IT DOES NOT REJECT — AND THE ID IT CARRIES IS NOT
+      // POLLABLE. `useBuzzWorkflow.submit` rejects a failure-shaped reply only
+      // when it has NO numeric cost; a budget / spend-cap rejection quotes the
+      // price it refused to charge, so it carries one and is handed back here as
+      // an ordinary resolved snapshot with `status: 'failed'`. Its `workflowId` is
+      // the host contract's failure sentinel (`'failed'`), which names no
+      // workflow: polling it 404s, and the resulting `Not Found` REPLACES the
+      // server's own reason on its way to the viewer.
+      //
+      // Measured in production 2026-09-12: a viewer who set a per-app Buzz limit
+      // of 1 was shown `Error: Not Found` instead of `app Buzz limit reached: …
+      // your limit for this app is 1`. The one `blocks.pollWorkflow` NOT_FOUND in
+      // three days of server logs carried `workflowId: 'failed'` — i.e. the poll
+      // below threw the reason away while it was already in hand at this line.
+      //
+      // 🔴 `'failed'` ONLY, NOT EVERY TERMINAL STATUS. A `succeeded` submit must
+      // still poll — the submit reply structurally cannot carry `textOutputs`
+      // (see below) — and that case is pinned by `polls at least once even when
+      // submit already reports a terminal status`. Widening this to
+      // `TERMINAL_STATUSES` would skip the output-moderation scan on the happy
+      // path, which is the opposite of a fix.
+      if (submitSnap.status === 'failed') {
+        throw new Error(snapshotFailureMessage(submitSnap));
+      }
+
       const workflowId = submitSnap.workflowId;
 
       if (!workflowId) {
@@ -522,10 +573,8 @@ export function createBridgeAdapter(workflow: WorkflowHelpers): OrchestratorAdap
         throw new Error('Chat completion timed out before the first poll');
       }
 
-      const finalStatus = snap.status;
-      if (finalStatus !== 'succeeded') {
-        const errorMsg = typeof snap.error === 'string' ? snap.error : `Workflow ${finalStatus}`;
-        throw new Error(errorMsg);
+      if (snap.status !== 'succeeded') {
+        throw new Error(snapshotFailureMessage(snap));
       }
 
       // 🔴 CHECKED BEFORE THE RELEASED TEXT. A withhold is not an error and not
