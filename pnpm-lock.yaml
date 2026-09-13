@@ -9,17 +9,17 @@ importers:
   .:
     dependencies:
       '@civitai/app-sdk':
-        specifier: ^0.31.0
-        version: 0.31.0
-      '@civitai/blocks-react':
         specifier: ^0.39.0
-        version: 0.39.0(@civitai/app-sdk@0.31.0)(react@19.2.8)
+        version: 0.39.0
+      '@civitai/blocks-react':
+        specifier: ^0.49.0
+        version: 0.49.0(@civitai/app-sdk@0.39.0)(react@19.2.8)
       '@civitai/components-react':
-        specifier: ^0.3.0
-        version: 0.3.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: ^0.4.1
+        version: 0.4.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@civitai/theme':
-        specifier: ^0.2.0
-        version: 0.2.0
+        specifier: ^0.3.1
+        version: 0.3.1
       react:
         specifier: ^19.0.0
         version: 19.2.8
@@ -101,30 +101,30 @@ packages:
     resolution: {integrity: sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA==}
     engines: {node: '>=18'}
 
-  '@civitai/app-sdk@0.31.0':
-    resolution: {integrity: sha512-FhQ6heL3TceUXdEGjgToVejqvGE4DWtiS85hX2T/nkF/YDf9L6jlKMH4upTaN2kSreS6PybziuWkGREL6GwRYQ==}
+  '@civitai/app-sdk@0.39.0':
+    resolution: {integrity: sha512-2+fTmLKTJTDFP1Ce0h/jGPXQRG9sAJYk9cOU4AMCUiDKIxSex6ssiqBjDrXCOvAP4Gc2QE9Cfolo+FRhvu61Yg==}
     engines: {node: '>=20'}
 
-  '@civitai/blocks-react@0.39.0':
-    resolution: {integrity: sha512-v095k1+m7CAZGKhYTw2cs+qCSOKv6yPMjtSvdub9LEMQdwUctcktL5aFUkgxdCUT0/Bgeq56ZP+oBfq2pGXFNw==}
+  '@civitai/blocks-react@0.49.0':
+    resolution: {integrity: sha512-kONbNu/xGqEpQpK9IZ1/0iaK43Uc/CnFUrlA6YPPhQ7wb6nNdgCXTdakoH6j9oyWod0qzsxjkI7MO7SbpggluQ==}
     engines: {node: '>=20'}
     peerDependencies:
       '@civitai/app-sdk': '>=0.29.0 <1.0.0'
       react: ^18.0.0 || ^19.0.0
 
-  '@civitai/components-react@0.3.0':
-    resolution: {integrity: sha512-Knv38Ou7tmI0BDmVmoiwMRLSEEttp5n6Em4fyBOjQASK5cM4uY9AktXpYfL1I/0X/TvQgxXYtMDVOFw7FwqrtQ==}
+  '@civitai/components-react@0.4.1':
+    resolution: {integrity: sha512-7CZ1rLXq9/8ee5AUTppgMLfe9VZm0n1YiYdc5kdmzMZvgGuOxnokspdQkc+zXuMffkhgnHppElEiLyyS5+Z/nw==}
     engines: {node: '>=20'}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
       react-dom: ^18.0.0 || ^19.0.0
 
-  '@civitai/components@0.3.0':
-    resolution: {integrity: sha512-nQzqTNVOR9oZiJuUcJX9OE1j0qNQSfse/3mL9PwI4gGSvYU/yskLGDRO9rOuvZJ9T/BR0hfhuY+ZHBFw4MEVtA==}
+  '@civitai/components@0.4.1':
+    resolution: {integrity: sha512-w8hcqhBlBGGQviGVweLkSEilARzOyDtKqr00O7u/s4i8CXrNu8s4+lAT5GFJb4lAYU75BXX1s99138dZFhyaqA==}
     engines: {node: '>=20'}
 
-  '@civitai/theme@0.2.0':
-    resolution: {integrity: sha512-eYtfCiMvrjH2aiBg0G0pMFXnE/fo6tRL4oBQVLNQ863WKPIrLxUsYfsSlRMYF9tIQAaJ1N28OdUkxs6iYNb7rQ==}
+  '@civitai/theme@0.3.1':
+    resolution: {integrity: sha512-S/ibSOGDkXyskNSqbDxXO2sh3bsa+zhm7qPwM8mr5br218osPwBVmca7WI1uSZDd0ij6CZviOaw8kJ92TYkeog==}
     engines: {node: '>=20'}
 
   '@csstools/color-helpers@5.1.0':
@@ -1028,27 +1028,27 @@ snapshots:
 
   '@bcoe/v8-coverage@1.0.2': {}
 
-  '@civitai/app-sdk@0.31.0': {}
+  '@civitai/app-sdk@0.39.0': {}
 
-  '@civitai/blocks-react@0.39.0(@civitai/app-sdk@0.31.0)(react@19.2.8)':
+  '@civitai/blocks-react@0.49.0(@civitai/app-sdk@0.39.0)(react@19.2.8)':
     dependencies:
-      '@civitai/app-sdk': 0.31.0
-      '@civitai/components': 0.3.0
-      '@civitai/theme': 0.2.0
+      '@civitai/app-sdk': 0.39.0
+      '@civitai/components': 0.4.1
+      '@civitai/theme': 0.3.1
       react: 19.2.8
 
-  '@civitai/components-react@0.3.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@civitai/components-react@0.4.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@civitai/components': 0.3.0
-      '@civitai/theme': 0.2.0
+      '@civitai/components': 0.4.1
+      '@civitai/theme': 0.3.1
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
 
-  '@civitai/components@0.3.0':
+  '@civitai/components@0.4.1':
     dependencies:
-      '@civitai/theme': 0.2.0
+      '@civitai/theme': 0.3.1
 
-  '@civitai/theme@0.2.0': {}
+  '@civitai/theme@0.3.1': {}
 
   '@csstools/color-helpers@5.1.0': {}
 

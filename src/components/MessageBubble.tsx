@@ -128,10 +128,28 @@ export function MessageBubble({
         }}
         data-testid="message-content"
       >
-        {/* 🔴 THE WITHHELD/ERROR BRANCH STAYS PLAIN. A withhold reason and an
-            `Error: …` string are FIRST-PARTY text with no markdown in them, and
-            running them through the renderer would let a future host-authored
-            reason string be parsed as markup. Only model prose is rendered. */}
+        {/* 🔴 ONLY THE **WITHHELD** BRANCH STAYS PLAIN — AND THIS COMMENT USED TO
+            CLAIM OTHERWISE. It read "THE WITHHELD/ERROR BRANCH STAYS PLAIN … an
+            `Error: …` string [is] FIRST-PARTY text with no markdown in [it] …
+            Only model prose is rendered." The branch below tests
+            `message.withheld`, which `App`'s catch sets ONLY for a
+            `TextOutputWithheldError`. Every other failure is written as
+            `Error: <message>` with `withheld: false`, so it takes the
+            `MarkdownText` arm — and since PR #69 that message is the SERVER's own
+            words off `snapshot.error`, i.e. exactly the "future host-authored
+            reason string" the comment said was excluded. The claim was false when
+            written and the bump did not cause it.
+
+            🔴 WHAT THE ACTUAL EXPOSURE IS, measured rather than assumed: the
+            renderer builds React elements — there is no `dangerouslySetInnerHTML`
+            anywhere in it — so server text cannot inject markup, and `linkHref`
+            allowlists every href to an https civitai host carrying no userinfo.
+            What server text CAN do is render as markdown: a Prisma constraint
+            name with `_pairs_` in it emphasises, and `1. ` at a line start
+            becomes a list. That is a cosmetic mangling of a diagnostic, not an
+            injection — which is why this is recorded and deferred
+            (`error-text-through-markdown` in `taste.json`) rather than fixed
+            inside a dependency-bump PR that must not change render behaviour. */}
         {message.content
           ? message.withheld
             ? message.content

@@ -211,13 +211,32 @@ something that looks unfinished.
   `src/toolchain-lockstep.test.ts` mirrors that regex, pins the exact string,
   checks the named script exists in `package.json`, and requires exactly one
   lockfile. Still the highest-blast-radius line in the repo.
-- Bumping `@civitai/app-sdk` and `@civitai/blocks-react` is a **paired** change.
-  They have been mismatched before — `blocks-react@0.37.0` peered on `^0.28.0`
-  against an exact `app-sdk@0.30.0` pin and **npm silently overrode it**
+- Bumping `@civitai/*` is a **paired** change — and the pair is **four packages,
+  not two**. `app-sdk` + `blocks-react` have been mismatched before:
+  `blocks-react@0.37.0` peered on `^0.28.0` against an exact `app-sdk@0.30.0`
+  pin and **npm silently overrode it**
   (`claudedocs/handoff-civitai-sensei-bridge.md`). pnpm does not fail on it
   either: `strict-peer-dependencies` is unset, so that exact bad pair installs
   rc=0 with only `[WARN] Issues with peer dependencies found` (measured). **A
   green install is not evidence the pair is valid** — run `pnpm peers check`.
+
+  ⚠️ **And `pnpm peers check` is blind to the other half of the pairing.**
+  `blocks-react` **exact-pins** `@civitai/theme` and `@civitai/components` in
+  its own `dependencies` (at 0.49.0: `theme 0.3.1`, `components 0.4.1`), and so
+  does `@civitai/components-react`. Exact pins on both sides cannot be deduped,
+  so moving `blocks-react` while leaving `components-react` behind installs
+  **two copies of `theme` and two of `components`** — measured, with `pnpm peers
+  check` reporting `No peer dependency issues found` the whole time, because
+  nothing here is a *peer* range. **That duplication is not cosmetic:**
+  `orchestrator-bridge.ts` branches with `instanceof WorkflowSubmitError` /
+  `WorkflowEstimateError`, and two copies of `blocks-react` are two class
+  identities, so every such check silently returns false and the viewer is shown
+  the SDK's developer-facing constant instead of the server's reason. The
+  instrument for this question is
+  `pnpm list --depth=10 @civitai/theme @civitai/components` — **exactly one
+  version of each**; and a "no duplicates" reading is only worth quoting
+  alongside a positive control showing the check *can* see duplicates (bump two
+  of the four and look).
 - Vite bakes `VITE_*` in at build time and `.env.production` is gitignored, so
   neither of the two that matter is visible in a diff.
   - **`VITE_BLOCK_ALLOWED_PARENT_ORIGINS`** — the origin allowlist. Nothing in
