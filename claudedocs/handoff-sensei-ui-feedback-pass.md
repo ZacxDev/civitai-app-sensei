@@ -18,36 +18,70 @@ platform changes that feedback turned out to require.
 
 ## State now
 
-**Merged this session** — verified by content, not by ancestry (a squash never makes the
-branch head an ancestor): sensei **#71** (`1765b4b`, the four-package `@civitai/*` bump +
-`WorkflowSubmitError`/`WorkflowEstimateError` migration), civitai **#4803** (`5805465b5e`,
-registers `deepseek/deepseek-v4-flash-0731`), civitai **#4804** (`2803e825b1`, the per-app
-CSS full-bleed ledger entry that #4812 now supersedes).
+**Merged in earlier sessions** — verified by content, not by ancestry (a squash never makes the
+branch head an ancestor): sensei **#71** (`1765b4b`), civitai **#4803** (`5805465b5e`), civitai
+**#4804** (`2803e825b1`).
 
-**sensei** — `trunk` @ `1765b4b`, clean. **PR #72** `zach/ui-feedback-pass` @ **`82e6c55`**,
-`MERGEABLE`/`CLEAN`. The five-item feedback pass: app-owned SVG `IconButton`, bubble
-alignment at `min(68ch, 92%)`, native `ResourceCard variant="row"`, an NSFW-mode toggle
-replacing the model selector, and a `⋮` session-row menu carrying the chat id.
-**Audit ladder CLOSED** after round 0 → round 1 → round 2 plus three fix rounds; closure
-recorded as a PR comment with six OPEN items and their closing conditions. Gates re-verified
-independently at that head with the instrument validated by a planted `TS2322`: typecheck
-rc=0 zero output · node **429** · dom **339** · build `index-B6c7mAV3.js` **354,791 B**.
+**sensei** — `trunk` @ `ddfb40f`, clean. **PR #72** `zach/ui-feedback-pass` @ **`82e6c55`**,
+`MERGEABLE`/`CLEAN`. The five-item feedback pass: app-owned SVG `IconButton`, bubble alignment at
+`min(68ch, 92%)`, native `ResourceCard variant="row"`, an NSFW-mode toggle replacing the model
+selector, and a `⋮` session-row menu carrying the chat id. **Audit ladder CLOSED** after round 0 →
+round 1 → round 2 plus three fix rounds; **closure recorded as a PR comment with six OPEN items and
+their closing conditions** — that comment is the record, not this doc. Unchanged this session;
+version deliberately still `0.1.22` in both `package.json` and `block.manifest.json`, so a
+`release:` PR is owed after #72 merges.
 
-**civitai** — `main` @ `4aab099c91` (re-synced this session; it was 1 behind). **PR #4812**
-`zach/app-block-full-bleed-manifest` @ **`cb8233f5`**, `MERGEABLE`. Adds `page.fullBleed`
-(optional boolean, default `false`) so any app declares full bleed in its own manifest.
-Round 0 + round 1 audits DONE. **Round 1's fix round was NOT dispatched** — that is next
-step 1, and nothing is in flight for it.
+**civitai PR #4812** `zach/app-block-full-bleed-manifest` @ **`b073d37d1b`**, `MERGEABLE`, OPEN.
+Round-1 finding **F2/F3 fix round LANDED** this session as `b073d37d1b`
+(`test(app-blocks): close the two seams that let \`page.fullBleed\` be made inert with every gate green`):
 
-**Not done deliberately:** sensei's version stays `0.1.22` in both `package.json` and
-`block.manifest.json`. A `release:` PR is owed after #72 merges — this repo's convention is
-a feature PR then a release PR, and `src/manifest.test.ts` enforces the two fields moving
-together.
+- new `src/components/AppBlocks/fullBleedMounterSeam.test.ts` (12 tests) — a **ledger** of the five
+  mounter-side forwardings that fails when the set GROWS or SHRINKS, plus a behavioural two-point
+  case per surface. That is what closes F2: the pre-existing `pageBlockHostMaxWidth.test.ts:712`
+  guard catches an OMITTED prop and never a WRONG one.
+- `(fb1)`–`(fb4)` in `src/server/services/__tests__/block-registry.resolve-dev.test.ts` cover the two
+  previously-untested dev-tunnel projections (owned `:2020`, ephemeral `:2154`/`:2183`) — F3.
+- `src/components/Apps/ReviewBlockPreviewHost.browser.test.tsx` — the stub now surfaces
+  `data-full-bleed`, with a declaring/non-declaring two-point case.
+- Agent-reported: 14/14 mutants killed; typecheck rc=0; node `unit*` 307 files / 6,661 tests;
+  `component` 130 files / 1,842 tests; `geometry` 5/65; `test:lint-rules` 38/530.
+- Correction the agent made to the brief: `:1917` (the approved/resolve-page read) was ALREADY
+  covered at `block-registry.resolve-page.test.ts:163-218`, so nothing was added there; and the mint
+  test lives at `src/server/services/blocks/__tests__/publish-request.mintReviewToken.test.ts`, not
+  `src/server/services/__tests__/`.
 
-**A worktree is deliberately left in place** at `/home/zach/workspace/civit/civitai-fullbleed-manifest`
-(branch `zach/app-block-full-bleed-manifest`, clean at `cb8233f52c`) with `node_modules` and a
-generated Prisma client intact, because rebuilding that costs ~1 minute per audit round.
-Remove it with `git -C $CIVITAI worktree remove` when #4812 closes.
+🔴 **Independently re-verified by the dispatching session, because an audit fix resets the gate and a
+subagent's self-reported mutation matrix is exactly the claim that gets asserted without being run.**
+Scope stated honestly: **1 of the 14 mutants was re-run here**, the other 13 rest on the agent's
+report. What was measured directly:
+- typecheck instrument validated — a planted `const __probe: number = "not a number"` appended to
+  the new seam file gave `rc=2` + `TS2322` at line 752; restored → `rc=0`, `OK — 0 type errors in 23s`.
+  That planted error ALSO proves the seam file sits outside the untypechecked `__tests__` set.
+- positive control — the seam file collects **12** per-test lines, so the tier really ran.
+- mutant site 1 (`fullBleed: page.fullBleed` → `false` in `src/pages/apps/run/[slug]/[[...path]].tsx`)
+  → **2 failed | 10 passed**, killed by BOTH its own assertions: the structural pin
+  (`expected 'false' to be 'page.fullBleed'`) and the behavioural one ("the declaration dies in
+  `getServerSideProps` and the app renders capped on the PUBLIC surface, with nothing failing").
+  Restored → 12/12 green, `git status` clean.
+
+**IN FLIGHT: the F4–F8 prose round**, dispatched to a subagent against the same worktree, not yet
+returned at the time of writing. Scope: F4 (the false "You can check it before you submit"
+paragraph), F5 (the retirement checklist's missing test entry — it is to settle EMPIRICALLY which
+retirement edit turns `pageBlockHostMaxWidth.test.ts:618` red, since the recorded finding says the
+ledger edit and inspection suggests the cap-inlining edit, and those belong in different lists),
+F6, F7, F8. If that agent did not land, its work is lost and F4–F8 are still open — check
+`git -C <worktree> log --oneline` against `b073d37d1b` before assuming.
+
+**Two file-modifying agents were deliberately never run concurrently in that worktree** — the F2/F3
+round and the F4–F8 round were sequenced for this reason.
+
+**civitai base clone** `/home/zach/workspace/civit/civitai` is `main` @ `4daf83e288`, **behind 1**.
+Left alone deliberately: #4812 has not merged, so the re-sync the rules call for is not due yet.
+
+**The worktree at `/home/zach/workspace/civit/civitai-fullbleed-manifest` is still deliberately in
+place** (branch `zach/app-block-full-bleed-manifest`) with `node_modules` and a generated Prisma
+client intact — rebuilding costs ~1 minute per audit round. Remove it with
+`git -C $CIVITAI worktree remove` when #4812 closes.
 
 ## Open investigations — live diagnosis state
 
@@ -109,37 +143,70 @@ as-of: 2026-09-13
   **does** reach ClickHouse as `billed_usd` beside `Charged` (`WorkflowStepManager.cs:1633`,
   `:1650-1658`), so the quote-vs-actual gap is measurable today without new instrumentation.
 
+### The `page.fullBleed` schema mirror is THREE strict copies, and the SDK one is pinned in this very repo
+- as-of: 2026-09-14
+- **Symptom + exact repro:** `globals.css:272-275` asserts "The mirror is also two declarations, not
+  three: the published schema is canonical and the Go CLI MIRRORS it." That retraction is false, and
+  it deleted a real schema-mirror follow-up. Repro: read the installed SDK's own vendored schema.
+- **Observed (with values):** measured from **this worktree's own `node_modules`** —
+  `node_modules/.pnpm/@civitai+app-sdk@0.14.0/node_modules/@civitai/app-sdk/schemas/app-block/v1.json`
+  exists; `@civitai/app-sdk@0.14.0` is the exact version this host pins (`package.json` → `^0.14.0`);
+  it is a **public export subpath** (`"./schemas/app-block/v1.json"` appears verbatim in that
+  package's `exports`); and its `page` node reads
+  `properties = ['path','title','icon','buzzBudgetPerGen']`, `additionalProperties = false`.
+  **No `fullBleed`.** So the third copy is not hypothetical and not remote — it is installed here.
+- **Ruled out:** *"only the Go CLI lags, so a CLI re-vendor is the whole follow-up"* — no: the SDK
+  copy is equally stale and equally strict, and being an export subpath it is reachable by any app
+  author's tooling. `via: measurement`
+- **Ruled out:** *"the SDK pin makes a new field untyped where the host reads it"* — still false, and
+  that half of the original argument stands: `block-manifest-validator.service.ts` has no
+  `@civitai/app-sdk` import and `src/components/AppBlocks/types.ts` declares the host's own
+  `BlockManifest`. The SDK type is not in the host's chain. `via: code`
+- **Leading hypothesis:** unchanged from the earlier block — the window opens at **release-cut, not
+  at merge to `main`**, because both mirrors' auto-revendor compares against the live canonical
+  served from `release`. What the measurement changes is the SIZE of the follow-up: it is three
+  copies to re-vendor, not two, and #4812 currently names neither.
+- **Next probe:** after a release cuts, re-read BOTH mirrors, not just the CLI:
+  `python3 -c "import json;print(list(json.load(open('<sdk>/schemas/app-block/v1.json'))['properties']['page']['properties']))"`
+  and the `gh api repos/civitai/cli/contents/...` one-liner already recorded above. Both must list
+  `fullBleed` before the docs may tell an author to declare it.
+
 ## Next steps (ranked)
 
-1. **Dispatch the fix round for #4812's round-1 findings.** F2/F3/F4 belong in the PR; F5–F8
-   are prose. One seam guard over the five mounter-side forwardings closes F2 and F3 together.
-   Files: `src/pages/apps/run/[slug]/[[...path]].tsx`, `src/pages/apps/dev/[blockId].tsx`,
-   `src/components/Apps/ReviewBlockPreviewHost.tsx`, `src/server/services/block-registry.service.ts`,
-   `docs/features/app-blocks.md`, `src/styles/globals.css`.
-   IN FLIGHT: nothing.
-   - forcing: gate — round 1 produced findings that must be fixed before the ladder can close,
-     and `main` has **no required status checks at all**, so the audit is the only gate.
-2. **Merge #72, then open the `release:` PR** bumping sensei `0.1.22 → 0.1.23` in
-   `package.json` **and** `block.manifest.json` together.
+1. **Re-audit the DELTA on #4812** — `b073d37d1b` plus whatever the F4–F8 round landed. An audit/review
+   fix RESETS the verification gate: every delta audit round on this effort so far has found something
+   the previous round's fix introduced. The ladder ends on the first round that finds NOTHING — that is
+   set by findings, never by a count, and a clean round must not be re-run to confirm it.
+   Files most likely in the delta: `src/components/AppBlocks/fullBleedMounterSeam.test.ts`,
+   `src/server/services/__tests__/block-registry.resolve-dev.test.ts`,
+   `src/components/Apps/ReviewBlockPreviewHost.browser.test.tsx`, `src/styles/globals.css`,
+   `docs/features/app-blocks.md`,
+   `src/server/services/blocks/__tests__/manifest-full-bleed.schema-drift.test.ts`.
+   IN FLIGHT: nothing (the F4–F8 FIX agent is separate from this AUDIT).
+   - forcing: gate — `civitai`'s `main` has no required status checks at all, so the audit is the
+     only gate, and the previous round's fix is itself unaudited.
+2. **Merge #72, then open the `release:` PR** bumping sensei `0.1.22 → 0.1.23` in `package.json`
+   **and** `block.manifest.json` together.
    - forcing: user — the operator asked for the five feedback items; they are audit-clean and
      unreleased until the version moves.
-3. **After #4812 merges: declare `page.fullBleed: true` in both ledger apps, then retire the
-   CSS ledger.** Both repos are ours (`ZacxDev/civitai-app-sensei`,
-   `ZacxDev/civitai-app-playable-collections`) and both manifests already carry a `page`
-   object, so each is a **one-line change**. The retirement set is enumerated by name in
+3. **After #4812 merges: declare `page.fullBleed: true` in both ledger apps, then retire the CSS
+   ledger.** Both repos are ours and both manifests already carry a `page` object, so each is a
+   one-line change. 🔴 **Blocked on the schema mirrors, not on the merge** — see the investigation
+   above: all three copies reject the key today, so an author (including us) cannot declare it until
+   a release cuts and the CLI *and* SDK re-vendor. The retirement set is enumerated by name in
    `src/styles/globals.css`'s `WHAT SHOULD HAPPEN TO THIS BLOCK` note.
-   - forcing: gate — the ledger's own stated retirement condition, and once an app declares the
-     flag the host omits `max-width` entirely, so the dead rule's death is **unobservable**:
-     two mechanisms, both green, one dead, indefinitely.
-4. **Drive one real submit on `deepseek/deepseek-v4-flash-0731`** in a mod-gated host and
-   reconcile `billed_usd` against `Charged`.
-   - forcing: gate — `chat-completion.step.ts`'s own convention is that every registered model
-     was driven to `succeeded` live; this is the first entry to break it, and it is now the
-     default arm every viewer lands on.
+   - forcing: gate — the ledger's own stated retirement condition, and once an app declares the flag
+     the host omits `max-width` entirely, so the dead rule's death is unobservable: two mechanisms,
+     both green, one dead, indefinitely.
+4. **Drive one real submit on `deepseek/deepseek-v4-flash-0731`** in a mod-gated host and reconcile
+   `billed_usd` against `Charged`.
+   - forcing: gate — `chat-completion.step.ts`'s own convention is that every registered model was
+     driven to `succeeded` live; this is the first entry to break it, and it is now the default arm
+     every viewer lands on.
 5. **Ask OpenRouter/Venice to expose `tools` on the Venice endpoint, or to list
    `venice-uncensored-1-2`.** Venice's own API already reports `uncensored: true` **and**
-   `supportsFunctionCalling: true` at 128k — it is simply not published to OpenRouter. This is
-   the only route to a **grounded** NSFW mode with no code on either side.
+   `supportsFunctionCalling: true` at 128k — it is simply not published to OpenRouter. This is the
+   only route to a **grounded** NSFW mode with no code on either side.
    - forcing: none
 6. **`taste.json`'s `reshoot` and `crop-rect-bottom-edge`** remain blocked on a sensei version
    > 0.1.12 being approved and live; #72's `data-testid="model-selector"` removal adds a third
@@ -148,27 +215,38 @@ as-of: 2026-09-13
    - forcing: none
 
 ## Defects (batched)
-- **#4812 F2** — replacing all five mounter-side forwardings with a literal `false` makes the
-  feature **inert on all three surfaces, including the moderator preview the PR calls the gate**,
-  and leaves 302 node files / 6,475 tests and 26/26 browser green. Required-ness catches an
-  *omitted* prop, never a *wrong* one.
-- **#4812 F3** — both dev-tunnel projections (`block-registry.service.ts:2020` owned,
-  `:2153` ephemeral) read the field with no test, unlike sibling `bootSkeleton` covered at
-  `block-registry.resolve-dev.test.ts:126-164`.
-- **#4812 F4** — `docs/features/app-blocks.md:489-491`'s "You can check it before you submit"
-  is **false for every app the migration targets**: the dev tunnel reads `ab.manifest`, written
-  only on approve, and falls through to the pending manifest only when the author owns no row.
-- **#4812 F5** — the retirement checklist omits `pageBlockHostMaxWidth.test.ts:618`, which goes
-  red on the same edit as the listed `:473`.
-- **#4812 F6** — the note says "~230 lines"; the block is `globals.css:152–468` = **317**.
-  `152+230=382` lands between the two entries — exactly the stopping place the same sentence
-  warns against.
-- **#4812 F7** — `globals.css:272-275` asserts the mirror is "two declarations, not three".
-  There are three; the retraction removed a real follow-up rather than a falsehood.
-- **#4812 F8** — `manifest-full-bleed.schema-drift.test.ts:322-338` is titled "the description
-  states the DEFAULT behaviour" but asserts only the substrings `omit it` and
-  `/full-page run host only/i`. A meaning-**inverting** reword with every numeric token intact
-  leaves it **11/11 green**.
+
+Round-1 findings on #4812. **F2 and F3 are FIXED** in `b073d37d1b` (F2 re-verified independently
+here on 1 of 14 mutants; F3 on the agent's report only). **F4–F8 were dispatched as one fix round
+and were still in flight when this doc was written** — re-check `git log` before treating any as done.
+
+- **#4812 F2** — FIXED. Replacing all five mounter-side forwardings with a literal `false` made the
+  feature inert on all three surfaces, including the moderator preview the PR calls the gate, and
+  left 302 node files / 6,475 tests and 26/26 browser green. Required-ness catches an *omitted* prop,
+  never a *wrong* one.
+- **#4812 F3** — FIXED. Both dev-tunnel projections (`block-registry.service.ts:2020` owned,
+  `:2154`/`:2183` ephemeral) read the field with no test, unlike sibling `bootSkeleton`.
+- **#4812 F4** — `docs/features/app-blocks.md:489-491`'s "You can check it before you submit" is
+  **false for every app the migration targets**: the dev tunnel reads `ab.manifest`, written only on
+  approve, and falls through to the pending manifest only when the author owns no row.
+- **#4812 F5** — the retirement checklist omits `pageBlockHostMaxWidth.test.ts:618` ("pins the content
+  wrapper's box model"), whose verbatim expected string carries the
+  `maxWidth: fullBleed ? 'none' : var(--app-page-max-width, …)` expression. 🔴 **Which retirement edit
+  turns it red is UNSETTLED** — the finding says the ledger edit (alongside the listed `:473`),
+  inspection suggests the cap-INLINING edit (alongside the listed `:506`). Those are different
+  sections of the checklist. Settle it by performing each edit and reading the red set, not by
+  reasoning.
+- **#4812 F6** — the note says "~230 lines"; **measured independently this session**: the block is
+  `globals.css:152` (the `FULL-BLEED CSS LEDGER` header) to `:468` (closing brace of the
+  `[data-app-page-frame][data-block-id='sensei']` rule) = **317**. `152+230=382` lands between the
+  `playable-collections` rule (`:381`) and the `sensei` rule (`:466`) — exactly the intermediate
+  terminator the same sentence warns a reader not to stop at.
+- **#4812 F7** — `globals.css:272-275` asserts the mirror is "two declarations, not three". There are
+  three; **confirmed with version-exact values this session** — see the Open investigations block.
+  The retraction removed a real follow-up rather than a falsehood.
+- **#4812 F8** — `manifest-full-bleed.schema-drift.test.ts:322-338` is titled "the description states
+  the DEFAULT behaviour" but asserts only the substrings `omit it` and `/full-page run host only/i`.
+  A meaning-**inverting** reword with every numeric token intact leaves it **11/11 green**.
 
 ## Gotchas / decisions / dead-ends
 
@@ -239,34 +317,75 @@ are token-gated and the harness simulates them; jsdom computes no geometry and n
 shipped bundle is built by the platform on `node:22-alpine` with an unpinned pnpm while every
 figure here is node 24.
 
+**Measured this session, and repo-wide rather than specific to this PR.**
+- 🔴 **`src/**/__tests__/**` is EXCLUDED from `civitai`'s `tsconfig.json`** — a planted type error in
+  a file there yields `OK — 0 type errors`, while the same error outside it fails with `TS2322`
+  (both halves measured). So **every guard living in a `__tests__` directory ships untypechecked**,
+  `block-registry.resolve-dev.test.ts` included. That is why the new seam guard was deliberately
+  placed at `src/components/AppBlocks/fullBleedMounterSeam.test.ts`, OUTSIDE `__tests__`. When a new
+  guard's correctness depends on its types, put it outside that directory or the typecheck is blind
+  to it.
+- A repo lint-rule guard (`featureFlagsMockCompleteness.test.ts`) rejected a wholesale
+  `FeatureFlagsProvider` mock that omitted `useOptionalFeatureFlags`; the fix is `vi.hoisted`. The
+  fix agent correctly re-ran its ENTIRE mutation matrix afterwards rather than trusting the earlier
+  run — an audit fix resets the gate.
+- `eslint` reports one **pre-existing** error in `ReviewBlockPreviewHost.browser.test.tsx`
+  (`local-rules/no-wholesale-module-mock` on the `~/utils/trpc` factory, ~line 135). Confirmed to
+  fire identically on the pre-change version of the file — not introduced by `b073d37d1b`.
+
+**Process decisions, with why.**
+- **The two fix rounds were SEQUENCED, not parallelised**, because both would have touched the same
+  checkout and two file-modifying agents in one working directory clobber each other. A worktree
+  isolates a directory, not a second agent pointed at that same directory.
+- **The dispatching session re-verified the subagent's work rather than shipping on its report** —
+  and states the scope of what it actually re-ran (1 of 14 mutants) instead of inheriting the
+  agent's "14/14" as its own claim.
+
 ## How to verify
 
-**sensei #72** — from a clean worktree at the PR head, validating the instrument first:
-```bash
-cd <worktree>                       # detached at 82e6c55, git status clean
-printf 'const p:number="x";\nexport default p;\n' > src/__p.ts
-./node_modules/.bin/tsc -p tsconfig.json --noEmit   # MUST be rc=2 and name src/__p.ts
-rm -f src/__p.ts
-./node_modules/.bin/tsc -p tsconfig.json --noEmit   # rc=0, zero output
-./node_modules/.bin/vitest run --project node       # 429
-./node_modules/.bin/vitest run --project dom        # 339
-./node_modules/.bin/vite build                     # index-B6c7mAV3.js 354,791 B
-```
-Both vitest projects must be read separately — a failure in one is invisible in the other.
-
-**civitai #4812** — the drift guard's negative control is the cheap proof it reads anything:
+**civitai #4812 — the new seam guard**, from the worktree, instrument validated first:
 ```bash
 W=/home/zach/workspace/civit/civitai-fullbleed-manifest
+# 1. instrument: a planted error MUST be caught (this file is outside `__tests__`)
+printf '\nconst __probe: number = "not a number";\nexport default __probe;\n' \
+  >> $W/src/components/AppBlocks/fullBleedMounterSeam.test.ts
+CI=true direnv exec $W pnpm -C $W run typecheck    # MUST be rc=2 and name TS2322
+git -C $W checkout -- src/components/AppBlocks/fullBleedMounterSeam.test.ts
+CI=true direnv exec $W pnpm -C $W run typecheck    # rc=0, "OK — 0 type errors"
+
+# 2. positive control: the tier really runs — MUST report 12 tests, never 0
+direnv exec $W ./node_modules/.bin/vitest run --project 'unit*' \
+  src/components/AppBlocks/fullBleedMounterSeam.test.ts
+
+# 3. the mutant the guard exists for: site 1 -> a literal, MUST go red
+#    (edit `fullBleed: page.fullBleed,` -> `fullBleed: false,` in
+#     src/pages/apps/run/[slug]/[[...path]].tsx, then re-run step 2)
+#    EXPECT: 2 failed | 10 passed — the structural pin AND the behavioural case.
+#    Restore with: git -C $W checkout -- 'src/pages/apps/run/[slug]/[[...path]].tsx'
+```
+🔴 Never pipe these through `tail`/`head` — `$?` becomes the pipe's status and has printed a
+reassuring `rc=0` over a real failure on this branch twice. Redirect each stream to its own file.
+
+Browser tier needs the nix chromium, never the `~/.cache/ms-playwright` one:
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/nix/store/wv98g96qwd1vcr5h9dbgpbfh2gvcy1qr-playwright-browsers/chromium-1228/chrome-linux64/chrome`
+**A zero test count means the tier never ran**, never that it passed.
+
+**CSS integrity after any `globals.css` edit** — a literal `*/` inside the ledger comment once
+terminated it early and spilled prose into live CSS:
+```bash
+python3 -c "t=open('$W/src/styles/globals.css').read(); print(t.count('/*'), t.count('*/'))"
+# must be equal (31 31 as of b073d37d1b)
+```
+
+**The drift guard's negative control** — the cheap proof it reads anything:
+```bash
 sed -i 's/~1905 CSS px/~1900 CSS px/' $W/public/schemas/app-block/v1.json
 direnv exec $W ./node_modules/.bin/vitest run --project 'unit*' \
   src/server/services/blocks/__tests__/manifest-full-bleed.schema-drift.test.ts
 # MUST be 1 failed | 10 passed
 git -C $W checkout -- public/schemas/app-block/v1.json
-# restored: the three guards give 3 files / 28 tests green
 ```
-CSS integrity after any `globals.css` edit — a literal `*/` inside the ledger comment once
-terminated it early and spilled prose into live CSS:
-```bash
-python3 -c "t=open('$W/src/styles/globals.css').read(); print(t.count('/*'), t.count('*/'))"
-# must be equal (31 31)
-```
+
+**sensei #72** — unchanged this session; the recorded matrix at `82e6c55` is typecheck rc=0 zero
+output · node **429** · dom **339** · build `index-B6c7mAV3.js` **354,791 B**. Both vitest projects
+must be read separately — a failure in one is invisible in the other.
