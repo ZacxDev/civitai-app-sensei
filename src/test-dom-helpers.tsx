@@ -33,11 +33,14 @@ export function deleteSessionRow(sessionId: string): void {
   fireEvent.click(screen.getByTestId(`delete-session-${sessionId}`));
 }
 
-/** Open the row's ⋮ menu and press Rename. */
-export function renameSessionRow(sessionId: string): void {
-  openSessionRowMenu(sessionId);
-  fireEvent.click(screen.getByTestId(`rename-session-${sessionId}`));
-}
+/*
+ * 🔴 THERE IS NO `renameSessionRow`, AND THAT IS DELIBERATE. One was written
+ * alongside `deleteSessionRow` and had ZERO call sites — a helper added for
+ * symmetry rather than for a caller, which is the same "reads as used and is
+ * not" shape as an unpassed prop. Add it back WITH the test that needs it; the
+ * two lines it saves are `openSessionRowMenu(id)` then a click on
+ * `rename-session-<id>`.
+ */
 
 /**
  * Delete the FIRST session row on screen, whatever its id.

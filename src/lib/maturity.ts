@@ -25,6 +25,32 @@ import { NSFW_MODEL_ID, SFW_MODEL_ID } from './models.js';
  * sending a flag. So a toggle shown past this gate would buy a reply the host
  * refuses to release — charged, with nothing to show — which is why the clamp
  * below exists as well as the hidden control.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHERE THIS IS TESTED, AND WHY EVERY MOCK IN THE SUITE SAYS `false`
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * All 22 test files that mock `@civitai/blocks-react` stub the hook as
+ * `useDomainMaturity: () => ({ isSfw: true, isLevelAllowed: () => false })`.
+ * That is fail-closed SFW: what a green/blue-domain viewer really gets, and also
+ * what the hook returns before `BLOCK_INIT` lands. So every case in those files
+ * runs with NSFW mode hidden and the SFW arm on the wire — the production
+ * default. 🔴 DO NOT READ THAT LITERAL AS THE CONTRACT. It is a fixture value,
+ * and the two places that actually exercise the policy are:
+ *
+ *   • `lib/maturity.test.ts` — the policy math, resolved through the SDK's own
+ *     `effectiveBrowsingCeiling`/`isLevelAllowed` rather than through a stub, so
+ *     a mutant that swaps the ceiling for the `domain` string dies there.
+ *   • `components/SettingsBar.test.tsx` — the component gate, including the
+ *     discriminating red-domain-but-viewer-opted-out case and the positive
+ *     control that stops "hidden" being satisfied by a toggle that never
+ *     renders at all.
+ *
+ * This paragraph is here ONCE on purpose. It was previously pasted verbatim into
+ * all 22 files — ~154 lines restating one fact, which is the "one rule, one
+ * place" failure applied to prose: 22 copies drift, and a reader who finds one
+ * has no way to know it is a copy. The mock LINE has to be in each factory; the
+ * explanation does not, and each site now carries a two-line pointer here.
  */
 
 /*
