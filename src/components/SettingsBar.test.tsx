@@ -168,13 +168,31 @@ describe('🔴 SettingsBar — the NSFW-mode toggle', () => {
     // is the whole point.
     //
     // 🔴 THE WHOLE NORMALISED STRING, NOT FIVE WORDS. This assertion used to be
-    // five `toMatch` regexes (`/uncensored/i`, `/stripped/i`, `/cost Buzz/i`, …).
+    // five `toMatch` regexes, and all five are named because an abbreviated list
+    // is what let the mutant below get miscopied: `/uncensored/i`,
+    // `/can’t look anything up/i`, `/own knowledge/i`, `/stripped/i`,
+    // `/cost Buzz/i`.
+    //
     // When the artifact under test is PROSE, a guard on WORDS is walkable by
     // REWORDING: a rewrite that keeps all five tokens while losing or INVERTING
-    // the meaning passed it. "Uncensored answers with no catalog limits: this
-    // model can’t look anything up, so nothing is stripped and replies cost Buzz
-    // only when grounded." carries every token and discloses the opposite. On a
-    // surface whose only mitigation IS the copy, that is not a nit.
+    // the meaning passed it. THE MUTANT, VERBATIM AS `30003ce` MEASURED IT —
+    // do not paraphrase it, and do not drop a clause:
+    //
+    //   "Uncensored answers with no catalog limits: this model can’t look
+    //    anything up on its own knowledge, so nothing is stripped, and replies
+    //    cost Buzz only when grounded either way."
+    //
+    // It carries every one of the five tokens and discloses the OPPOSITE of all
+    // three facts. On a surface whose only mitigation IS the copy, that is not a
+    // nit.
+    //
+    // ⚠️ AND THE COPY OF IT THAT USED TO STAND HERE ARGUED AGAINST THIS PIN.
+    // It was missing "on its own knowledge" (and "either way"), and measured
+    // against the five old regexes that shortened version is KILLED by
+    // `/own knowledge/i` — so a maintainer re-deriving the mutation from this
+    // comment would have concluded the old word-guard was adequate and that this
+    // assertion was not worth its cost. The full sentence above survives all
+    // five, which is the claim that justifies the pin.
     //
     // ⚠️ THE PRICE, ACCEPTED DELIBERATELY: a purely cosmetic reword now fails
     // this test. That is the trade — a machine-readable claim about a spend path
