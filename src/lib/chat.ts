@@ -49,9 +49,32 @@ export function failureBody(reason: string): string {
  * Measured: no `dangerouslySetInnerHTML` anywhere in `src/` (the parser emits a
  * React node tree), and `linkHref` allowlists every href to an https civitai
  * host with no userinfo — so server text cannot inject markup. What it CAN do is
- * render AS markdown: underscores in a Prisma/`pg` constraint name emphasise, a
- * leading `1. ` becomes a list item, backticks swallow a fragment. A mangled
- * diagnostic is a diagnostic you cannot paste into an issue.
+ * render AS markdown, and a mangled diagnostic is a diagnostic you cannot paste
+ * into an issue.
+ *
+ * ⚠️ TWO OF THE THREE EXAMPLES THAT USED TO BE ON THIS LINE WERE FALSE, and they
+ * were the SECOND copy of a falsehood `taste.json` had already been corrected
+ * for — `MessageBubble.test.tsx`'s fixture header names `taste.json` as the
+ * source and nobody noticed this header said the same thing. Re-measured against
+ * `parseMarkdown` at HEAD, one input each:
+ *
+ *   "Error: … unique constraint \"sessions_pkey\""  ⇒ ONE text span. FALSE that
+ *       underscores emphasise: the grammar has kinds `text | bold | code | link`
+ *       and para/ul/ol — there is no `_` rule and no `em` node exists to emit.
+ *   `failureBody('1. retry the request')`           ⇒ ONE text span. FALSE for an
+ *       app-authored body: this module's own `FAILURE_BODY_PREFIX` puts `Error: `
+ *       in front, so the `1. ` is not line-initial and the `<ol>` rule cannot
+ *       fire. It IS a list when the same string has no prefix — which the app
+ *       never writes.
+ *   `failureBody('column \`maxBrowsingLevel\` …')`  ⇒ a `code` span. TRUE; this
+ *       one survives.
+ *
+ * WHAT ACTUALLY MANGLES an app-authored body is a `**…**` pair anywhere (⇒ a
+ * `bold` span) and a list leader on a SECOND line (⇒ a separate `ol` block) —
+ * and server diagnostics are frequently multi-line, a reason plus a remediation
+ * step, which is exactly that shape. `MessageBubble.test.tsx`'s `MANGLEABLE`
+ * fixture is built from those and carries a reachability control; read it rather
+ * than re-deriving this list.
  *
  * 🔴 ROLE-SCOPED ON PURPOSE. Only an `'assistant'` row can carry an app-authored
  * failure body, so a VIEWER who types "Error: foo" into the composer keeps

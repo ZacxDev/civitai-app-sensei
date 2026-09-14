@@ -204,9 +204,13 @@ describe('🔴 MessageBubble — error text is NOT rendered as markdown', () => 
    * A realistic server diagnostic, not a textbook fixture — the constructs are
    * the ones THIS renderer implements.
    *
-   * ⚠️ CORRECTED AGAINST THE PARSER, and the correction matters because the
-   * `taste.json` entry this closes gets it wrong: it says "underscores in a
-   * Prisma/`pg` constraint name emphasise". They do NOT. `lib/markdown.ts`
+   * ⚠️ CORRECTED AGAINST THE PARSER. The claim being corrected — "underscores in
+   * a Prisma/`pg` constraint name emphasise" — reached TWO durable places, which
+   * is why this header is the canonical statement: `taste.json`'s entry (since
+   * trimmed, the false text deleted rather than kept beside its correction) and
+   * `lib/chat.ts`'s own `isPlainBody` header, which asserted it for another whole
+   * round because the first correction only looked at the ledger. They do NOT
+   * emphasise. `lib/markdown.ts`
    * implements bold, links, and ordered/unordered lists — there is no `_`
    * emphasis rule and the parser emits no `<em>` at all, so `sessions_pkey`
    * survives either way. What DOES transform a body like this is a `**…**` pair
