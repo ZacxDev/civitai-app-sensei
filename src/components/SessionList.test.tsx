@@ -415,6 +415,62 @@ describe('🔴 SessionList — the ⋮ panel can be DISMISSED, and gives focus b
     expect(document.activeElement).toBe(screen.getByTestId('new-session-button'));
   });
 
+  it('🔴 THE PANEL DOES NOT SWALLOW ESCAPE FROM THE REST OF THE PAGE', () => {
+    // ─────────────────────────────────────────────────────────────────────────
+    // 🔴 THE CLOSER IS ON `document` IN THE **CAPTURE** PHASE, so it is the first
+    // thing in the page to see the press. It used to call `e.stopPropagation()`,
+    // which meant nothing below `document` ever got the event while this panel
+    // was open. That is not a local decision: the installed pack ships two
+    // Escape handlers that live exactly there —
+    // `@civitai/blocks-react/dist/ui/Modal.js:48-61` (bubble-phase `document`
+    // keydown, the modal `SettingsModal.tsx:45` renders) and
+    // `dist/internal/pickerOverlay.js:556-560` (the resource picker, bound on the
+    // overlay root) — and `Modal.js:53` says so in the pack's own words: "Don't
+    // stopPropagation — that swallows Escape unpredictably when two modals (or an
+    // author's own document Escape handler) are present."
+    //
+    // The probe is the shape the pack uses: a bubble-phase `document` keydown
+    // handler. Measured at `1210d628` (with the `stopPropagation`): called 1×
+    // with the panel shut, **0×** with it open, 1× again after it closed. The
+    // open-panel count is the killing assertion below.
+    //
+    // 🔴 THE SHUT COUNTS ARE THE POSITIVE CONTROL, not padding. Without them a
+    // probe that was never wired up — wrong event name, wrong phase, a listener
+    // torn down by a previous test — would report 0 while the panel is open and
+    // read as a PASS once the fix inverted the expectation.
+    // ─────────────────────────────────────────────────────────────────────────
+    const belowDocument = vi.fn();
+    // Bubble phase, i.e. strictly after the component's capture-phase listener
+    // in the propagation order — exactly where `Modal.js` puts its own.
+    document.addEventListener('keydown', belowDocument);
+    try {
+      renderBeside();
+
+      // Control: with nothing open, the page's own Escape handling works.
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+      expect(belowDocument).toHaveBeenCalledTimes(1);
+
+      // The state under test. `fireEvent.click` moves no focus, so this
+      // reproduces the reachable shape: the panel open with focus still outside
+      // the row (Safari/macOS and Firefox/macOS do not focus a `<button>` on
+      // click, so mouse-opening the ⋮ leaves focus in the composer).
+      fireEvent.click(screen.getByTestId(`session-menu-${ID}`));
+      expect(screen.getByTestId(`session-menu-panel-${ID}`)).toBeInTheDocument();
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+      expect(belowDocument).toHaveBeenCalledTimes(2);
+
+      // …and the panel still closes on that same press. The fix must not buy a
+      // reachable Escape by giving up the dismissal this describe exists for.
+      expect(screen.queryByTestId(`session-menu-panel-${ID}`)).toBeNull();
+
+      // Control: back to the closed state, the count still moves.
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+      expect(belowDocument).toHaveBeenCalledTimes(3);
+    } finally {
+      document.removeEventListener('keydown', belowDocument);
+    }
+  });
+
   it('the document listeners are removed when the panel closes', () => {
     // A listener left behind would close a REOPENED panel on the first outside
     // pointerdown of a row that is no longer the open one — and, 15 rows deep,

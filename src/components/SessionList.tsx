@@ -299,7 +299,9 @@ export function SessionList({
  *     was underneath.
  *   • a document `keydown` for Escape — CAPTURE phase on `document`, so it fires
  *     wherever focus is, including `<body>`. The old handler was on the container
- *     and could only ever see a key pressed inside it.
+ *     and could only ever see a key pressed inside it. It does NOT consume the
+ *     press; the handler says why, and names the two pack handlers that were
+ *     being swallowed while it did.
  *   • `onBlur` on the container (React's name for `focusout`, which bubbles) —
  *     the keyboard half of the outside click: tabbing past Delete leaves the
  *     container, and a panel the viewer has tabbed out of is one they are done
@@ -368,10 +370,45 @@ function SessionRowMenu({
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      // Consumed, exactly as the old container handler consumed it: the panel is
-      // the innermost dismissible thing on screen while it is open, so nothing
-      // else should also act on this press.
-      e.stopPropagation();
+      // ─────────────────────────────────────────────────────────────────────
+      // 🔴 THE PRESS IS **NOT** CONSUMED — NO `stopPropagation()` — AND THAT IS
+      // A CORRECTION OF THE CLAIM THAT USED TO STAND HERE.
+      //
+      // The old container handler consumed the press, and that was carried over
+      // to this listener on the ground that it "was the only Escape handler in
+      // `src/`". That survey was true of `src/` and FALSE OF THE PAGE, which is
+      // the scope that decides the behaviour: this listener is on `document` in
+      // the CAPTURE phase, so it is the first thing to see the event, and
+      // consuming it means nothing below `document` ever gets it. The installed
+      // pack ships two Escape handlers that live exactly there:
+      //
+      //   • `@civitai/blocks-react@0.49.0/dist/ui/Modal.js:48-61` — a
+      //     bubble-phase `document` keydown, which is what closes the modal
+      //     `SettingsModal.tsx:45` renders.
+      //   • `@civitai/blocks-react@0.49.0/dist/internal/pickerOverlay.js:556-560`
+      //     — the resource picker's Escape-dismiss, bound on the overlay root,
+      //     which is below `document` too.
+      //
+      // Measured with a bubble-phase `document` keydown handler as the probe:
+      // called 1× with this panel shut, 0× with it open, 1× again once it
+      // closed. `Modal.js:53` states the rule this now follows, in the pack's
+      // own words: "Don't stopPropagation — that swallows Escape unpredictably
+      // when two modals (or an author's own document Escape handler) are
+      // present."
+      //
+      // 🔴 AND IT IS REACHABLE, BROWSER-SPECIFICALLY. In Chrome the three
+      // closers prevent the overlap: clicking the ⋮ focuses it, so a later
+      // tab-out fires the container's `onBlur`. In Safari/macOS and
+      // Firefox/macOS a `<button>` is NOT focused by a click, so mouse-opening
+      // the ⋮ leaves focus in the composer — the container's `onBlur` can never
+      // fire because focus was never inside it, and no outside `pointerdown` has
+      // landed either. Tab to the settings gear or "+ Model", press Enter, and
+      // the panel is still open beneath the modal or picker; one Escape closed
+      // only this panel and the thing on top needed a second press.
+      //
+      // Nothing in `src/` relies on the event being consumed — the two
+      // handlers above are the whole population, and both want it.
+      // ─────────────────────────────────────────────────────────────────────
       close(true);
     };
 
