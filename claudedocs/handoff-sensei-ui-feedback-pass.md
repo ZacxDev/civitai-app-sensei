@@ -18,66 +18,71 @@ platform changes that feedback turned out to require.
 
 ## State now
 
-**sensei** — `trunk` @ `457ea86`, clean. **PR #72** `zach/ui-feedback-pass` @ **`82e6c55`**,
-`MERGEABLE`/`CLEAN`. The five-item feedback pass: app-owned SVG `IconButton`, bubble alignment at
-`min(68ch, 92%)`, native `ResourceCard variant="row"`, an NSFW-mode toggle replacing the model
-selector, and a `⋮` session-row menu carrying the chat id. **Audit ladder CLOSED** after round 0 →
-round 1 → round 2 plus three fix rounds; **closure recorded as a PR comment with six OPEN items and
-their closing conditions** — that comment is the record, not this doc. Unchanged this session;
-version deliberately still `0.1.22` in both `package.json` and `block.manifest.json`, so a
-`release:` PR is owed after #72 merges. Recorded matrix at `82e6c55`: typecheck rc=0 zero output ·
-node **429** · dom **339** · build `index-B6c7mAV3.js` **354,791 B**.
+**sensei** — `trunk` @ `044493b`, clean. **PR #72** `zach/ui-feedback-pass` @ **`82e6c55`**, `MERGEABLE`.
+The five-item feedback pass: app-owned SVG `IconButton`, bubble alignment at `min(68ch, 92%)`, native
+`ResourceCard variant="row"`, an NSFW-mode toggle replacing the model selector, and a `⋮` session-row
+menu carrying the chat id. **Audit ladder CLOSED** after round 0 → round 1 → round 2 plus **three**
+fix rounds; closure recorded as a PR comment with six OPEN items and their closing conditions — that
+comment is the record, not this doc. Untouched this session. Version deliberately still `0.1.22` in both `package.json` and `block.manifest.json`, so a
+`release:` PR is owed after #72 merges. Matrix at `82e6c55`: typecheck rc=0 · node **429** · dom
+**339** · build `index-B6c7mAV3.js` **354,791 B**.
 
-**civitai PR #4812** `zach/app-block-full-bleed-manifest` @ **`849b9abc76`**, `MERGEABLE`, OPEN.
-🔴 **The ENTIRE round-1 fix round (F2–F8) is now LANDED** — seven commits on top of `cb8233f52c`:
+**civitai PR #4812** @ **`89b9dc5d9b`**, OPEN. 🔴 **THE AUDIT LADDER IS CLOSED.** Rounds 0, 1 and 2
+plus two fix rounds; twelve commits on `cb8233f52c`.
 
-| commit | finding |
-|---|---|
-| `b073d37d1b` | F2 + F3 — the mounter seam guard and the two dev-tunnel resolver tests |
-| `f5473054da` | F6 — the ledger's "~230 lines" |
-| `c5c35e1883` | F5 — the two cap-inlining casualties filed in the list they go red in |
-| `11af474ffb` | F7 — un-retract the mirror count |
-| `b838bab8c1` | F4 — the dev tunnel reads the APPROVED manifest |
-| `a1d4b067a9` | F8 — pin the published description WHOLE |
-| `849b9abc76` | scope correction to `c5c35e1883`'s own comment |
+| round | fixes | outcome |
+|---|---|---|
+| 0 + 1 | `b073d37d1b` (F2/F3 seam guard), `f5473054da` `c5c35e1883` `11af474ffb` `b838bab8c1` `a1d4b067a9` `849b9abc76` (F4–F8 prose) | 8 findings, all fixed |
+| 2 | `8ac58d2831` `2208f0c37b` `0fd7af726a` `e0426e5d59` `89b9dc5d9b` | 2 🟡 + 3 🟢, all false/misleading PROSE, all fixed |
 
-**What the dispatching session re-verified directly** (as opposed to reading in an agent's report) —
-an audit fix resets the gate, and a subagent's self-reported mutation matrix is the exact claim that
-gets asserted without being run:
-- **F2** — typecheck instrument validated (planted `TS2322` at the seam file, caught; restored rc=0),
-  12-test positive control, and mutant site 1 (`fullBleed: page.fullBleed` → `false`) → **2 failed |
-  10 passed**, killed by BOTH its own assertions. **1 of 14 mutants re-run here**; the other 13 rest
-  on the agent's report.
-- **F8** — the mandatory mutation, re-run independently and constructed fresh: inverted
-  `OUT of` → `INTO` and inverted the default sentence, with an assertion in the mutating script that
-  **both old substrings (`omit it`, `full-page run host only`) and the entire numeric multiset
-  survive**. Result **1 failed | 10 passed**, killed by the new whole-string pin; restored → **11/11**.
-  That is the decisive control: the mutant is precisely the one the old substring guard passed.
-- **F5** — confirmed only that the entries landed in the **cap-inlining** section (`globals.css:246`
-  and `:252`), with an explicit in-file note that an earlier checklist version filed it under the
-  ledger step. The **red-set measurement itself was not re-run here.**
-- tree clean at `849b9abc76`; CSS comment balance **31 31**.
+🔴 **The ladder stopped on the ATTRIBUTION GATE, not on a clean round — and that distinction is the
+whole point.** Round 2 returned real findings; so would a round 3. But two consecutive fix rounds
+changed **zero payload lines**, which is the documented signal that the ladder has left the PR and is
+auditing prose the ladder itself wrote. Measured, not asserted: `src/styles/globals.css`,
+`src/shared/constants/block-effective-scopes.ts` and `src/components/AppBlocks/fullBleedMounterSeam.test.ts`
+are **code-identical** between `849b9abc76` and `89b9dc5d9b` once comments are stripped. Round 1's
+round was likewise zero-payload (the auditor proved `globals.css` comment-only by a byte-identical
+comment-stripped comparison at both ends).
 
-🔴 **The recorded F5 attribution in this doc was WRONG and is now corrected by measurement.** It said
-`pageBlockHostMaxWidth.test.ts:618` goes red on the same edit as the listed `:473` (the ledger
-retirement). Measured by performing each edit, running, and reverting — baseline 10 files / 152
-tests: deleting the ledger reds **5** tests and `:618` stays **GREEN**; inlining the cap reds **4**,
-`:618` among them. So it belongs to the cap-inlining step. The same measurement found a **second**
-unlisted casualty, `:542` ('the cap sits on `app-page-content`…'), added with a RE-POINT-don't-delete
-note because its containment claim survives the inlining.
+Both rounds' claims blocks are posted on the PR as ISSUE comments (review comments are invisible to
+`audit-dispatch.py`), so a round 3 would anchor correctly at `849b9abc76..89b9dc5d9b` if anyone
+reopens it. **Nobody should, on findings alone** — the gate is what ends this, and re-running it
+would re-enter the loop it exists to break.
 
-**Scope widened beyond the five findings, flagged for a decision:** `b838bab8c1` also adds a tooling
-caveat next to the "declare it in your manifest" snippet in `docs/features/app-blocks.md`, on the
-grounds that F7 establishes an author following that snippet is refused by the CLI before any network
-call. It carries its own staleness test ("if `civitai app validate` exits 0 for you, delete this
-note"). **Nobody asked for it** — keep or drop is an open call.
+**What round 2 actually caught, since it justifies the two fix rounds:**
+- `globals.css` claimed the browser tier "inject[s] the rule they render and so [is] not evidence
+  about this file's contents" — **false for one of its two ledger cases**. `LEDGER — every member is
+  full-bleed at 2560x1080` reads `globals.css?raw` and parses the real rules, with its own positive
+  control. Deleting the ledger reds it (12 passed → 1 failed/11 passed, measured twice). The reader
+  consequence was concrete: an engineer performing the retirement trusts that sentence, runs the node
+  tier only, sees the promised 5 red, fixes them, and pushes a red browser tier — and `main` has no
+  required checks to catch it.
+- `docs/features/app-blocks.md` claimed `AppBlock.manifest` is "written in exactly one place". There
+  are **two** writers; the second is the `JOB_TOKEN`-gated `POST /api/v1/developer/block-manifests`.
+  The repo already documents that endpoint as a writer in three places **and carries a retraction of
+  this exact class of claim about this exact endpoint** — the same mistake, made twice.
+- The seam header's "302 node files / 6,475 tests AND 26/26 browser" was a ~17% slice stated as a
+  tier. The substance held HARDER than claimed: at full tier scope the five-site mutation leaves
+  1786 files / 40,666 tests green (baseline 1787/40,678), only pre-existing load-flaky
+  `eventloop-watchdog.capture.test.ts` red. The **browser half was retired rather than restated**,
+  because `b073d37d1b` itself added a case closing site 5, which makes "26/26" unreproducible.
 
-**civitai base clone** `/home/zach/workspace/civit/civitai` is `main` @ `4daf83e288`, **behind 1**.
-Left alone deliberately: #4812 has not merged, so the re-sync is not due yet.
+**Merged-tree, re-checked because the base MOVED** (the clone fell 13 behind during an API outage, so
+the round-2 auditor's "merges cleanly" was measured against a possibly-stale base):
+`git merge-tree --write-tree origin/main 849b9abc76` → **rc=0** against the current tip
+`a7b6e324d2`, and the PR's full 41-file set is **disjoint** from the 59 files those 13 commits
+touched. Disjointness is not safety on its own — one side can widen a function's inputs while the
+other adds a caller — but with the exit code it is reasonable. `gh` still reports
+`mergeable: UNKNOWN` (not yet computed), and `gh` is the only authority on that.
 
-**The worktree at `/home/zach/workspace/civit/civitai-fullbleed-manifest` is still deliberately in
-place** with `node_modules` and a generated Prisma client intact. Remove it with
-`git -C $CIVITAI worktree remove` when #4812 closes.
+**Open decision for the operator, twice flagged and not yet answered:** `b838bab8c1` (amended by
+`e0426e5d59`) adds a tooling caveat beside the "declare it in your manifest" snippet that **nobody
+asked for**, on the grounds that all three schema mirrors reject the field so `civitai app submit`
+refuses before any network call. It carries its own staleness test. Keep or drop.
+
+**civitai base clone** `/home/zach/workspace/civit/civitai` — `main`, fetched to `a7b6e324d2`.
+**The worktree** at `/home/zach/workspace/civit/civitai-fullbleed-manifest` is still deliberately in
+place; remove it with `git -C $CIVITAI worktree remove` when #4812 closes.
 
 ## Open investigations — live diagnosis state
 
@@ -169,72 +174,50 @@ as-of: 2026-09-13
 
 ## Next steps (ranked)
 
-1. **Re-audit the DELTA on #4812** — the seven commits `b073d37d1b..849b9abc76`. An audit/review fix
-   RESETS the verification gate: every delta audit round on this effort so far has found something
-   the previous round's fix introduced, and this delta is a whole fix round that has never been
-   audited. The ladder ends on the first round that finds NOTHING — set by findings, never by a
-   count, and a clean round must not be re-run to confirm it.
-   Files in the delta: `src/components/AppBlocks/fullBleedMounterSeam.test.ts`,
-   `src/server/services/__tests__/block-registry.resolve-dev.test.ts`,
-   `src/components/Apps/ReviewBlockPreviewHost.browser.test.tsx`, `src/styles/globals.css`,
-   `docs/features/app-blocks.md`,
-   `src/server/services/blocks/__tests__/manifest-full-bleed.schema-drift.test.ts`.
-   Two specific things to put in front of the auditor: the **unasked-for docs addition** in
-   `b838bab8c1` (above), and the fact that **neither the full node tier nor the full browser tier was
-   run** — only the files the edits reach.
+1. **Merge #4812, then #72, then open the sensei `release:` PR** bumping `0.1.22 → 0.1.23` in
+   `package.json` **and** `block.manifest.json` together. #4812's ladder is closed and its remaining
+   items are filed; #72's ladder closed earlier. Both are the operator's merge call.
    IN FLIGHT: nothing.
-   - forcing: gate — `civitai`'s `main` has no required status checks at all, so the audit is the
-     only gate, and a whole unaudited fix round now sits on the PR.
-2. **Merge #72, then open the `release:` PR** bumping sensei `0.1.22 → 0.1.23` in `package.json`
-   **and** `block.manifest.json` together.
-   - forcing: user — the operator asked for the five feedback items; they are audit-clean and
-     unreleased until the version moves.
-3. **After #4812 merges: declare `page.fullBleed: true` in both ledger apps, then retire the CSS
+   - forcing: user — the operator asked for the five feedback items and for the full-bleed migration;
+     both are complete, audited and unreleased until the versions move.
+2. **After #4812 merges: declare `page.fullBleed: true` in both ledger apps, then retire the CSS
    ledger.** Each is a one-line manifest change. 🔴 **Blocked on the schema mirrors, not on the
    merge** — all three copies reject the key today, so the normal `civitai app submit` path refuses
-   before any network call. Measured nuance: `--skip-validate` bypasses the CLI and the **server
-   validator already accepts the field**, so "cannot declare" is scoped to the normal path.
-   - forcing: gate — the ledger's own stated retirement condition, and once an app declares the flag
+   before any network call; `--skip-validate` is the only route until a release cuts and the CLI and
+   SDK re-vendor. When you do it, read `globals.css`'s retirement checklist: it now names the red set
+   for BOTH the ledger step (5 tests) and the cap-inlining step (4 tests), measured.
+   - forcing: gate — the ledger's own stated retirement condition; and once an app declares the flag
      the host omits `max-width` entirely, so the dead rule's death is unobservable.
-4. **Drive one real submit on `deepseek/deepseek-v4-flash-0731`** in a mod-gated host and reconcile
+3. **Drive one real submit on `deepseek/deepseek-v4-flash-0731`** in a mod-gated host and reconcile
    `billed_usd` against `Charged`.
-   - forcing: gate — `chat-completion.step.ts`'s own convention is that every registered model was
-     driven to `succeeded` live; this is the first entry to break it, and it is now the default arm
-     every viewer lands on.
-5. **Ask OpenRouter/Venice to expose `tools` on the Venice endpoint, or to list
+   - forcing: gate — `chat-completion.step.ts`'s convention is that every registered model was driven
+     to `succeeded` live; this is the first entry to break it, and it is the default arm every viewer
+     lands on.
+4. **Ask OpenRouter/Venice to expose `tools` on the Venice endpoint, or to list
    `venice-uncensored-1-2`.** Venice's own API already reports `uncensored: true` **and**
    `supportsFunctionCalling: true` at 128k — it is simply not published to OpenRouter. The only route
    to a **grounded** NSFW mode with no code on either side.
    - forcing: none
-6. **`taste.json`'s `reshoot` and `crop-rect-bottom-edge`** remain blocked on a sensei version
+5. **`taste.json`'s `reshoot` and `crop-rect-bottom-edge`** remain blocked on a sensei version
    > 0.1.12 being approved and live; #72's `data-testid="model-selector"` removal adds a third
    consequence.
    - forcing: none
 
 ## Defects (batched)
 
-**All eight round-1 findings on #4812 are FIXED** (`b073d37d1b..849b9abc76`). The delta itself is
-unaudited — that is rank 1. Kept here because the *lesson* in each outlives the fix:
+**All thirteen findings across rounds 0–2 on #4812 are FIXED** (`cb8233f52c..89b9dc5d9b`). The
+lessons outlive the fixes, so the two that generalise are kept above in State now. What is NOT fixed,
+filed here rather than as a rank:
 
-- **F2** — FIXED `b073d37d1b`, re-verified here on 1 of 14 mutants. A `REQUIRED` prop catches an
-  OMITTED prop, never a WRONG one: all five mounter-side forwardings could be replaced by a literal
-  `false`, making the feature inert on all three surfaces including the moderator preview, with
-  6,475 node tests and 26/26 browser tests green.
-- **F3** — FIXED `b073d37d1b` (agent-reported). Both dev-tunnel projections were untested.
-- **F4** — FIXED `b838bab8c1`. "You can check it before you submit" was false for every app the
-  migration targets. `ab.manifest` is written in exactly one place — `approveRequest` in
-  `publish-request.service.ts` — so the tunnel serves the **last approved** manifest; the pending
-  manifest is read only on the ephemeral fallback, reached when the author owns no `app_blocks` row.
-- **F5** — FIXED `c5c35e1883` + `849b9abc76`. Attribution corrected by measurement (see State now);
-  a second unlisted casualty `:542` found in the same pass.
-- **F6** — FIXED `f5473054da`. The count was removed rather than corrected: the named boundaries
-  already carry the instruction and cannot rot silently, which a line number does.
-- **F7** — FIXED `11af474ffb`. Three copies, confirmed live: canonical (has `fullBleed`), `civitai/cli`
-  (no), `@civitai/app-sdk@0.14.0` (no). CLI `0.1.101`: with the key → rc **1**
-  `page: additional properties 'fullBleed' not allowed`; without → rc **0** (positive control).
-- **F8** — FIXED `a1d4b067a9`, re-verified independently here. The substring guard passed a
-  meaning-inverting reword 11/11; the whole-string pin kills it. A whitespace-only reflow still
-  passes, which proves the normalisation is real rather than decorative.
+- 🔴 **Six stale line-number cross-references, all PRE-EXISTING on `main` and untouched by this PR** —
+  `docs/features/app-blocks.md:678,680,698,757` (four `block-registry.service.ts` citations), and two
+  in `src/shared/constants/block-effective-scopes.ts` pointing at `blocks.router.ts:2787-2789` and
+  `scope-grant.service.ts:222-224`. Verified pre-existing via `git show origin/main:…` and an empty
+  `diff --stat origin/main...HEAD` for those paths. **Closing condition:** a PR correcting the six
+  merges, or a maintainer dismisses them in writing on #4812's thread (posted there as the remainder).
+- The three citations this PR's payload DID break were fixed by **de-lining** them to symbol/branch
+  references rather than renumbering — the same lesson F6 produced. One exact citation was left as
+  the control proving a citation audit here can still return "accurate".
 
 ## Gotchas / decisions / dead-ends
 
@@ -359,6 +342,36 @@ something that reads like a normal failure".**
   `c5c35e1883` said "nothing else in the node tier moves" on the strength of a 10-file / 152-test
   run. The comment now states its denominator and what it structurally could not see. Worth copying:
   a measurement's SCOPE belongs in the sentence that quotes it.
+
+**Measured this session — a rule I had already read, and hit anyway.**
+- 🔴 **A `count=1` replace used as a POSITIVE CONTROL silently mutated the wrong occurrence, and the
+  control then reported PASS-shaped garbage.** Checking whether round 2's edits were comment-only, the
+  control mutated `--app-page-max-width: none;` — which occurs **3× raw, 2× after comment-stripping**.
+  `.replace(..., 1)` hit the first, which is INSIDE the ledger comment, so the stripper deleted the
+  mutation and the control returned "no difference detected" — i.e. it claimed the instrument was
+  blind when the instrument was fine. **The tell was that the control returned the value it MUST NOT
+  return**; had it been written to "expect no difference" the run would have looked clean. Fix:
+  count occurrences before mutating, mutate one that provably survives the transform under test, and
+  run the control in the SAME invocation as the measurement. This is `claude/RULES.md`'s
+  count=1-replace hazard and its positive-control rule landing together.
+- 🔴 **An agent that dies on an API limit may have done far MORE than its result field shows.** A
+  terminated audit reported only `"I'll start by reading the brief in full."` — but disk held a
+  populated worktree at the right sha, its `refs/audit/` ref, and ~20 artefacts including two FULL
+  node-tier runs. Resuming it recovered all of that. **Check the artefacts before concluding a failed
+  agent did nothing**, and resume rather than restart.
+
+**Process decisions, with why.**
+- **The ladder was stopped by the attribution gate, deliberately, while findings were still
+  available.** A findings-keyed stop would have run round 3, 4, … indefinitely: every round's
+  findings were about prose the previous round's fix had written. Recording WHY it stopped is what
+  makes this distinguishable from a converging ladder — those two look identical in the findings list.
+- **Both claims blocks were posted as ISSUE comments, not review comments** —
+  `gh pr view --json comments` returns issue comments only, so a block posted as a review is
+  invisible to `audit-dispatch.py` and the next round silently becomes a blind full audit.
+- **Rounds 0 and 1 had recorded their findings off-PR**, so the round-2 delta was REFUSED by
+  `audit-dispatch.py` until a claims block was reconstructed and posted. Correct refusal: without one
+  a "delta" audit silently widens into a full audit that then reads as covered. Post the block in the
+  round that produces it.
 
 ## How to verify
 
