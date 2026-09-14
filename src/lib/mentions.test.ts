@@ -3,8 +3,6 @@ import {
   resolveMentions,
   buildMentionExchange,
   addPendingMention,
-  mentionLabel,
-  mentionUrl,
   MAX_MENTIONS,
   MENTION_TOOL_CALL_ID,
   MENTION_TOOL_NAME,
@@ -258,15 +256,6 @@ describe('the pending-mention list — one place for the cap and the de-dupe', (
   it('MAX_MENTIONS stays under the endpoint’s own ids cap of 30', () => {
     expect(MAX_MENTIONS).toBeLessThanOrEqual(30);
     expect(MAX_MENTIONS).toBeGreaterThan(0);
-  });
-});
-
-describe('display helpers', () => {
-  it('labels a resource by model and version name', () => {
-    expect(mentionLabel(A)).toBe('Test Model · v1.0');
-  });
-  it('links to the model page pinned to the picked version', () => {
-    expect(mentionUrl(A)).toBe('https://civitai.com/models/1234?modelVersionId=5678');
   });
 });
 

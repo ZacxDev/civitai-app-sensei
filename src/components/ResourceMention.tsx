@@ -49,7 +49,7 @@ import { token, radius } from '../theme.js';
  * real (small) loss of affordance, accepted rather than worked around:
  * re-adding an anchor would put back a control that is inert in the embedded
  * case, which is the "reads as a gate and is not" shape this repo keeps
- * removing. `mentionUrl` is still used on the wire side — see `lib/mentions.ts`.
+ * removing.
  */
 export function ResourceMentionCard({
   resource,

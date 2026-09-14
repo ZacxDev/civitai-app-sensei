@@ -237,16 +237,6 @@ export function buildMentionExchange(resolved: ResolvedResource[]): MentionExcha
   ];
 }
 
-/** Human label for a resolved resource, used by the composer chip and the bubble. */
-export function mentionLabel(r: ResolvedResource): string {
-  return `${r.modelName} · ${r.versionName}`;
-}
-
-/** Canonical web URL for a mentioned resource. */
-export function mentionUrl(r: ResolvedResource): string {
-  return `https://civitai.com/models/${r.modelId}?modelVersionId=${r.versionId}`;
-}
-
 /**
  * Add a pick to the pending list — de-duplicated by `versionId` and capped.
  *
