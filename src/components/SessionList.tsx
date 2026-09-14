@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@civitai/blocks-react/ui';
 import type { Session } from '../types.js';
 import { groupSessionsByRecency, formatRelativeTime } from '../lib/sessions.js';
@@ -50,6 +50,30 @@ export function SessionList({
    * Delete.
    */
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  /**
+   * The "+ New" button, as the FOCUS TARGET AFTER A DELETE.
+   *
+   * 🔴 THE ⋮ TRIGGER CANNOT BE THAT TARGET, because Delete unmounts the row it
+   * lives on. Every other close route puts focus back on the trigger (see
+   * `SessionRowMenu`); this is the one route where the trigger is gone by the
+   * time focus needs somewhere to be, and without a target
+   * `document.activeElement` falls to `<body>` — the top of the tab order, from
+   * a control the viewer reached by tabbing deep into the sidebar.
+   *
+   * "+ New" is chosen because it is the only control in this column guaranteed
+   * to exist: the deleted row is gone, the row that took its place is not the
+   * one the viewer was on, and the list can be emptied entirely by this very
+   * press. `Button` from `@civitai/blocks-react/ui` is ref-forwarded to its
+   * native `<button>` (checked against the installed `dist/ui/Button.d.ts`).
+   */
+  const newButtonRef = useRef<HTMLButtonElement | null>(null);
+  const deleteAndRefocus = useCallback(
+    (id: string) => {
+      newButtonRef.current?.focus();
+      onDelete(id);
+    },
+    [onDelete],
+  );
   const motion = useMotion();
   const at = now ?? Date.now();
   const groups = useMemo(() => groupSessionsByRecency(sessions, at), [sessions, at]);
@@ -78,7 +102,13 @@ export function SessionList({
         }}
       >
         <strong style={{ fontSize: 13, letterSpacing: 0.2 }}>Chats</strong>
-        <Button size="sm" variant="light" onClick={onCreate} data-testid="new-session-button">
+        <Button
+          ref={newButtonRef}
+          size="sm"
+          variant="light"
+          onClick={onCreate}
+          data-testid="new-session-button"
+        >
           + New
         </Button>
       </div>
@@ -177,7 +207,7 @@ export function SessionList({
                     open={openMenuId === session.id}
                     onOpenChange={(next) => setOpenMenuId(next ? session.id : null)}
                     onRename={onRename}
-                    onDelete={onDelete}
+                    onDelete={deleteAndRefocus}
                   />
                 </div>
               );
@@ -219,6 +249,41 @@ export function SessionList({
  * sits in that same container with that same class, so tabbing still reveals it.
  * Delete behind one press is also a small safety gain on a 240px column where it
  * used to sit ~2px from Rename.
+ *
+ * ───────────────────────────────────────────────────────────────────────────────
+ * 🔴 DISMISSAL IS NOT POLISH HERE — THE PANEL HOLDS AN UNCONFIRMED DELETE.
+ * ───────────────────────────────────────────────────────────────────────────────
+ *
+ * Until this change the ONLY way to close the panel was pressing the ⋮ again, or
+ * Escape *while focus was still inside the actions container*. Neither covers the
+ * ordinary case: open row A's ⋮, change your mind, click the transcript. The
+ * panel is `position: absolute; zIndex: 5` and forced `opacity: 1` while open, so
+ * it stays fully visible and clickable over the rows BELOW A — and the next click
+ * at what looks like row B lands on A's panel, at the coordinates Delete
+ * occupies. There is no confirmation step on that path. Measured before the fix:
+ * Escape dispatched on `document.body` left the panel mounted.
+ *
+ * Three closers now, and they are three because each covers a state the others
+ * structurally cannot see:
+ *
+ *   • a document `pointerdown` OUTSIDE the container — the pointer half. On
+ *     `pointerdown` rather than `click` so the panel is gone before the click
+ *     lands, which is what stops the dismissing press from also activating what
+ *     was underneath.
+ *   • a document `keydown` for Escape — CAPTURE phase on `document`, so it fires
+ *     wherever focus is, including `<body>`. The old handler was on the container
+ *     and could only ever see a key pressed inside it.
+ *   • `onBlur` on the container (React's name for `focusout`, which bubbles) —
+ *     the keyboard half of the outside click: tabbing past Delete leaves the
+ *     container, and a panel the viewer has tabbed out of is one they are done
+ *     with.
+ *
+ * 🔴 AND FOCUS GOES BACK TO THE TRIGGER, on every close route where the trigger
+ * still exists. `close(true)` is Escape and Rename; the outside-pointer and
+ * tab-out routes pass `false`, because the viewer is deliberately somewhere else
+ * and pulling them back would be a focus trap. Delete is the one route the
+ * trigger cannot serve — it unmounts with the row — and is handled a level up in
+ * `SessionList`'s `deleteAndRefocus`.
  */
 function SessionRowMenu({
   session,
@@ -234,6 +299,8 @@ function SessionRowMenu({
   onDelete: (id: string) => void;
 }) {
   const [copyState, setCopyState] = useState<'idle' | 'done' | 'failed'>('idle');
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
 
   const copy = async () => {
     // Same contract as the message-copy button: the OUTCOME is rendered, never
@@ -241,8 +308,57 @@ function SessionRowMenu({
     setCopyState((await copyText(session.id)) ? 'done' : 'failed');
   };
 
+  /**
+   * Close, and say whether the ⋮ trigger should get focus back.
+   *
+   * 🔴 ONE CLOSER, SO THE FOCUS DECISION IS MADE IN ONE PLACE. `.focus()` is
+   * called BEFORE React has re-rendered, which is safe precisely because the
+   * trigger is never the node being unmounted — React keeps the same DOM node
+   * across the re-render that removes the panel.
+   */
+  const close = useCallback(
+    (returnFocus: boolean) => {
+      onOpenChange(false);
+      if (returnFocus) triggerRef.current?.focus();
+    },
+    [onOpenChange],
+  );
+
+  /** Is this event happening somewhere other than inside this row's actions? */
+  const isOutside = useCallback(
+    (target: EventTarget | null) =>
+      !(target instanceof Node) || !containerRef.current?.contains(target),
+    [],
+  );
+
+  useEffect(() => {
+    // 🔴 LISTENERS ONLY WHILE OPEN. A closed panel's row must not pay for a
+    // document listener, and a sidebar of 15 rows would otherwise install 30.
+    if (!open) return;
+
+    const onPointerDown = (e: Event) => {
+      if (isOutside(e.target)) close(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // Consumed, exactly as the old container handler consumed it: the panel is
+      // the innermost dismissible thing on screen while it is open, so nothing
+      // else should also act on this press.
+      e.stopPropagation();
+      close(true);
+    };
+
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [open, close, isOutside]);
+
   return (
     <div
+      ref={containerRef}
       className="sensei-row-actions"
       // 🔴 FORCED VISIBLE WHILE THE MENU IS OPEN, AND THIS IS NOT COSMETIC. The
       // class sets `opacity: 0` off hover/focus-within, so a menu opened by
@@ -254,14 +370,19 @@ function SessionRowMenu({
       // Clicks inside the actions area must not also select the row: the panel is
       // a descendant of the row's own `onClick`.
       onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape' && open) {
-          e.stopPropagation();
-          onOpenChange(false);
-        }
+      // 🔴 `onBlur` IS `focusout`, WHICH BUBBLES — so this one handler on the
+      // container sees focus leaving ANY descendant, including the last item in
+      // the panel. `relatedTarget` is where focus is GOING; `null` means it left
+      // the document or landed on `<body>`, which is still out of the panel.
+      // No focus is returned: the viewer moved it themselves.
+      onBlur={(e) => {
+        if (!open) return;
+        if (!isOutside(e.relatedTarget)) return;
+        close(false);
       }}
     >
       <IconButton
+        buttonRef={triggerRef}
         label={`Options for ${session.title}`}
         icon="more"
         expanded={open}
@@ -270,6 +391,8 @@ function SessionRowMenu({
           // Reset the copy feedback on every open, so a stale "Copied" from a
           // previous visit cannot read as this visit's outcome.
           if (!open) setCopyState('idle');
+          // Closing from the trigger needs no focus return — the press that
+          // closes it is already on the trigger.
           onOpenChange(!open);
         }}
       />
@@ -332,7 +455,9 @@ function SessionRowMenu({
             testId={`rename-session-${session.id}`}
             icon="pencil"
             onClick={() => {
-              onOpenChange(false);
+              // The row survives a rename, so the trigger is still there to take
+              // the focus the unmounting Rename button is about to lose.
+              close(true);
               onRename(session.id);
             }}
           />
@@ -342,7 +467,10 @@ function SessionRowMenu({
             icon="trash"
             tone="error"
             onClick={() => {
-              onOpenChange(false);
+              // 🔴 NO FOCUS RETURN HERE, AND THAT IS NOT AN OVERSIGHT. This row —
+              // trigger included — is about to unmount. `SessionList` focuses
+              // "+ New" on its way into `onDelete`; see `deleteAndRefocus`.
+              close(false);
               onDelete(session.id);
             }}
           />

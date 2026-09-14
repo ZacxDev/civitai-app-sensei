@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { SessionList } from './SessionList.js';
 import type { Session } from '../types.js';
 
@@ -177,14 +178,47 @@ describe('🔴 SessionList — the per-row ⋮ menu', () => {
     expect(actions.style.opacity).toBe('1');
   });
 
-  it('🔴 the actions are in the DOM at rest — the keyboard path is not regressed', () => {
-    // The fade is CSS-only and deliberate: a keyboard user tabbing into the row
-    // reveals the control exactly as a pointer user hovering does. Replacing the
-    // class with conditional rendering would make it unreachable by keyboard, so
-    // the trigger's presence with the menu shut is pinned.
+  it('🔴 the actions are in the DOM at rest, and the keyboard REALLY reaches them', async () => {
+    // ─────────────────────────────────────────────────────────────────────────
+    // 🔴 THE TITLE USED TO CLAIM MORE THAN THE BODY DID. It read "the keyboard
+    // path is not regressed" over two `toBeInTheDocument()`/`toBeNull()` lines,
+    // and this whole FILE contained no `keyDown`, no `userEvent` and no
+    // `.focus()` — so nothing here had ever pressed a key. That is the shape
+    // RULES.md calls worse than no test: it reads as coverage and stops anyone
+    // looking. The presence assertions are kept (they are the half that catches
+    // conditional rendering replacing `.sensei-row-actions`) and the promised
+    // half is now actually driven: tab to the trigger, open it with the
+    // keyboard, and walk into the panel.
+    //
+    // ⚠️ AND IT IS AN INVARIANT GUARD, NOT A REGRESSION ONE — measured GREEN at
+    // `a0977a7`, because the keyboard path genuinely was not broken. It is here
+    // because the title had been claiming this for two releases with nothing
+    // behind it. The regression guards for what WAS broken are in the
+    // "can be DISMISSED" describe below, and all seven of those were watched
+    // red at `a0977a7`.
+    // ─────────────────────────────────────────────────────────────────────────
+    const user = userEvent.setup();
     renderList({ sessions: [makeSession(ID, 'Chat 1')] });
-    expect(screen.getByTestId(`session-menu-${ID}`)).toBeInTheDocument();
+    const trigger = screen.getByTestId(`session-menu-${ID}`);
+    expect(trigger).toBeInTheDocument();
     expect(screen.queryByTestId(`session-menu-panel-${ID}`)).toBeNull();
+
+    // "+ New" is the first tab stop in the column; the row's ⋮ is the second.
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByTestId('new-session-button'));
+    await user.tab();
+    expect(document.activeElement).toBe(trigger);
+
+    await user.keyboard('{Enter}');
+    expect(screen.getByTestId(`session-menu-panel-${ID}`)).toBeInTheDocument();
+
+    // …and the items are the next tab stops, in panel order.
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByTestId(`copy-session-id-${ID}`));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByTestId(`rename-session-${ID}`));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByTestId(`delete-session-${ID}`));
   });
 
   it('opening one row’s menu closes another’s', () => {
@@ -215,6 +249,184 @@ describe('🔴 SessionList — the per-row ⋮ menu', () => {
     fireEvent.click(screen.getByTestId('session-menu-s1'));
     fireEvent.click(screen.getByTestId('rename-session-s1'));
     expect(screen.queryByTestId('session-menu-panel-s1')).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 DISMISSAL — THE PANEL HOLDS AN UNCONFIRMED DELETE, SO "STAYS OPEN" IS A
+// DATA-LOSS BUG, NOT A POLISH ONE.
+//
+// The scenario every case below exists for: open row A's ⋮, change your mind,
+// click the transcript. Before this change the panel stayed open — `position:
+// absolute; zIndex: 5`, forced `opacity: 1`, extending down across the rows
+// BELOW A — so the next click at what looks like row B landed on A's panel, at
+// the coordinates Delete occupies, and deleted conversation A with no
+// confirmation anywhere in the flow.
+//
+// 🔴 THE THREE CLOSERS ARE ISOLATED FROM EACH OTHER ON PURPOSE. `fireEvent`
+// moves no focus and `user-event` does, so a case driven with `user.click`
+// cannot tell the `pointerdown` closer from the `focusout` one — both fire, and
+// the mutant that removes either still dies. Each case below therefore drives
+// exactly one mechanism:
+//   • `fireEvent.click(trigger)` + `fireEvent.pointerDown(elsewhere)` — pointer
+//     only, focus never moves, so ONLY the document `pointerdown` listener can
+//     close it.
+//   • `fireEvent.click(trigger)` + `fireEvent.keyDown(document.body, …)` — ONLY
+//     the document-level Escape listener can see a key pressed on `<body>`.
+//   • `user.tab()` past the last item — ONLY the container's `onBlur` sees that.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('🔴 SessionList — the ⋮ panel can be DISMISSED, and gives focus back', () => {
+  const ID = 'session-1757000000000-a1b2c3';
+
+  /** A stand-in for the transcript: the thing a viewer clicks when they change their mind. */
+  function renderBeside(over: Partial<Parameters<typeof SessionList>[0]> = {}) {
+    return render(
+      <>
+        <SessionList
+          sessions={[makeSession(ID, 'Chat 1')]}
+          activeSessionId={ID}
+          onSelect={vi.fn()}
+          onCreate={vi.fn()}
+          onDelete={vi.fn()}
+          onRename={vi.fn()}
+          currentModel={MODEL}
+          now={NOW}
+          {...over}
+        />
+        <div data-testid="transcript">a reply the viewer clicks instead</div>
+      </>,
+    );
+  }
+
+  it('🔴 A POINTERDOWN OUTSIDE THE ROW CLOSES IT — and the next press cannot reach Delete', () => {
+    const onDelete = vi.fn();
+    renderBeside({ onDelete });
+    fireEvent.click(screen.getByTestId(`session-menu-${ID}`));
+    expect(screen.getByTestId(`session-menu-panel-${ID}`)).toBeInTheDocument();
+
+    // Focus never moves here (`fireEvent` does not implement focus), so this is
+    // the document `pointerdown` listener and nothing else.
+    fireEvent.pointerDown(screen.getByTestId('transcript'));
+    expect(screen.queryByTestId(`session-menu-panel-${ID}`)).toBeNull();
+
+    // THE WHOLE POINT, asserted rather than implied: with the panel gone, the
+    // coordinates Delete used to occupy belong to whatever is really there.
+    expect(screen.queryByTestId(`delete-session-${ID}`)).toBeNull();
+    expect(onDelete).not.toHaveBeenCalled();
+  });
+
+  it('🔴 a pointerdown INSIDE the actions does NOT close it', () => {
+    // POSITIVE CONTROL for the case above: a closer that fires on every
+    // pointerdown would satisfy it while making the menu unusable — the press
+    // that opens the panel would close it again.
+    renderBeside();
+    const trigger = screen.getByTestId(`session-menu-${ID}`);
+    fireEvent.click(trigger);
+    fireEvent.pointerDown(screen.getByTestId(`copy-session-id-${ID}`));
+    expect(screen.getByTestId(`session-menu-panel-${ID}`)).toBeInTheDocument();
+  });
+
+  it('🔴 ESCAPE CLOSES IT FROM OUTSIDE THE ROW — measured still-open before this', () => {
+    // The old handler was React `onKeyDown` on the actions container, so it only
+    // ever saw a key pressed inside it: it worked from the trigger and the items
+    // and was INERT once focus left the row. Measured at `a0977a7`: Escape
+    // dispatched on `document.body` left the panel mounted. Opening with
+    // `fireEvent.click` reproduces exactly that state — the panel open with focus
+    // still on `<body>`.
+    renderBeside();
+    fireEvent.click(screen.getByTestId(`session-menu-${ID}`));
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(screen.queryByTestId(`session-menu-panel-${ID}`)).toBeNull();
+  });
+
+  it('🔴 escape still works from INSIDE, and hands focus back to the ⋮ trigger', async () => {
+    // The route the old container handler covered, kept — plus the focus half it
+    // never had. Focus is walked INTO the panel first, so the button holding it
+    // is one the close unmounts: without the return, `activeElement` is `<body>`.
+    const user = userEvent.setup();
+    renderBeside();
+    const trigger = screen.getByTestId(`session-menu-${ID}`);
+    await user.click(trigger);
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByTestId(`copy-session-id-${ID}`));
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByTestId(`session-menu-panel-${ID}`)).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('🔴 TABBING PAST THE LAST ITEM CLOSES IT — the keyboard half of the outside click', async () => {
+    // Measured at `a0977a7`: tabbing past Delete landed on `<body>` with the panel
+    // still open and fully clickable. No pointer event happens here, so this is
+    // the container's `onBlur` and nothing else.
+    const user = userEvent.setup();
+    renderBeside();
+    await user.click(screen.getByTestId(`session-menu-${ID}`));
+    await user.tab(); // Copy id
+    await user.tab(); // Rename
+    await user.tab(); // Delete
+    expect(document.activeElement).toBe(screen.getByTestId(`delete-session-${ID}`));
+    await user.tab(); // out of the panel
+    expect(screen.queryByTestId(`session-menu-panel-${ID}`)).toBeNull();
+  });
+
+  it('🔴 RENAME BY KEYBOARD leaves focus on the trigger, not on <body>', async () => {
+    // The Rename button unmounts as it is activated, and React does not move the
+    // focus it was holding — so `activeElement` fell to `<body>`, dumping a viewer
+    // who had tabbed deep into the sidebar back to the top of the tab order.
+    const user = userEvent.setup();
+    const onRename = vi.fn();
+    renderBeside({ onRename });
+    const trigger = screen.getByTestId(`session-menu-${ID}`);
+    await user.click(trigger);
+    await user.tab();
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByTestId(`rename-session-${ID}`));
+
+    await user.keyboard('{Enter}');
+    expect(onRename).toHaveBeenCalledWith(ID);
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('🔴 DELETE BY KEYBOARD leaves focus on "+ New" — the trigger is gone with the row', async () => {
+    // 🔴 THE ONE ROUTE THE TRIGGER CANNOT SERVE. Delete unmounts the row, so
+    // "return focus to the trigger" is not available and `SessionList` sends it to
+    // the only control in the column guaranteed to survive. The list is NOT
+    // re-rendered without the row here (`onDelete` is a spy, and this component is
+    // controlled), so the assertion is about where the focus was PUT, which is the
+    // decision under test.
+    const user = userEvent.setup();
+    const onDelete = vi.fn();
+    renderBeside({ onDelete });
+    await user.click(screen.getByTestId(`session-menu-${ID}`));
+    await user.tab();
+    await user.tab();
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByTestId(`delete-session-${ID}`));
+
+    await user.keyboard('{Enter}');
+    expect(onDelete).toHaveBeenCalledWith(ID);
+    expect(document.activeElement).toBe(screen.getByTestId('new-session-button'));
+  });
+
+  it('the document listeners are removed when the panel closes', () => {
+    // A listener left behind would close a REOPENED panel on the first outside
+    // pointerdown of a row that is no longer the open one — and, 15 rows deep,
+    // would be 15 live listeners for a sidebar with nothing open.
+    const add = vi.spyOn(document, 'addEventListener');
+    const remove = vi.spyOn(document, 'removeEventListener');
+    renderBeside();
+    const before = add.mock.calls.filter(([t]) => t === 'pointerdown' || t === 'keydown').length;
+    fireEvent.click(screen.getByTestId(`session-menu-${ID}`));
+    expect(
+      add.mock.calls.filter(([t]) => t === 'pointerdown' || t === 'keydown').length,
+    ).toBeGreaterThan(before);
+    fireEvent.click(screen.getByTestId(`session-menu-${ID}`)); // close from the trigger
+    expect(remove.mock.calls.filter(([t]) => t === 'pointerdown')).toHaveLength(1);
+    expect(remove.mock.calls.filter(([t]) => t === 'keydown')).toHaveLength(1);
+    add.mockRestore();
+    remove.mockRestore();
   });
 });
 

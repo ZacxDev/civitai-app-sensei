@@ -1,4 +1,4 @@
-import type { MouseEvent, ReactNode } from 'react';
+import type { MouseEvent, ReactNode, Ref } from 'react';
 import { token, radius } from '../theme.js';
 
 /**
@@ -185,6 +185,22 @@ export interface IconButtonProps {
   /** `'error'` tints the glyph with the host's error token — used by Delete. */
   tone?: 'default' | 'error';
   size?: number;
+  /**
+   * The underlying `<button>`, for a caller that has to put focus back on it.
+   *
+   * 🔴 ADDED *WITH* ITS CALLER, which is the rule the block below states. The
+   * one caller is `SessionList`'s `SessionRowMenu`: its ⋮ panel closes on
+   * Escape and after Rename, both of which unmount the control the viewer was
+   * on, and without a handle on the trigger `document.activeElement` falls to
+   * `<body>` — the top of the tab order. `SessionList.test.tsx` asserts the
+   * returned focus, so this is not a prop that merely reads as useful.
+   *
+   * Deliberately NOT spelled `ref`: React 19 would treat it as a plain prop
+   * here and it would work, but a reader cannot tell from the call site whether
+   * the framework or this component is doing the forwarding. One name, one
+   * mechanism.
+   */
+  buttonRef?: Ref<HTMLButtonElement>;
 
   /*
    * ───────────────────────────────────────────────────────────────────────────
@@ -206,6 +222,19 @@ export interface IconButtonProps {
    * that presses the disabled control and asserts `onClick` did not fire —
    * `disabled` on a `<button>` is real behaviour, so it is testable, and an
    * untested one is indistinguishable from decoration.
+   *
+   * 🔴 AND THE PROOF THAT REMOVAL LEFT NO CALLER BEHIND IS SOUND ONLY UNDER TWO
+   * PRECONDITIONS OF *THIS* TYPE — state them before reusing the argument.
+   * `ca8ad76` claimed "`tsc --noEmit` rc=0 after the removal IS the zero-caller
+   * claim". Measured 2026-09-13: a literal `disabled` / `style` at a call site
+   * is rc=2, but `{...props}` where `props` is a variable carrying them, or a
+   * fresh inline object literal spread in, is rc=**0** — excess-property
+   * checking applies to object literals written in place, not to spreads. The
+   * claim holds HERE because (1) `IconButtonProps` has no `extends` and no index
+   * signature, so no extra key is structurally admissible, and (2) `IconButton`
+   * destructures a closed parameter list and has no `...rest`, so nothing a
+   * caller smuggled in could reach the DOM anyway. Add either and `tsc` stops
+   * being the instrument; a grep of the call sites becomes the instrument.
    */
 }
 
@@ -231,9 +260,11 @@ export function IconButton({
   expanded,
   tone = 'default',
   size,
+  buttonRef,
 }: IconButtonProps) {
   return (
     <button
+      ref={buttonRef}
       type="button"
       onClick={onClick}
       title={label}
