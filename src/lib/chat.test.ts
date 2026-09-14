@@ -7,6 +7,9 @@ import {
   deserializeMessages,
   assembleChunks,
   generateMessageId,
+  failureBody,
+  isPlainBody,
+  FAILURE_BODY_PREFIX,
 } from './chat.js';
 import type { Message } from '../types.js';
 
@@ -236,5 +239,79 @@ describe('chat', () => {
       expect(id1).not.toBe(id2);
       expect(id1).toMatch(/^msg-\d+-/);
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 THE PLAIN-BODY PREDICATE — the WRITER and the READER share one constant.
+//
+// `MessageBubble` claimed in a comment that "the withheld/error branch stays
+// plain … only model prose is rendered" while testing `message.withheld` alone,
+// which `App`'s catch sets ONLY for a `TextOutputWithheldError`. Every other
+// failure was `Error: <message>` with `withheld: false` and reached
+// `MarkdownText` — and since PR #69 that `<message>` is the SERVER's own words.
+// Closes `error-text-through-markdown` in `taste.json`.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('🔴 isPlainBody — a body the app authored never reaches the markdown parser', () => {
+  const at = 1_757_000_000_000;
+
+  it('classifies the body `failureBody` produces as PLAIN — the seam, not two spellings', () => {
+    // 🔴 THIS IS THE WHOLE GUARD. Each side is individually plausible: the catch
+    // writes a prefixed string, the renderer tests a prefix. The defect is the
+    // two DISAGREEING, which is invisible to a test of either one alone. Driving
+    // the reader with the writer's own output is what pins the relationship — and
+    // it is why `App.tsx` calls `failureBody` rather than re-spelling the prefix.
+    const body = failureBody('relation "sessions_pkey" already exists');
+    expect(isPlainBody({ role: 'assistant', content: body })).toBe(true);
+  });
+
+  it('classifies a WITHHOLD as plain — INVARIANT guard, the case that already worked', () => {
+    // Not regression coverage: this branch was correct before the change. It is
+    // pinned so the widening cannot silently drop it.
+    expect(
+      isPlainBody({ role: 'assistant', content: 'withheld by policy', withheld: true }),
+    ).toBe(true);
+  });
+
+  it('🔴 leaves ordinary model prose ALONE — the negative control', () => {
+    // Without this, "route the error around the renderer" is satisfied by routing
+    // EVERYTHING around it, i.e. by deleting markdown from the app.
+    expect(
+      isPlainBody({ role: 'assistant', content: 'Try **Realistic Vision** for portraits.' }),
+    ).toBe(false);
+  });
+
+  it("🔴 does NOT plain-render a VIEWER's own text that happens to start with the prefix", () => {
+    // Role-scoped on purpose. Only an assistant row can carry an app-authored
+    // failure body, so a viewer who types "Error: …" into the composer keeps
+    // markdown on their own words.
+    expect(
+      isPlainBody({ role: 'user', content: `${FAILURE_BODY_PREFIX}why did this fail?` }),
+    ).toBe(false);
+  });
+
+  it('the prefix constant is what both sides dereference', () => {
+    // Pins the BINDING as well as the value: `failureBody` must build its body
+    // from the same constant `isPlainBody` tests, so neither can be reworded
+    // without the other following.
+    expect(failureBody('boom')).toBe(`${FAILURE_BODY_PREFIX}boom`);
+    expect(failureBody('boom')).toBe('Error: boom');
+  });
+
+  it('a stored failure row is still classified plain after a reload', () => {
+    // A stored `Error: …` row round-trips through KV carrying no flag of its own,
+    // so the prefix is the only thing that survives to tell the renderer what it
+    // is. A `failed?: boolean` field would have covered new rows and left every
+    // row already in a viewer's storage rendering as markdown.
+    const stored = serializeMessages([
+      {
+        id: 'm1',
+        role: 'assistant',
+        content: failureBody('app Buzz limit reached'),
+        timestamp: at,
+      },
+    ]);
+    const [back] = deserializeMessages(stored);
+    expect(isPlainBody(back)).toBe(true);
   });
 });

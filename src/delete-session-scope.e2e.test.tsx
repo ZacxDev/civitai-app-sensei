@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { App } from './App.js';
 import { fakeAppStorage } from './test-helpers.js';
+import { deleteSessionRow } from './test-dom-helpers.js';
 import { clearCache } from './lib/research.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -71,6 +72,9 @@ vi.mock('@civitai/blocks-react', () => ({
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
   useBlockResize: () => {},
+  // Fail-closed SFW — the production default. Why, and what actually tests the
+  // policy: `lib/maturity.ts`. Not the contract; a literal.
+  useDomainMaturity: () => ({ isSfw: true, isLevelAllowed: () => false }),
   useRequestConsent: () => ({ requestConsent: vi.fn() }),
   useRequestSignIn: () => ({ requestSignIn: vi.fn() }),
   useResourcePicker: () => ({ open: vi.fn().mockResolvedValue(null) }),
@@ -359,7 +363,7 @@ describe('deleting a chat takes its transcript with it', () => {
       // it, so what survives the delete is what the viewer is left looking at.
       breakMessageReads();
 
-      fireEvent.click(screen.getByTestId(`delete-session-${grounded}`));
+      deleteSessionRow(grounded);
 
       await waitFor(() => expect(rows()).toHaveLength(1));
       await waitFor(() => expect(screen.getByText(/Couldn't open that chat/)).toBeTruthy());
@@ -394,7 +398,7 @@ describe('deleting a chat takes its transcript with it', () => {
       expect(anchorFor(DREAMSHAPER), 'and still linked — that is the #45 fix').toBeTruthy();
 
       // Now delete the chat that is on screen but no longer selected.
-      fireEvent.click(screen.getByTestId(`delete-session-${grounded}`));
+      deleteSessionRow(grounded);
       await waitFor(() => expect(rows()).toHaveLength(1));
 
       await waitFor(() =>
@@ -437,7 +441,7 @@ describe('deleting a chat takes its transcript with it', () => {
       ).toBeGreaterThan(0);
 
       breakMessageReads();
-      fireEvent.click(screen.getByTestId(`delete-session-${grounded}`));
+      deleteSessionRow(grounded);
       await waitFor(() => expect(rows()).toHaveLength(1));
       await waitFor(() => expect(screen.getByText(/Couldn't open that chat/)).toBeTruthy());
 
@@ -472,7 +476,7 @@ describe('deleting a chat takes its transcript with it', () => {
       const { other } = await twoChatsGroundedFirst();
 
       breakMessageReads();
-      fireEvent.click(screen.getByTestId(`delete-session-${other}`));
+      deleteSessionRow(other);
       await waitFor(() => expect(rows()).toHaveLength(1));
 
       expect(screen.getByText(/is great/)).toBeTruthy();
@@ -498,7 +502,7 @@ describe('deleting a chat takes its transcript with it', () => {
         await startTurn('tell me more');
         await waitFor(() => expect(document.body.textContent).toContain('word0'));
 
-        fireEvent.click(screen.getByTestId(`delete-session-${grounded}`));
+        deleteSessionRow(grounded);
         await settled(uncaught, 'a chunk landed on the cleared transcript');
 
         // 🔴 THE KNOB'S POSITIVE CONTROL. Without this the case passes on a
@@ -536,7 +540,7 @@ describe('deleting a chat takes its transcript with it', () => {
         await startTurn('tell me more');
         await waitFor(() => expect(document.body.textContent).toContain('word0'));
 
-        fireEvent.click(screen.getByTestId(`delete-session-${grounded}`));
+        deleteSessionRow(grounded);
         await settled(uncaught, 'the completed reply was committed onto the cleared transcript');
 
         const successorRead = delayed.find((d) => d.key === `sensei:messages:${other}`);
@@ -584,7 +588,7 @@ describe('deleting a chat takes its transcript with it', () => {
         ];
         await startTurn('tell me more');
 
-        fireEvent.click(screen.getByTestId(`delete-session-${grounded}`));
+        deleteSessionRow(grounded);
         await settled(uncaught, "the failed turn's error was committed onto the cleared transcript");
 
         const successorRead = delayed.find((d) => d.key === `sensei:messages:${other}`);

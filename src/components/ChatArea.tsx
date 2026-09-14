@@ -9,8 +9,40 @@ import {
   ResourceMentionCard,
   type MentionPickerType,
 } from './ResourceMention.js';
+import { copyText } from '../lib/clipboard.js';
 import { useMotion } from '../lib/motion.js';
 import { token, brand, mutedText, metaText } from '../theme.js';
+
+/**
+ * THE READING MEASURE FOR A CHAT BUBBLE. It is the ONLY thing governing line
+ * length in this app, and that became true recently rather than always.
+ *
+ * 🔴 THE HOST'S PAGE CAP IS GONE. `/apps/run` used to cap the page at 1600px;
+ * that cap was lifted for this app upstream (civitai#4804), so the container is
+ * FULL-BLEED. On a 2560px display the chat pane is roughly 2320px, and an
+ * unbounded transcript there is a ~280-character line — four times the measure
+ * typography has agreed on for a century, and unreadable in the specific way
+ * where the eye loses its place on the return sweep.
+ *
+ * 🔴 WHY `68ch`: the app's body text is 14px, and `ch` is the advance width of
+ * "0", which is WIDER than the average lowercase glyph — so 68ch renders roughly
+ * 75 characters, the top of the classic 45–75 range. Taking the top rather than
+ * the middle is deliberate: this is a technical assistant whose answers carry
+ * model names, ids and URLs, and a tighter measure breaks those across lines more
+ * often. It is also relative to the font, so it follows a body-size change
+ * instead of silently becoming wrong.
+ *
+ * 🔴 WHY THE `92%` ARM, and why it is not `100%`: on a narrow pane 68ch can
+ * exceed the container, and an `align-self`-ed flex item at its max-width would
+ * then sit flush against the scrollbar edge with the 16px padding doing nothing.
+ * It also makes "below 100%" true at EVERY width rather than only at wide ones,
+ * which is the property the guard asserts — a bubble that can reach the full pane
+ * width is the defect, so no arm of this expression may be `100%`.
+ *
+ * Exported so the guard derives its expectation from the value the DOM actually
+ * uses, rather than mirroring a number that can drift.
+ */
+export const BUBBLE_MAX_WIDTH = 'min(68ch, 92%)';
 
 export interface ChatAreaProps {
   messages: Message[];
@@ -211,12 +243,54 @@ export function ChatArea({
           // are out there.
           if (msg.role === 'tool') return null;
           return (
-            <div key={msg.id}>
+            /*
+              🔴 `align-self` PLUS `max-width`, NEVER `flex-direction:
+              row-reverse` OR AN `order`. Two independent reasons, and both are
+              load-bearing:
+
+              1. READING ORDER MUST EQUAL DOM ORDER. A reversal puts the viewer's
+                 message on the right visually while leaving the transcript in
+                 whatever sequence the reversal produces for assistive tech and
+                 for anything walking the tree — so a screen reader hears the
+                 conversation in an order the screen does not show. This
+                 container is a `column`, and `align-self` moves an item across
+                 the CROSS axis without touching the main axis the transcript is
+                 sequenced on.
+
+              2. THE EXISTING GUARDS PIN LAYOUT BY DOM ORDER, because jsdom
+                 computes no geometry — `getBoundingClientRect` is all zeros, so a
+                 coordinate assertion would pass with everything in the wrong
+                 place. `ChatArea.test.tsx` reads the composer's layout off the
+                 DOM for exactly that reason and explicitly forbids `row-reverse`
+                 and `order` in the input row. The same rule applies here.
+            */
+            <div
+              key={msg.id}
+              data-testid="bubble-wrap"
+              data-bubble-role={msg.role}
+              style={{
+                alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                maxWidth: BUBBLE_MAX_WIDTH,
+                // A flex item's default `min-width: auto` refuses to shrink below
+                // its content, which would let a long unbroken token (a URL the
+                // model wrote) push the bubble past the max-width it was given.
+                minWidth: 0,
+              }}
+            >
               <MessageBubble
                 message={msg}
                 groundedModelIds={groundedModelIds}
                 onRegenerate={msg.role === 'assistant' ? () => onRegenerate?.(msg.id) : undefined}
-                onCopy={() => navigator.clipboard.writeText(msg.content)}
+                // 🔴 THE GUARDED HELPER, AND THE `return` IS LOAD-BEARING. This
+                // was `() => navigator.clipboard.writeText(msg.content)` — not
+                // awaited, not caught, returning nothing — while the bubble
+                // flipped to a tick regardless. In this sandboxed cross-origin
+                // iframe that promise can reject on permissions policy or missing
+                // transient activation, so the button claimed success having
+                // copied nothing, with an unhandled rejection behind it.
+                // `copyText` resolves to whether the write LANDED and the bubble
+                // renders that; see `lib/clipboard.ts`.
+                onCopy={() => copyText(msg.content)}
               />
             </div>
           );
@@ -295,7 +369,7 @@ export function ChatArea({
             and is wrong: `sendGate === 'consent'` is the DEFAULT state of a
             first-time viewer — `ai:write:budgeted` is consent-gated and simply
             opening the app does not grant it — so `disabled` there ships a dead
-            `＋ Model` button to every new viewer with nothing to explain it.
+            `+ Model` button to every new viewer with nothing to explain it.
             That is the 0.1.4 defect class this file's own comments are about.
 
             `isStreaming` → DISABLED, because Send itself is replaced by Stop for

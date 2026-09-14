@@ -6,6 +6,7 @@ import {
   BLOCK_GENERATION_RESOURCE,
   BLOCK_GENERATION_RESOURCE_LOCON,
 } from './test-helpers.js';
+import { deleteFirstSessionRow } from './test-dom-helpers.js';
 import { clearCache } from './lib/research.js';
 import { MENTION_TOOL_CALL_ID, MENTION_TOOL_NAME } from './lib/mentions.js';
 import { MAX_TOOL_RESULT_MESSAGES } from './lib/tools.js';
@@ -96,6 +97,9 @@ vi.mock('@civitai/blocks-react', () => ({
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: VIEWER, theme: 'dark' }),
   useBlockResize: () => {},
+  // Fail-closed SFW — the production default. Why, and what actually tests the
+  // policy: `lib/maturity.ts`. Not the contract; a literal.
+  useDomainMaturity: () => ({ isSfw: true, isLevelAllowed: () => false }),
   useRequestConsent: () => ({ requestConsent: requestConsentFn }),
   useRequestSignIn: () => ({ requestSignIn: requestSignInFn }),
   useBlockToken: () => ({ raw: 'block-jwt-test', scopes: ['ai:write:budgeted', 'buzz:read:self'] }),
@@ -534,8 +538,10 @@ describe('composer state belongs to ONE conversation — every route that moves 
     await attach('Checkpoint', A.versionId);
     await screen.findByTestId(`mention-${A.versionId}`);
 
-    const del = screen.getAllByTestId(/^delete-session/)[0];
-    fireEvent.click(del);
+    // Deliberately id-agnostic: this case asserts a ROUTE (`deleteSession` moving
+    // `activeSessionId` without a switcher click), not a particular conversation.
+    // The helper opens the first row's ⋮ menu, which is where Delete now lives.
+    deleteFirstSessionRow();
 
     await waitFor(() => expect(screen.getAllByTestId(/^session-item/).length).toBe(1));
     await waitFor(() => expect(screen.queryByTestId('pending-mentions')).toBeNull());
@@ -571,7 +577,32 @@ describe('the message enhancement — what the viewer sees, and what survives a 
     const enhancement = bubble.querySelector('[data-testid="message-mentions"]');
     expect(enhancement).toBeTruthy();
     expect(enhancement!.textContent).toContain(B.modelName);
-    expect(enhancement!.textContent).toContain(B.modelType);
+
+    // 🔴 REPOINTED FOR `ResourceCard`, AND THE OLD EXPECTATION WAS PINNING OUR OWN
+    // FORMATTING RATHER THAN A CONTRACT. It asserted the raw `B.modelType`
+    // (`'LoCon'`) appeared verbatim, which the pack does not promise.
+    //
+    // 🔴 BUT "PRESENT AND NON-EMPTY" WAS TOO FAR THE OTHER WAY — it passes for ANY
+    // label, a wrong one included, which is the one thing this assertion exists to
+    // catch: a viewer who reads "Checkpoint" on a LoRA picks a base model that
+    // cannot generate. The mapping IS a contract and it is pinned as one.
+    // Read in the installed dist rather than recalled —
+    // `@civitai/blocks-react@0.49.0`, `dist/ui/ResourceCard.js:17-23`:
+    //
+    //     const TYPE_LABELS = { checkpoint: 'Checkpoint', lora: 'LoRA',
+    //                           locon: 'LoRA', lycoris: 'LoRA', dora: 'LoRA' };
+    //
+    // headed "🔴 FROZEN — the LoRA/Checkpoint distinction, and it is deliberately
+    // NOT a prop", on the argument that three blocks rendering `modelType` three
+    // ways made one resource read as a different KIND of thing per app. So `LoCon`
+    // in, `LoRA` out is the relationship, and this is the RELATIONSHIP rather than
+    // our formatting: the fixture's wire value is `'LoCon'` and the rendered label
+    // must be `'LoRA'` — two distinct strings, so the assertion cannot pass by
+    // echoing its input.
+    const type = enhancement!.querySelector(`[data-testid="mention-${B.versionId}-type"]`);
+    expect(type).toBeTruthy();
+    expect(B.modelType).toBe('LoCon');
+    expect(type!.textContent!.trim()).toBe('LoRA');
   });
 
   it('the composer is cleared of attachments once they are sent', async () => {

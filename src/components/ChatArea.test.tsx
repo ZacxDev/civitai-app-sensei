@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { ChatArea, type ChatAreaProps } from './ChatArea.js';
+import { ChatArea, BUBBLE_MAX_WIDTH, type ChatAreaProps } from './ChatArea.js';
 import type { Message } from '../types.js';
 import type { ResolvedResource } from '../lib/mentions.js';
+import { resourceDisplayName } from '@civitai/blocks-react/ui';
 import { BLOCK_GENERATION_RESOURCE, BLOCK_GENERATION_RESOURCE_LOCON } from '../test-helpers.js';
 
 function makeMessage(role: Message['role'], content: string): Message {
@@ -201,6 +202,87 @@ describe('the mention affordance in the composer (clawgate #434, criterion 3)', 
     expect(onRemoveMention).toHaveBeenCalledWith(B.versionId);
   });
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // 🔴 THE CHIP IS THE PACK'S `ResourceCard`, NOT A HAND-ROLLED ONE.
+  //
+  // ⚠️ GREP FOR THE SUFFIX, NEVER FOR THE COMPOSED VALUE. `ResourceCard` DERIVES
+  // every inner hook from the root testid, so `mention-8765-name` appears nowhere
+  // in source as a literal — a search for it returns zero whether the selector
+  // works or has just been deleted. That is the component's own warning, and it
+  // is why these assertions build the id from the same parts the component does.
+  // ───────────────────────────────────────────────────────────────────────────
+  it('🔴 the chip renders through ResourceCard — the derived testids are present', () => {
+    renderChat({ pendingMentions: [A] });
+    const root = screen.getByTestId(`mention-${A.versionId}`);
+    // The name hook, and the name itself — `resourceDisplayName`, whose whole
+    // purpose is that an absent `modelName` becomes `#<versionId>` rather than an
+    // empty chip indistinguishable from a broken one.
+    const name = screen.getByTestId(`mention-${A.versionId}-name`);
+    expect(root.contains(name)).toBe(true);
+    expect(name.textContent).toBe(resourceDisplayName(A));
+    // The actions slot exists ONLY because we passed something into it.
+    expect(screen.getByTestId(`mention-${A.versionId}-actions`)).toBeInTheDocument();
+  });
+
+  it('🔴 an absent modelName becomes `#<versionId>`, not an empty chip', () => {
+    // The reason to adopt the component at all. `modelName` is typed `string`
+    // (REQUIRED) and that type is optimistic — a first-party block has already
+    // seen it absent at runtime. Whitespace-only counts as absent, which is the
+    // case the local card rendered as a bordered box with no text.
+    //
+    // ⚠️ THE FIXTURE IS WHITESPACE, NOT `''`, AND THE DIFFERENCE MATTERS. A first
+    // mutant that re-introduced an app-side placeholder as
+    // `modelName || 'Untitled model'` SURVIVED this test, because `'   '` is
+    // TRUTHY so the `||` never fired and the fixture could only ever produce the
+    // expected value anyway. The same mutant written `.trim() || 'Untitled model'`
+    // — the way anyone would actually write it — dies here with
+    // `expected 'Untitled model' to be '#5678'`. Whitespace is kept as the fixture
+    // because it is the harder case the component explicitly handles; the lesson is
+    // that the mutant has to be the realistic one.
+    const nameless = { ...A, modelName: '   ' } as ResolvedResource;
+    renderChat({ pendingMentions: [nameless] });
+    expect(screen.getByTestId(`mention-${A.versionId}-name`).textContent).toBe(
+      `#${A.versionId}`,
+    );
+  });
+
+  it('the remove control is a SIBLING of the hit area, never nested in it', () => {
+    // The whole reason `actions` exists. A `<button>` inside a `<button>` is
+    // invalid HTML: the parser REPARENTS it, so the inner control becomes
+    // keyboard-unreachable and its click is eaten by the outer one. Asserted
+    // structurally, because a click test alone passes in jsdom — which does not
+    // reparent the way a real parser does.
+    //
+    // ⚠️ AN INVARIANT GUARD, NOT REGRESSION COVERAGE, AND MEASURED AS SUCH. The
+    // hazard is UNREACHABLE from this call site: `actions` renders as a sibling of
+    // the hit area by construction, so it holds whether or not the card is
+    // interactive. Mutant K — adding `interactive` + `onSelect`, which really does
+    // make the card itself a `<button>` — SURVIVED this assertion and the whole
+    // 32-test file, because the component's structure is doing the work. What this
+    // guard is actually for is the regression where someone hand-rolls the chip
+    // again and wraps their own control inside a clickable card, which is the state
+    // this commit replaced.
+    renderChat({ pendingMentions: [A], onRemoveMention: vi.fn() });
+    const remove = screen.getByTestId(`remove-mention-${A.versionId}`);
+    expect(remove.tagName).toBe('BUTTON');
+    expect(remove.parentElement?.closest('button')).toBeNull();
+  });
+
+  it('🔴 remove STILL FIRES after the refactor, with the right versionId', () => {
+    // The behavioural half. A structural check type-checks past a wrong argument,
+    // so the callback's payload is pinned too.
+    const onRemoveMention = vi.fn();
+    renderChat({ pendingMentions: [A, B], onRemoveMention });
+    fireEvent.click(screen.getByTestId(`remove-mention-${A.versionId}`));
+    expect(onRemoveMention).toHaveBeenCalledTimes(1);
+    expect(onRemoveMention).toHaveBeenCalledWith(A.versionId);
+  });
+
+  // The negative control for `-actions` — a chip with NO remove control — cannot
+  // be driven from here: a composer chip is always removable, so `ChatArea` always
+  // passes `onRemove`. It lives in `MessageBubble.test.tsx`, against the
+  // transcript chip, which deliberately has none.
+
   it('renders no chip row when nothing is attached', () => {
     renderChat();
     expect(screen.queryByTestId('pending-mentions')).toBeNull();
@@ -331,5 +413,103 @@ describe('the mention affordance in the composer (clawgate #434, criterion 3)', 
     renderChat({ sendGate: 'consent', pendingMentions: [A], onRemoveMention });
     fireEvent.click(screen.getByTestId(`remove-mention-${A.versionId}`));
     expect(onRemoveMention).toHaveBeenCalledWith(A.versionId);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 THE TRANSCRIPT'S SHAPE — viewer right, replies left, both bounded.
+//
+// The bubble `max-width` is the ONLY thing governing line length in this app:
+// the host's 1600px page cap was lifted for it upstream (civitai#4804), so the
+// container is full-bleed and a 2560px display gives the chat pane ~2320px. An
+// unbounded transcript there is a ~280-character line.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('🔴 ChatArea — bubble alignment and measure', () => {
+  const transcript = [makeMessage('user', 'Hello'), makeMessage('assistant', 'Hi there!')];
+
+  function wraps() {
+    return screen.getAllByTestId('bubble-wrap') as HTMLElement[];
+  }
+
+  it('aligns the viewer RIGHT and the reply LEFT, with align-self', () => {
+    renderChat({ messages: transcript });
+    const [user, assistant] = wraps();
+    expect(user.dataset.bubbleRole).toBe('user');
+    expect(user.style.alignSelf).toBe('flex-end');
+    expect(assistant.dataset.bubbleRole).toBe('assistant');
+    expect(assistant.style.alignSelf).toBe('flex-start');
+  });
+
+  it('🔴 every bubble is bounded BELOW 100% of the pane', () => {
+    // Derived from the exported constant rather than mirroring a literal, and then
+    // the constant's own PROPERTY is checked — so this fails both when the DOM
+    // stops using it and when someone widens it to the full pane.
+    renderChat({ messages: transcript });
+    for (const w of wraps()) expect(w.style.maxWidth).toBe(BUBBLE_MAX_WIDTH);
+
+    // No arm of the expression may reach the pane width. Parsed, not pattern-
+    // matched: a `toContain('%')` passes for `100%`.
+    const percentages = [...BUBBLE_MAX_WIDTH.matchAll(/([\d.]+)%/g)].map((m) => Number(m[1]));
+    expect(percentages.length).toBeGreaterThan(0);
+    for (const p of percentages) expect(p).toBeLessThan(100);
+
+    // And there IS a font-relative cap, which is the half that actually bounds the
+    // measure on a wide screen — a percentage alone still scales with the pane.
+    const chCaps = [...BUBBLE_MAX_WIDTH.matchAll(/([\d.]+)ch/g)].map((m) => Number(m[1]));
+    expect(chCaps.length).toBeGreaterThan(0);
+    // 45–75 characters is the readable range; `ch` is the advance of "0", which is
+    // wider than the average glyph, so the ceiling is expressed generously.
+    for (const c of chCaps) expect(c).toBeLessThanOrEqual(80);
+  });
+
+  it('🔴 READING ORDER STILL EQUALS DOM ORDER — the row-reverse guard for the transcript', () => {
+    // The companion to the input row's two order guards. `align-self` was chosen
+    // over `row-reverse` precisely so this stays true: a reversal would put the
+    // viewer's message on the right while leaving assistive tech hearing the
+    // conversation in an order the screen does not show. jsdom computes no
+    // geometry, so DOM order is what a test can actually read.
+    renderChat({ messages: transcript });
+    const [user, assistant] = wraps();
+
+    // 🔴 THE BINDING IS POSITIONAL, SO THE ROLES MUST BE PINNED — WITHOUT THIS THE
+    // NEXT ASSERTION IS A TAUTOLOGY. `getAllByTestId` returns document order, so
+    // `user` and `assistant` are element[0] and element[1] WHATEVER their roles
+    // are, and element[0] always precedes element[1]: `compareDocumentPosition`
+    // cannot fail. Measured — render the transcript with the assistant FIRST and
+    // the comparison below still passed; only the separate role→`alignSelf` test
+    // above went red, i.e. the test named for this invariant was not the test
+    // pinning it. These two lines are what make the comparison a claim about
+    // READING ORDER rather than about array indices.
+    expect(user.dataset.bubbleRole).toBe('user');
+    expect(assistant.dataset.bubbleRole).toBe('assistant');
+
+    expect(
+      user.compareDocumentPosition(assistant) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // …and neither the container nor any wrapper may break that equivalence
+    // without moving the node.
+    const container = screen.getByTestId('messages-container') as HTMLElement;
+    expect(container.style.flexDirection).toBe('column');
+    for (const w of wraps()) {
+      expect(w.style.order).toBe('');
+      expect(w.style.flexDirection).not.toBe('row-reverse');
+    }
+
+    // ⚠️ THE RESIDUAL BLIND SPOT, ON THE RECORD. Every assertion here reads INLINE
+    // `.style`, so a reversal arriving via a CSS class or the dependency's injected
+    // stylesheet is invisible to all of them — and `src/index.css` is imported only
+    // by `main.tsx`, so no jsdom test in this repo ever loads it. jsdom computes no
+    // geometry either. Closing this needs a real browser, not another assertion;
+    // `taste.json` is where that belongs if it is ever wanted.
+  });
+
+  it('the wrapper can shrink below its content — a long URL cannot push past the cap', () => {
+    // A flex item's default `min-width: auto` refuses to shrink below its content,
+    // so a single unbroken token (a model URL) would overflow the max-width it was
+    // just given. INVARIANT guard: nothing is known to have hit this, it is pinned
+    // because the cap is worthless without it.
+    renderChat({ messages: transcript });
+    for (const w of wraps()) expect(w.style.minWidth).toBe('0');
   });
 });

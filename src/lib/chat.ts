@@ -14,6 +14,80 @@ export function formatRoleLabel(role: Message['role']): string {
 }
 
 /**
+ * The prefix every app-authored failure body carries.
+ *
+ * 🔴 ONE CONSTANT, TWO SIDES, WHICH IS WHAT MAKES THE GUARD BELOW A RELATIONSHIP
+ * RATHER THAN A SPELLED WORD. `App.tsx`'s catch is the only writer and builds its
+ * body through {@link failureBody}; `isPlainBody` is the only reader. A guard
+ * that merely grepped for the string `'Error: '` in the renderer would be walked
+ * around by a writer that spelled its prefix differently — the SPELLED-guard
+ * shape `toolchain-lockstep.test.ts`'s header is about. Because both sides
+ * dereference this one binding, they cannot disagree, and `chat.test.ts` pins
+ * exactly that: the body the writer produces is classified plain by the reader.
+ */
+export const FAILURE_BODY_PREFIX = 'Error: ';
+
+/** Build the body `App`'s catch stores for a failure that is not a withhold. */
+export function failureBody(reason: string): string {
+  return `${FAILURE_BODY_PREFIX}${reason}`;
+}
+
+/**
+ * Whether this message's content must be rendered as LITERAL TEXT rather than
+ * through the markdown renderer.
+ *
+ * 🔴 THE COMMENT IN `MessageBubble` CLAIMED THIS AND THE CODE DID NOT DO IT.
+ * It read "the withheld/error branch stays plain … only model prose is
+ * rendered", while the branch tested `message.withheld` alone — which `App`'s
+ * catch sets ONLY for a `TextOutputWithheldError`. Every other failure was
+ * written `Error: <message>` with `withheld: false` and went straight through
+ * `MarkdownText`, and since PR #69 that `<message>` is the SERVER's own words
+ * off `snapshot.error`. A guard's description claiming coverage its body does
+ * not provide is worse than no guard: it stops anyone looking.
+ *
+ * 🔴 THE EXPOSURE IS COSMETIC, NOT INJECTION, AND THE FIX IS STILL WORTH IT.
+ * Measured: no `dangerouslySetInnerHTML` anywhere in `src/` (the parser emits a
+ * React node tree), and `linkHref` allowlists every href to an https civitai
+ * host with no userinfo — so server text cannot inject markup. What it CAN do is
+ * render AS markdown, and a mangled diagnostic is a diagnostic you cannot paste
+ * into an issue.
+ *
+ * ⚠️ TWO OF THE THREE EXAMPLES THAT USED TO BE ON THIS LINE WERE FALSE, and they
+ * were the SECOND copy of a falsehood `taste.json` had already been corrected
+ * for — `MessageBubble.test.tsx`'s fixture header names `taste.json` as the
+ * source and nobody noticed this header said the same thing. Re-measured against
+ * `parseMarkdown` at HEAD, one input each:
+ *
+ *   "Error: … unique constraint \"sessions_pkey\""  ⇒ ONE text span. FALSE that
+ *       underscores emphasise: the grammar has kinds `text | bold | code | link`
+ *       and para/ul/ol — there is no `_` rule and no `em` node exists to emit.
+ *   `failureBody('1. retry the request')`           ⇒ ONE text span. FALSE for an
+ *       app-authored body: this module's own `FAILURE_BODY_PREFIX` puts `Error: `
+ *       in front, so the `1. ` is not line-initial and the `<ol>` rule cannot
+ *       fire. It IS a list when the same string has no prefix — which the app
+ *       never writes.
+ *   `failureBody('column \`maxBrowsingLevel\` …')`  ⇒ a `code` span. TRUE; this
+ *       one survives.
+ *
+ * WHAT ACTUALLY MANGLES an app-authored body is a `**…**` pair anywhere (⇒ a
+ * `bold` span) and a list leader on a SECOND line (⇒ a separate `ol` block) —
+ * and server diagnostics are frequently multi-line, a reason plus a remediation
+ * step, which is exactly that shape. `MessageBubble.test.tsx`'s `MANGLEABLE`
+ * fixture is built from those and carries a reachability control; read it rather
+ * than re-deriving this list.
+ *
+ * 🔴 ROLE-SCOPED ON PURPOSE. Only an `'assistant'` row can carry an app-authored
+ * failure body, so a VIEWER who types "Error: foo" into the composer keeps
+ * markdown rendering on their own words. The residual case — a model reply whose
+ * prose genuinely opens with `Error: ` — loses markdown for that one bubble, and
+ * that is the direction to be wrong in.
+ */
+export function isPlainBody(m: Pick<Message, 'role' | 'content' | 'withheld'>): boolean {
+  if (m.withheld === true) return true;
+  return m.role === 'assistant' && m.content.startsWith(FAILURE_BODY_PREFIX);
+}
+
+/**
  * Heuristic token estimation (English ~4 chars per token).
  * Good enough for display; not for billing.
  */

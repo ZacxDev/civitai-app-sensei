@@ -110,6 +110,9 @@ vi.mock('@civitai/blocks-react', () => ({
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
   useBlockResize: () => {},
+  // Fail-closed SFW — the production default. Why, and what actually tests the
+  // policy: `lib/maturity.ts`. Not the contract; a literal.
+  useDomainMaturity: () => ({ isSfw: true, isLevelAllowed: () => false }),
   useRequestConsent: () => ({ requestConsent: vi.fn() }),
   useRequestSignIn: () => ({ requestSignIn: vi.fn() }),
   useResourcePicker: () => ({ open: vi.fn().mockResolvedValue(null) }),

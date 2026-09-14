@@ -109,6 +109,9 @@ vi.mock('@civitai/blocks-react', async () => {
       return { ready: true, viewer, theme: 'dark' };
     },
     useBlockResize: () => {},
+    // Fail-closed SFW — the production default. Why, and what actually tests the
+    // policy: `lib/maturity.ts`. Not the contract; a literal.
+    useDomainMaturity: () => ({ isSfw: true, isLevelAllowed: () => false }),
     useRequestConsent: () => ({ requestConsent: requestConsentFn }),
     useRequestSignIn: () => ({ requestSignIn: requestSignInFn }),
     // Real state, so a re-mint is a RENDER — see the header.

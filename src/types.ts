@@ -1,4 +1,5 @@
 import type { ResolvedResource } from './lib/mentions.js';
+import { SFW_MODEL_ID } from './lib/models.js';
 
 /**
  * What Layer 2's correction round did to a turn. Set only on an `'assistant'`
@@ -266,8 +267,31 @@ export function migrateSettings(stored: AppSettings): AppSettings {
   return { ...stored, systemPrompt: DEFAULT_SYSTEM_PROMPT };
 }
 
+/**
+ * 🔴 THE DEFAULT MODEL IS THE SFW ARM, AND IT MOVED — BUT NOTHING MIGRATES.
+ *
+ * It was `deepseek/deepseek-chat`; it is now `SFW_MODEL_ID`
+ * (`deepseek/deepseek-v4-flash-0731`), measured upstream at roughly 1 Buzz on a
+ * short reply against `gpt-4o-mini`'s 2.
+ *
+ * 🔴 AND THERE IS DELIBERATELY NO MODEL EQUIVALENT OF
+ * {@link LEGACY_DEFAULT_SYSTEM_PROMPTS}. `sensei:settings` is persisted per
+ * viewer, so anyone who has opened Settings holds `deepseek/deepseek-chat` (or
+ * `openai/gpt-4o-mini`) forever — and that is FINE here in a way it was NOT fine
+ * for the prompt. The stale prompt was a false CLAIM ABOUT THE WIRE: it told the
+ * model it could not call tools while the app handed it tools, which makes a model
+ * fabricate. A stale model id is just an older model — still on the host's enum,
+ * still tool-capable, still charged at its own rate. Nothing is wrong, so nothing
+ * is rewritten, and a migration would be us overwriting a choice a viewer may have
+ * made on purpose.
+ *
+ * The one stored value that MUST NOT stand is the NSFW arm held by a viewer who
+ * may no longer be shown NSFW output, and that is not a migration either — it is
+ * `clampModelToMaturity`, applied at send time on every render, because the
+ * viewer's ceiling can change without their settings changing.
+ */
 export const DEFAULT_SETTINGS: AppSettings = {
-  model: 'deepseek/deepseek-chat',
+  model: SFW_MODEL_ID,
   temperature: 0.7,
   maxTokens: 2048,
   systemPrompt: DEFAULT_SYSTEM_PROMPT,

@@ -6,6 +6,7 @@ import {
   useBlockResize,
   useBlockToken,
   useBuzzWorkflow,
+  useDomainMaturity,
   useRequestConsent,
   useRequestSignIn,
   useResourcePicker,
@@ -24,7 +25,9 @@ import * as sessionsLib from './lib/sessions.js';
 import * as toolsLib from './lib/tools.js';
 import * as mentionsLib from './lib/mentions.js';
 import type { ResolvedResource } from './lib/mentions.js';
-import { generateMessageId, withSystemPrompt } from './lib/chat.js';
+import { failureBody, generateMessageId, withSystemPrompt } from './lib/chat.js';
+import { clampModelToMaturity, nsfwModeAllowed } from './lib/maturity.js';
+import { modelSupportsTools } from './lib/models.js';
 import { generateTitle } from './lib/sessions.js';
 import { claimMessageWrite, ownsMessageWrite } from './lib/write-ownership.js';
 import * as turnRecordsLib from './lib/turn-records.js';
@@ -523,6 +526,69 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     setMessages(update);
   }, []);
   const { open: openResourcePicker } = useResourcePicker();
+
+  // ── THE MATURITY GATE, READ ONCE ──────────────────────────────────────────
+  //
+  // 🔴 ONE READ, TWO CONSUMERS, AND THE SECOND ONE IS THE ACTUAL GUARD. The
+  // toggle in `SettingsBar` is the visible half; `activeModel` below is the half
+  // that decides what goes on the WIRE. Hiding a control is never a guard —
+  // `settings.model` is PERSISTED, so a viewer who chose the uncensored arm on a
+  // red domain and then narrowed their own browsing level (or opened the app on a
+  // green one) still has that id in storage, and the app would go on sending it
+  // with the toggle nowhere on screen.
+  //
+  // 🔴 AND IT IS READ HERE RATHER THAN IN THE BAR so the two cannot disagree.
+  // Two independent `useDomainMaturity()` calls are two things to keep in step;
+  // the bar takes a required prop instead. See `lib/maturity.ts` for why the gate
+  // is `isLevelAllowed(BrowsingLevel.X)` and not the `domain` string.
+  const maturity = useDomainMaturity();
+  const nsfwAllowed = nsfwModeAllowed(maturity);
+
+  /**
+   * The model this app will actually SEND — the viewer's stored choice, clamped.
+   *
+   * 🔴 EVERY SITE THAT PUTS A MODEL ANYWHERE USES THIS, NOT `settings.model`.
+   * There are four (the submit, a new session's record, the dev dogfood handle and
+   * the sidebar's "this row used a different model" label), and a predicate
+   * duplicated across call sites regenerates the same bug at every site. The clamp
+   * lives in `lib/maturity.ts`; this is its one application.
+   *
+   * 🔴 DERIVED ON EVERY RENDER RATHER THAN WRITTEN BACK INTO `settings`, so the
+   * app never silently rewrites a stored choice: narrow the ceiling and the send
+   * is clamped; widen it again and their original selection is honoured.
+   *
+   * 🔴 AND THE CEILING CANNOT MOVE MID-SESSION ON `@civitai/blocks-react@0.49.0`
+   * — THE CLAIM THAT IT COULD WAS FALSE AND IS THE REASON THIS PARAGRAPH IS
+   * REWRITTEN. It used to say "a re-mint with a narrower `effectiveBrowsingLevel`
+   * arrives as a re-render". A re-mint carries no browsing level at all: read in
+   * the installed dist, `internal/iframeTransport.js:291-317` states the contract
+   * outright — "BLOCK_INIT is DEDUPED. Only the FIRST valid init is honored; every
+   * repeat is a complete no-op … parentOrigin frozen to the first sender" (the
+   * host RE-SENDS it on a ~400 ms interval until BLOCK_READY, so the dedupe is
+   * load-bearing upstream). The two pushes that DO move the snapshot replace one
+   * field each: `applyTokenRefresh` at `:388-395` replaces `token` only, and
+   * `THEME_CHANGE` at `:335` moves `theme` only. `internal/inlineTransport.js:47`
+   * — `subscribe()` returning `() => {}` — cannot emit at all. So the ceiling is
+   * fixed for the life of an instance today.
+   *
+   * 🔴 WHICH IS EXACTLY WHY `activeModel` IS IN `handleSend`'s DEPENDENCY ARRAY
+   * AND MUST STAY THERE. That array carries `settings` — `clampModelToMaturity`'s
+   * FIRST argument — and until this change carried nothing for its second, so a
+   * change in `nsfwAllowed` did not rebuild the sender's closure: the toggle
+   * disappeared from the screen while the stale closure went on submitting the
+   * uncensored id. Measured with module-constant SDK mocks, so no fresh-object
+   * fixture could repair it. The ceiling not moving today is what makes that
+   * UNREACHABLE, not what makes it correct — and the SDK already pushes
+   * `THEME_CHANGE` mid-session for precisely the reason a ceiling push would
+   * exist. The day that lands, nothing in this repo would have gone red.
+   * `nsfw-mode.seam.test.tsx`'s mid-session-flip case drives the flip directly
+   * and is the guard.
+   */
+  const activeModel = useMemo(
+    () => clampModelToMaturity(settings.model, nsfwAllowed),
+    [settings.model, nsfwAllowed],
+  );
+
   const { estimate, submit, poll, cancel } = useBuzzWorkflow();
   const orchestrator = useMemo(
     () => createOrchestrator({ estimate, submit, poll, cancel }),
@@ -543,7 +609,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     (window as unknown as Record<string, unknown>).__senseiDogfood = {
-      send: (content: string, model: string = settings.model) =>
+      send: (content: string, model: string = activeModel) =>
         orchestrator.submitChatCompletion({
           model,
           messages: [{ role: 'user', content }],
@@ -551,7 +617,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
           temperature: 0.7,
         }),
     };
-  }, [orchestrator, settings.model]);
+  }, [orchestrator, activeModel]);
 
   /**
    * Run one storage interaction and REPORT ITS FAILURE TO THE VIEWER.
@@ -866,7 +932,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       return;
     }
 
-    const session = sessionsLib.createSessionRecord(settings.model);
+    const session = sessionsLib.createSessionRecord(activeModel);
     const next = [session, ...sessions];
     const ok = await persist('start a new chat', () =>
       sessionsLib.saveSessions(depsRef.current.appStorage, next),
@@ -885,7 +951,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // a second copy is how the two drift.
     depsRef.current.track('session_create');
     // `activeSessionId` is read by the reuse test above, so it belongs here.
-  }, [settings.model, sessions, persist, activeSessionId]);
+  }, [activeModel, sessions, persist, activeSessionId]);
 
   const deleteSession = useCallback(async (id: string) => {
     const next = sessionsLib.without(sessions, id);
@@ -1697,7 +1763,22 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // `declarations` is the same value the `tools` key below is derived from,
       // so the claim and the wire cannot disagree — including on the degraded
       // path, where the fetch failed and no tools are sent at all.
-      const toolsAvailable = declarations.length > 0;
+      // 🔴 AND THE MODEL HAS TO BE ABLE TO USE THEM, WHICH IS A SECOND CONDITION
+      // THIS USED TO IGNORE. `modelSupportsTools` is the one reader of
+      // `ModelConfig.supportsTools` — a field that was `false` on every entry with
+      // NOTHING in `src/` branching on it, i.e. a DTO whose value could be
+      // corrected without changing one pixel. It is now per-model and load-bearing.
+      //
+      // The case it closes is the uncensored arm: Dolphin's only OpenRouter
+      // endpoint does not expose tools, and OpenRouter treats `tools` as a SOFT
+      // preference — so the declarations were silently DROPPED, the model answered
+      // without them, and the viewer was charged all the same. Worse, the prompt
+      // told it that it COULD look things up, which is the "a model told it can
+      // search, then unable to, fabricates" defect reached through the model
+      // instead of through a failed declarations fetch. ANDing it in here means one
+      // value still decides both the `tools` key and the prompt, so the claim and
+      // the wire cannot disagree on either route.
+      const toolsAvailable = declarations.length > 0 && modelSupportsTools(activeModel);
       let apiMessages = withSystemPrompt(
         updatedMessages.map((m) => ({ role: m.role, content: m.content })),
         toolsAvailable ? settings.systemPrompt : settings.systemPrompt + NO_TOOLS_NOTICE,
@@ -1826,7 +1907,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         const round = ++replayRound;
         const result = await orchestrator.submitChatCompletion(
           {
-            model: settings.model,
+            model: activeModel,
             messages: apiMessages,
             temperature: settings.temperature,
             max_tokens: settings.maxTokens,
@@ -2368,9 +2449,15 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // reporting a bug. The reason is deliberately generic and never names the
       // labels that triggered.
       const withheld = e instanceof TextOutputWithheldError;
+      // 🔴 THE PREFIX IS A BINDING, NOT A LITERAL, AND THAT IS WHAT MAKES THE
+      // RENDERER'S PLAIN BRANCH A RELATIONSHIP. `MessageBubble` decides whether
+      // to route a body around `MarkdownText` via `isPlainBody`, which tests THIS
+      // prefix; both sides dereference `FAILURE_BODY_PREFIX` in `lib/chat.ts`, so
+      // a rewording here cannot silently put server text back through the
+      // markdown parser. Spelling `Error: ` inline again re-opens that gap.
       const body = withheld
         ? (e as TextOutputWithheldError).reason
-        : `Error: ${e instanceof Error ? e.message : 'Failed to get response'}`;
+        : failureBody(e instanceof Error ? e.message : 'Failed to get response');
       // 🔴 A FAILED OR WITHHELD TURN STILL CARRIES ITS EVIDENCE. Its tool rounds
       // may already have returned catalog ids — the model asked, the catalog
       // answered, and only the FINAL completion failed — and `recordGrounded`
@@ -2489,6 +2576,17 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // `mention-grounding.e2e.test.tsx` now hoists those to module constants and
     // goes RED (7 cases) with this line removed. Measured, not reasoned.
     pendingMentions,
+    // 🔴 THE SECOND ARGUMENT OF THE CLAMP. `settings` above is
+    // `clampModelToMaturity`'s FIRST argument; nothing here stood for its second
+    // (`nsfwAllowed`), so a ceiling that narrowed mid-session updated the SCREEN
+    // — the toggle vanished — and not the WIRE: the closure went on submitting
+    // `cognitivecomputations/dolphin-mistral-24b-venice-edition`. Not reachable on
+    // `blocks-react@0.49.0` (see the `activeModel` memo for the transport contract
+    // that makes the ceiling fixed per instance, read out of the installed dist);
+    // present so the wire half cannot drift if that ever changes, which the memo
+    // also explains. `nsfw-mode.seam.test.tsx`'s "THE CEILING NARROWS MID-SESSION"
+    // case goes red with this line removed.
+    activeModel,
   ]);
 
   const handleStopStream = useCallback(() => {
@@ -2897,7 +2995,11 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             onCreate={createSession}
             onDelete={deleteSession}
             onRename={renameSession}
-            currentModel={settings.model}
+            currentModel={activeModel}
+            // The SAME read that clamps `activeModel` — one `useDomainMaturity()`
+            // call for the whole app, so the sidebar's label gate, the footer
+            // toggle and the wire cannot disagree. See `SessionListProps`.
+            nsfwAllowed={nsfwAllowed}
           />
 
           {/* Chat area */}
@@ -3119,6 +3221,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
           settings={settings}
           onChange={handleSettingsChange}
           onOpenSettings={() => setSettingsOpen(true)}
+          // The SAME read that clamps `activeModel` above — see that memo. Passing
+          // it rather than letting the bar call the hook is what stops the visible
+          // control and the wire disagreeing about who may use the uncensored arm.
+          nsfwAllowed={nsfwAllowed}
         />
 
         {/* Settings modal */}

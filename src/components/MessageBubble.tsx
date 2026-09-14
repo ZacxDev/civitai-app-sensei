@@ -2,16 +2,30 @@ import { useState } from 'react';
 import { Group } from '@civitai/blocks-react/ui';
 import type { Message } from '../types.js';
 import type { GroundedModelIds } from '../lib/grounding.js';
-import { formatRoleLabel } from '../lib/chat.js';
+import { formatRoleLabel, isPlainBody } from '../lib/chat.js';
 import { MarkdownText } from './MarkdownText.js';
 import { ResourceMentionCard } from './ResourceMention.js';
+import { IconButton } from './Icon.js';
 import { useMotion } from '../lib/motion.js';
 import { token, brand, radius } from '../theme.js';
 
 export interface MessageBubbleProps {
   message: Message;
   onRegenerate?: () => void;
-  onCopy?: () => void;
+  /**
+   * Copy this message's text, resolving to whether the clipboard ACCEPTED it.
+   *
+   * 🔴 THE RETURN VALUE IS THE WHOLE POINT, AND IT USED TO BE `void`. The button
+   * flipped to a tick unconditionally while the parent called
+   * `navigator.clipboard.writeText(...)` with no `await` and no `.catch()`. In a
+   * sandboxed cross-origin iframe that promise can reject — permissions policy,
+   * missing transient activation, or no `navigator.clipboard` at all on an
+   * insecure context — so the control claimed success having copied nothing, with
+   * an unhandled rejection behind it. A `boolean` is what lets this component
+   * render the truth; see `lib/clipboard.ts` for the shared helper that produces
+   * it.
+   */
+  onCopy?: () => boolean | Promise<boolean>;
   /**
    * The model ids this conversation's tool rounds have returned, accumulated.
    *
@@ -46,16 +60,36 @@ export function MessageBubble({
   onCopy,
   groundedModelIds,
 }: MessageBubbleProps) {
-  const [copied, setCopied] = useState(false);
+  /**
+   * 🔴 THREE STATES, NOT A BOOLEAN, BECAUSE `false` MEANT TWO DIFFERENT THINGS.
+   * The old `copied` flag could not distinguish "not copied yet" from "the
+   * clipboard refused", so the only renderable outcome was success — which is
+   * how a control that had copied nothing came to show a tick.
+   */
+  const [copyState, setCopyState] = useState<'idle' | 'done' | 'failed'>('idle');
   const motion = useMotion();
   const isUser = message.role === 'user';
   const roleColor = ROLE_COLORS[message.role] ?? token.text;
 
-  const handleCopy = () => {
-    onCopy?.();
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+  const handleCopy = async () => {
+    // `onCopy` may be sync (a test stub) or async (the real guarded helper);
+    // `await` covers both and `?? false` makes a caller still on the old `void`
+    // signature read as a FAILURE rather than as a success. That direction is
+    // deliberate: the defect being fixed is a control claiming success it could
+    // not observe, so an unobservable outcome must not render as one.
+    const ok = (await onCopy?.()) ?? false;
+    setCopyState(ok ? 'done' : 'failed');
+    setTimeout(() => setCopyState('idle'), 1500);
   };
+
+  /**
+   * 🔴 THE ACCESSIBLE NAME CARRIES THE OUTCOME, NOT THE GLYPH. A test asserting
+   * a glyph is walked around by swapping glyphs; the name is the contract, and
+   * "Copy failed" is the only thing that tells a screen-reader user the write
+   * did not land. The tick is never shown for a refused write.
+   */
+  const copyLabel =
+    copyState === 'done' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy';
 
   return (
     <div
@@ -78,40 +112,23 @@ export function MessageBubble({
         <span style={{ fontSize: 12, fontWeight: 600, color: roleColor }}>
           {formatRoleLabel(message.role)}
         </span>
-        <Group gap={8}>
+        <Group gap={4}>
           {onRegenerate && (
-            <button
+            <IconButton
+              label="Regenerate"
+              icon="regenerate"
               onClick={onRegenerate}
-              style={{
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                color: token.dimmed,
-                fontSize: 11,
-                padding: 0,
-              }}
-              title="Regenerate"
-              data-testid="regenerate-button"
-            >
-              🔄
-            </button>
+              testId="regenerate-button"
+            />
           )}
           {onCopy && (
-            <button
+            <IconButton
+              label={copyLabel}
+              icon={copyState === 'done' ? 'check' : 'copy'}
+              tone={copyState === 'failed' ? 'error' : 'default'}
               onClick={handleCopy}
-              style={{
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                color: token.dimmed,
-                fontSize: 11,
-                padding: 0,
-              }}
-              title="Copy"
-              data-testid="copy-button"
-            >
-              {copied ? '✓' : '📋'}
-            </button>
+              testId="copy-button"
+            />
           )}
         </Group>
       </Group>
@@ -128,15 +145,19 @@ export function MessageBubble({
         }}
         data-testid="message-content"
       >
-        {/* 🔴 ONLY THE WITHHELD BRANCH STAYS PLAIN. This tests `message.withheld`,
-            which `App`'s catch sets only for a `TextOutputWithheldError`; every
-            other failure is `Error: <message>` with `withheld: false` and goes
-            through `MarkdownText` — and since PR #69 that message is the SERVER's
-            own words. The exposure is measured and the decision deferred under
-            `error-text-through-markdown` in `taste.json`; read it there before
-            changing this, and do not change it here. */}
+        {/* 🔴 EVERY APP-AUTHORED BODY STAYS PLAIN — WITHHOLDS AND FAILURES BOTH,
+            and the comment here is now true of the code under it. It used to say
+            exactly this while testing `message.withheld` alone, which `App`'s
+            catch sets ONLY for a `TextOutputWithheldError`; every other failure
+            was `Error: <message>` with `withheld: false` and went through
+            `MarkdownText` — server text off `snapshot.error` since PR #69,
+            rendered as markdown. The predicate lives in `lib/chat.ts`'s
+            `isPlainBody`, sharing ONE prefix constant with the catch that writes
+            it, so the reader and the writer cannot drift; read that function's
+            header for the measured exposure and the role scoping. Closes
+            `error-text-through-markdown` in `taste.json`. */}
         {message.content
-          ? message.withheld
+          ? isPlainBody(message)
             ? message.content
             : (
               <MarkdownText
