@@ -580,16 +580,29 @@ describe('the message enhancement — what the viewer sees, and what survives a 
 
     // 🔴 REPOINTED FOR `ResourceCard`, AND THE OLD EXPECTATION WAS PINNING OUR OWN
     // FORMATTING RATHER THAN A CONTRACT. It asserted the raw `B.modelType`
-    // (`'LoCon'`) appeared verbatim. The pack's `TYPE_LABELS` maps
-    // locon/lycoris/dora/lora all to `'LoRA'` — a FROZEN decision, on the argument
-    // that a LoCon IS a LoRA-family resource and three apps disagreeing about the
-    // label is three apps telling one viewer different things about the same model.
-    // So the honest assertion is that the type pill is PRESENT and carries
-    // something, not that it spells the wire value. An unknown type still renders
-    // verbatim, which is what keeps this from hiding a Controlnet as "LoRA".
+    // (`'LoCon'`) appeared verbatim, which the pack does not promise.
+    //
+    // 🔴 BUT "PRESENT AND NON-EMPTY" WAS TOO FAR THE OTHER WAY — it passes for ANY
+    // label, a wrong one included, which is the one thing this assertion exists to
+    // catch: a viewer who reads "Checkpoint" on a LoRA picks a base model that
+    // cannot generate. The mapping IS a contract and it is pinned as one.
+    // Read in the installed dist rather than recalled —
+    // `@civitai/blocks-react@0.49.0`, `dist/ui/ResourceCard.js:17-23`:
+    //
+    //     const TYPE_LABELS = { checkpoint: 'Checkpoint', lora: 'LoRA',
+    //                           locon: 'LoRA', lycoris: 'LoRA', dora: 'LoRA' };
+    //
+    // headed "🔴 FROZEN — the LoRA/Checkpoint distinction, and it is deliberately
+    // NOT a prop", on the argument that three blocks rendering `modelType` three
+    // ways made one resource read as a different KIND of thing per app. So `LoCon`
+    // in, `LoRA` out is the relationship, and this is the RELATIONSHIP rather than
+    // our formatting: the fixture's wire value is `'LoCon'` and the rendered label
+    // must be `'LoRA'` — two distinct strings, so the assertion cannot pass by
+    // echoing its input.
     const type = enhancement!.querySelector(`[data-testid="mention-${B.versionId}-type"]`);
     expect(type).toBeTruthy();
-    expect((type!.textContent ?? '').trim().length).toBeGreaterThan(0);
+    expect(B.modelType).toBe('LoCon');
+    expect(type!.textContent!.trim()).toBe('LoRA');
   });
 
   it('the composer is cleared of attachments once they are sent', async () => {

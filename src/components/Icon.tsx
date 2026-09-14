@@ -235,6 +235,18 @@ export interface IconButtonProps {
    * destructures a closed parameter list and has no `...rest`, so nothing a
    * caller smuggled in could reach the DOM anyway. Add either and `tsc` stops
    * being the instrument; a grep of the call sites becomes the instrument.
+   *
+   * ⚠️ AND A THIRD PRECONDITION APPLIES TO ANY "`tsc` PROVED NOTHING CALLS IT"
+   * ARGUMENT ANYWHERE IN THIS REPO, INCLUDING THE `models.ts` / `mentions.ts`
+   * FUNCTION REMOVALS ON THIS BRANCH: `tsconfig.json`'s `include` is
+   * `["src", "vite.config.ts"]`, so a caller OUTSIDE that program is invisible to
+   * it. `eval/` is outside it and does import across the boundary —
+   * `eval/run-eval.mjs:40-44` pulls three names from `../src/lib/grounding.ts`
+   * (deliberately, with its own note about why the `.ts` specifier works) — so
+   * `tsc` rc=0 is evidence about `src/` and `vite.config.ts` only. It happens to
+   * be safe HERE because this file's exports have no out-of-program importer, but
+   * the argument is about the program, not the file: check `eval/` before reusing
+   * it.
    */
 }
 

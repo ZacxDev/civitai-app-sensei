@@ -104,9 +104,12 @@ export interface ModelConfig {
  * which the tests pin against this list.
  *
  * 🔴 APPEND, NEVER INSERT. The host's own `CHAT_COMPLETION_MODELS` is asserted
- * upstream as a whole ORDERED array, and this list's mirror is compared against
- * it. A new entry goes on the end; re-ordering the existing three is a
- * gratuitous way to turn a green suite red on the other side of the wire.
+ * upstream as a whole ORDERED array. A new entry goes on the end; re-ordering
+ * the existing three is a gratuitous way to turn a green suite red on the other
+ * side of the wire. ⚠️ NOTHING HERE ENFORCES THAT ORDER, so do not read the
+ * sentence above as a covered invariant: `orchestrator-bridge.test.ts:1043`
+ * compares the two lists as a SET (it `.sort()`s both sides), and the append
+ * discipline is held only by `models.test.ts`'s last-element and length pins.
  *
  * 🔴 THE "FLAT 1 BUZZ" CLAIM THAT USED TO BE HERE WAS FALSE, AND THE COSTS
  * BELOW ARE NOT WHAT YOU PAY. The step is registered `prepaidFixed`, but the
