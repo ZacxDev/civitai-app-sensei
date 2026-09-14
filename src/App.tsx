@@ -553,12 +553,36 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    * duplicated across call sites regenerates the same bug at every site. The clamp
    * lives in `lib/maturity.ts`; this is its one application.
    *
-   * 🔴 DERIVED ON EVERY RENDER RATHER THAN WRITTEN BACK INTO `settings`. The
-   * viewer's ceiling can change without their settings changing — a re-mint with a
-   * narrower `effectiveBrowsingLevel` arrives as a re-render — so a value computed
-   * once at load would be stale exactly when it matters. It also means the app
-   * never silently rewrites a stored choice: narrow the ceiling and the send is
-   * clamped; widen it again and their original selection is honoured.
+   * 🔴 DERIVED ON EVERY RENDER RATHER THAN WRITTEN BACK INTO `settings`, so the
+   * app never silently rewrites a stored choice: narrow the ceiling and the send
+   * is clamped; widen it again and their original selection is honoured.
+   *
+   * 🔴 AND THE CEILING CANNOT MOVE MID-SESSION ON `@civitai/blocks-react@0.49.0`
+   * — THE CLAIM THAT IT COULD WAS FALSE AND IS THE REASON THIS PARAGRAPH IS
+   * REWRITTEN. It used to say "a re-mint with a narrower `effectiveBrowsingLevel`
+   * arrives as a re-render". A re-mint carries no browsing level at all: read in
+   * the installed dist, `internal/iframeTransport.js:291-317` states the contract
+   * outright — "BLOCK_INIT is DEDUPED. Only the FIRST valid init is honored; every
+   * repeat is a complete no-op … parentOrigin frozen to the first sender" (the
+   * host RE-SENDS it on a ~400 ms interval until BLOCK_READY, so the dedupe is
+   * load-bearing upstream). The two pushes that DO move the snapshot replace one
+   * field each: `applyTokenRefresh` at `:388-395` replaces `token` only, and
+   * `THEME_CHANGE` at `:335` moves `theme` only. `internal/inlineTransport.js:47`
+   * — `subscribe()` returning `() => {}` — cannot emit at all. So the ceiling is
+   * fixed for the life of an instance today.
+   *
+   * 🔴 WHICH IS EXACTLY WHY `activeModel` IS IN `handleSend`'s DEPENDENCY ARRAY
+   * AND MUST STAY THERE. That array carries `settings` — `clampModelToMaturity`'s
+   * FIRST argument — and until this change carried nothing for its second, so a
+   * change in `nsfwAllowed` did not rebuild the sender's closure: the toggle
+   * disappeared from the screen while the stale closure went on submitting the
+   * uncensored id. Measured with module-constant SDK mocks, so no fresh-object
+   * fixture could repair it. The ceiling not moving today is what makes that
+   * UNREACHABLE, not what makes it correct — and the SDK already pushes
+   * `THEME_CHANGE` mid-session for precisely the reason a ceiling push would
+   * exist. The day that lands, nothing in this repo would have gone red.
+   * `nsfw-mode.seam.test.tsx`'s mid-session-flip case drives the flip directly
+   * and is the guard.
    */
   const activeModel = useMemo(
     () => clampModelToMaturity(settings.model, nsfwAllowed),
@@ -2552,6 +2576,17 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // `mention-grounding.e2e.test.tsx` now hoists those to module constants and
     // goes RED (7 cases) with this line removed. Measured, not reasoned.
     pendingMentions,
+    // 🔴 THE SECOND ARGUMENT OF THE CLAMP. `settings` above is
+    // `clampModelToMaturity`'s FIRST argument; nothing here stood for its second
+    // (`nsfwAllowed`), so a ceiling that narrowed mid-session updated the SCREEN
+    // — the toggle vanished — and not the WIRE: the closure went on submitting
+    // `cognitivecomputations/dolphin-mistral-24b-venice-edition`. Not reachable on
+    // `blocks-react@0.49.0` (see the `activeModel` memo for the transport contract
+    // that makes the ceiling fixed per instance, read out of the installed dist);
+    // present so the wire half cannot drift if that ever changes, which the memo
+    // also explains. `nsfw-mode.seam.test.tsx`'s "THE CEILING NARROWS MID-SESSION"
+    // case goes red with this line removed.
+    activeModel,
   ]);
 
   const handleStopStream = useCallback(() => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
 import { BrowsingLevel, effectiveBrowsingCeiling, isLevelAllowed } from '@civitai/app-sdk/blocks';
 import { App } from './App.js';
 import { fakeAppStorage } from './test-helpers.js';
@@ -59,6 +59,24 @@ const SFW_CEILING = BrowsingLevel.PG | BrowsingLevel.PG13;
 
 let storage = fakeAppStorage();
 
+// 🔴 HOISTED, SO THE HOOKS RETURN A STABLE IDENTITY ACROSS RENDERS, AND THAT IS A
+// CORRECTNESS REQUIREMENT OF THIS FIXTURE RATHER THAN TIDINESS. Same hazard
+// `mention-grounding.e2e.test.tsx`'s header records, and this file is the one
+// that needs it most: returning a fresh `vi.fn()` from
+// `useRequestConsent`/`useRequestSignIn`, or a fresh `{ id: 1 }` from
+// `useBlockContext`, makes `raiseGate` a new function on every render, which makes
+// `handleSend` a new function on every render — which SILENTLY REPAIRS any
+// missing entry in `handleSend`'s dependency array. `activeModel` was missing from
+// it, and with fresh identities the mid-session-flip case below passes whether or
+// not the dep is there: the whole point of that case is that the closure is NOT
+// rebuilt. The real SDK's callbacks are stable, so production had the stale one.
+const VIEWER = { id: 1 };
+const requestConsentFn = vi.fn();
+const requestSignInFn = vi.fn();
+const trackFn = vi.fn();
+const openPickerFn = vi.fn().mockResolvedValue(null);
+const cancelFn = vi.fn().mockResolvedValue(undefined);
+
 const estimateFn = vi
   .fn()
   .mockResolvedValue({ workflowId: 'e', status: 'succeeded', cost: { total: 1 } });
@@ -75,8 +93,8 @@ const pollFn = vi.fn(async () => ({
 
 vi.mock('@civitai/blocks-react', () => ({
   useAppStorage: () => storage.appStorage,
-  useBlockAnalytics: () => ({ track: vi.fn() }),
-  useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
+  useBlockAnalytics: () => ({ track: trackFn }),
+  useBlockContext: () => ({ ready: true, viewer: VIEWER, theme: 'dark' }),
   useBlockResize: () => {},
   // The ONE hook under test here, resolved exactly as the real one does.
   useDomainMaturity: () => {
@@ -89,16 +107,16 @@ vi.mock('@civitai/blocks-react', () => ({
       isLevelAllowed: (level: number) => isLevelAllowed(level, effective),
     };
   },
-  useRequestConsent: () => ({ requestConsent: vi.fn() }),
-  useRequestSignIn: () => ({ requestSignIn: vi.fn() }),
-  useResourcePicker: () => ({ open: vi.fn().mockResolvedValue(null) }),
+  useRequestConsent: () => ({ requestConsent: requestConsentFn }),
+  useRequestSignIn: () => ({ requestSignIn: requestSignInFn }),
+  useResourcePicker: () => ({ open: openPickerFn }),
   useBlockToken: () => ({ raw: 'block-jwt-test', scopes: ['ai:write:budgeted', 'buzz:read:self'] }),
   useBuzzBalance: () => ({ balance: { blue: 100, green: 0, yellow: 200 } }),
   useBuzzWorkflow: () => ({
     estimate: estimateFn,
     submit: submitFn,
     poll: pollFn,
-    cancel: vi.fn().mockResolvedValue(undefined),
+    cancel: cancelFn,
     status: 'idle',
     result: null,
     error: null,
@@ -132,11 +150,13 @@ function installFetch() {
   }) as unknown as typeof globalThis.fetch;
 }
 
+/** Returns the RTL handle, because one case below needs its `rerender`. */
 async function boot() {
-  render(<App />);
+  const view = render(<App />);
   await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
   fireEvent.click(screen.getByTestId('new-session-button'));
   await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
+  return view;
 }
 
 async function send(text: string) {
@@ -162,6 +182,11 @@ beforeEach(() => {
   storage = fakeAppStorage();
   submitFn.mockClear();
   pollFn.mockClear();
+  requestConsentFn.mockClear();
+  requestSignInFn.mockClear();
+  trackFn.mockClear();
+  openPickerFn.mockClear();
+  cancelFn.mockClear();
   clearCache();
   installFetch();
 });
@@ -270,6 +295,94 @@ describe('🔴 the clamp — a STORED NSFW selection is not honoured for a viewe
     expect(screen.getByTestId('nsfw-toggle')).toHaveAttribute('aria-checked', 'true');
     await send('hello');
 
+    expect(submitted[0].model).toBe(NSFW_MODEL_ID);
+  });
+
+  it('🔴 THE CEILING NARROWS MID-SESSION: the SCREEN and the WIRE must move together', async () => {
+    // ─────────────────────────────────────────────────────────────────────────
+    // 🔴 THE HALF THE TWO CASES ABOVE CANNOT SEE. Both resolve the ceiling ONCE,
+    // before boot, so they prove the clamp is applied — never that it is
+    // RE-applied. `handleSend` is a `useCallback`, and its dependency array
+    // carries `settings` (the clamp's FIRST argument) but carried nothing for its
+    // second. So a ceiling that narrowed after the sender's closure was built
+    // updated only the VISIBLE half: the toggle left the DOM while the closure
+    // went on submitting the uncensored id. Measured at a0977a7 — the toggle
+    // vanished and the submit still carried
+    // `cognitivecomputations/dolphin-mistral-24b-venice-edition`.
+    //
+    // ⚠️ NOT REACHABLE ON `@civitai/blocks-react@0.49.0`, and that is context, not
+    // an excuse. `internal/iframeTransport.js:291-317` documents `BLOCK_INIT` as
+    // DEDUPED — only the first is honoured — `applyTokenRefresh` (`:388`) replaces
+    // `token` only, `THEME_CHANGE` (`:335`) `theme` only, and
+    // `internal/inlineTransport.js:47`'s `subscribe` is a no-op. So no host push
+    // can move the ceiling today; this case drives the flip directly instead of
+    // waiting for one that can. The SDK already pushes `THEME_CHANGE` mid-session
+    // for exactly the reason a ceiling push would exist, and on the day it lands
+    // nothing else in this repo goes red.
+    //
+    // 🔴 WHY `rerender` AND NOT A UI ACTION: the mutant is "the closure was not
+    // rebuilt", so the re-render must change NO entry in that dependency array.
+    // Typing, sending, switching session and opening the menu all move one. A
+    // bare `rerender(<App />)` moves none — and the fixture's hooks are module
+    // constants (see the hoist at the top of this file) precisely so that a fresh
+    // `vi.fn()` identity cannot rebuild the closure behind the assertion's back.
+    // ─────────────────────────────────────────────────────────────────────────
+    storage = fakeAppStorage({
+      'sensei:settings': { model: NSFW_MODEL_ID, temperature: 0.7, maxTokens: 2048, systemPrompt: 'x' },
+    });
+    domainCeiling = RED_CEILING;
+    viewerLevel = RED_CEILING;
+
+    const { rerender } = await boot();
+    // The viewer is legitimately on the uncensored arm at this point.
+    expect(screen.getByTestId('nsfw-toggle')).toHaveAttribute('aria-checked', 'true');
+
+    // 🔴 LET EVERY BOOT-PATH WRITE SETTLE *BEFORE* THE FLIP, OR THE CASE MEASURES
+    // LUCK. A session save resolving AFTER the re-render moves `sessions` — which
+    // IS in the dependency array — and rebuilds the closure with the new ceiling
+    // already in it, repairing the missing dep by accident. Measured: without this
+    // line the widening control below PASSED with `activeModel` removed from the
+    // array, and failed with it. Nothing about the flip should depend on which
+    // microtask wins.
+    await act(async () => {});
+
+    // The host narrows the ceiling under them.
+    viewerLevel = SFW_CEILING;
+    rerender(<App />);
+
+    // The VISIBLE half updates on its own — it is read straight off the render.
+    expect(screen.queryByTestId('nsfw-toggle')).toBeNull();
+
+    // 🔴 AND SO MUST THE WIRE. This is the assertion the missing dep failed, and
+    // it names the submitted model rather than asserting a re-render happened.
+    await send('write me something');
+    expect(submitted[0].model).toBe(SFW_MODEL_ID);
+    expect(submitted[0].model).not.toBe(NSFW_MODEL_ID);
+    // The clamped arm is tool-capable, so the grounding comes back with it — the
+    // same both-halves check the stored-selection case makes.
+    expect(submitted[0].tools).toBeTruthy();
+  });
+
+  it('🔴 POSITIVE CONTROL: a ceiling that WIDENS mid-session is honoured too', async () => {
+    // Without this, the case above is satisfied by a sender that always clamps —
+    // i.e. by an app on which the uncensored arm can never be reached after boot.
+    // Same mechanism, same `rerender`, opposite direction.
+    storage = fakeAppStorage({
+      'sensei:settings': { model: NSFW_MODEL_ID, temperature: 0.7, maxTokens: 2048, systemPrompt: 'x' },
+    });
+    domainCeiling = RED_CEILING;
+    viewerLevel = SFW_CEILING;
+
+    const { rerender } = await boot();
+    expect(screen.queryByTestId('nsfw-toggle')).toBeNull();
+    // Same settle, same reason — see the case above.
+    await act(async () => {});
+
+    viewerLevel = RED_CEILING;
+    rerender(<App />);
+    expect(screen.getByTestId('nsfw-toggle')).toHaveAttribute('aria-checked', 'true');
+
+    await send('write me something');
     expect(submitted[0].model).toBe(NSFW_MODEL_ID);
   });
 
