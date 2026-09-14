@@ -54,11 +54,41 @@ export interface ModelConfig {
    * only evidence about what the app SENDS.
    */
   supportsTools: boolean;
-  supportsStreaming: boolean;
-  costPer1kInput: number;
-  costPer1kOutput: number;
-  maxContext: number;
 }
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * 🔴 FIVE FIELDS AND TWO FUNCTIONS WERE REMOVED FROM HERE. DO NOT PUT THEM BACK
+ * WITHOUT A CONSUMER.
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * `supportsStreaming`, `costPer1kInput`, `costPer1kOutput`, `maxContext`,
+ * `estimateCost` and `formatCost` are gone. Every one of them had ZERO readers
+ * outside `models.test.ts` — the exact shape an audit round had already flagged
+ * for `supportsTools`, whose verdict was "branch on it or remove it". That
+ * verdict was applied to `supportsTools` (`App.tsx` ANDs
+ * `modelSupportsTools(activeModel)` into `toolsAvailable`); disclosing the
+ * siblings in a PR body while leaving them in place is not the same thing.
+ *
+ * 🔴 AND THE COST FIELDS WERE ACTIVELY MISLEADING, WHICH IS WHY THEY GO RATHER
+ * THAN GET A COMMENT. They were indicative, unmeasured USD figures sitting in a
+ * type called `ModelConfig` next to a function called `estimateCost` — on a
+ * block where every reply spends real Buzz. The list header already records
+ * what a reply ACTUALLY costs (measured by `whatif` quote: 2-4 Buzz for one
+ * identical conversation, moving with the model AND `maxTokens`), and the
+ * platform reprices from the provider's live per-token rate floored at 1 Buzz.
+ * A USD-per-1k table cannot produce that number, so the only thing it could do
+ * was be believed. Four more instances of it were added by this PR's own new
+ * entry, whose comment had to say "do not compute a charge from them" — a field
+ * that needs that warning is a field to delete.
+ *
+ * `formatCost` was traced separately, because the D2 finding did not cover it:
+ * it is a pure `number → '$0.00'` formatter with no callers at all, and its only
+ * plausible caller was `estimateCost`'s output. It goes with it.
+ *
+ * If a real cost display is ever wanted, the input is the platform's own quote
+ * (`whatif`) in Buzz, not a USD table maintained here by hand.
+ */
 
 /**
  * The models this block may reach.
@@ -96,8 +126,8 @@ export interface ModelConfig {
  * the token budget, and the platform's own declared `CHAT_COMPLETION_PRICE_BUZZ
  * = 1` is that floor, not the price (clawgate #386).
  *
- * `costPer1kInput`/`costPer1kOutput` below are indicative USD figures for
- * display and are not re-measured; do not compute a Buzz charge from them.
+ * Those Buzz figures are the ONLY cost numbers this module carries, and it
+ * carries them as prose rather than as fields for the reason above the type.
  */
 export const AVAILABLE_MODELS: ModelConfig[] = [
   {
@@ -119,10 +149,6 @@ export const AVAILABLE_MODELS: ModelConfig[] = [
      * fabricate-then-charge defect and not a no-op.
      */
     supportsTools: true,
-    supportsStreaming: false,
-    costPer1kInput: 0.00014,
-    costPer1kOutput: 0.00028,
-    maxContext: 64000,
   },
   {
     id: 'openai/gpt-4o-mini',
@@ -135,10 +161,6 @@ export const AVAILABLE_MODELS: ModelConfig[] = [
      * verdict has been observed from this block on this id either.
      */
     supportsTools: true,
-    supportsStreaming: false,
-    costPer1kInput: 0.00015,
-    costPer1kOutput: 0.0006,
-    maxContext: 128000,
   },
   {
     id: 'cognitivecomputations/dolphin-mistral-24b-venice-edition',
@@ -162,22 +184,17 @@ export const AVAILABLE_MODELS: ModelConfig[] = [
      * through the model rather than through a failed declarations fetch.
      */
     supportsTools: false,
-    supportsStreaming: false,
-    costPer1kInput: 0.0002,
-    costPer1kOutput: 0.0002,
-    maxContext: 32000,
   },
   {
     /**
      * The SFW arm's model. Registered host-side by civitai#4803.
      *
-     * ⚠️ ITS THREE NUMBERS BELOW ARE INDICATIVE AND UNMEASURED, unlike the Buzz
-     * figures in this list's header — which were taken by `whatif` quote on one
-     * identical conversation and do not cover this entry. What IS reported
-     * upstream is roughly 1 Buzz on a short reply against `gpt-4o-mini`'s 2.
-     * `costPer1k*` and `maxContext` are read by nothing in `src/` (only by
-     * `models.test.ts`), so an indicative value here misleads a reader and
-     * nothing else; do not compute a charge from them.
+     * ⚠️ NO COST FIGURE IS RECORDED FOR THIS ENTRY, deliberately. The Buzz
+     * figures in this list's header were taken by `whatif` quote on one
+     * identical conversation and DO NOT cover this model; what is reported
+     * upstream is roughly 1 Buzz on a short reply against `gpt-4o-mini`'s 2, and
+     * that is hearsay, not a quote. The three indicative USD numbers that used to
+     * sit here are gone with the fields — see the note above `AVAILABLE_MODELS`.
      *
      * ⚠️ AND NOTHING LOCAL PROVES IT EXECUTES. It has never been driven to
      * `succeeded` against the live step — disclosed as such in the upstream PR —
@@ -196,10 +213,6 @@ export const AVAILABLE_MODELS: ModelConfig[] = [
      * observation to weaken, because there is no observation.
      */
     supportsTools: true,
-    supportsStreaming: false,
-    costPer1kInput: 0.00007,
-    costPer1kOutput: 0.00014,
-    maxContext: 64000,
   },
 ];
 
@@ -238,19 +251,3 @@ export function modelSupportsTools(id: string): boolean {
   return getModelById(id)?.supportsTools === true;
 }
 
-export function estimateCost(
-  model: ModelConfig,
-  promptTokens: number,
-  completionTokens: number,
-): number {
-  return (
-    (promptTokens / 1000) * model.costPer1kInput +
-    (completionTokens / 1000) * model.costPer1kOutput
-  );
-}
-
-export function formatCost(usd: number): string {
-  if (usd < 0.001) return '<$0.001';
-  if (usd < 0.01) return `$${usd.toFixed(3)}`;
-  return `$${usd.toFixed(2)}`;
-}

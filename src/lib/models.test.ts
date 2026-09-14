@@ -2,8 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   AVAILABLE_MODELS,
   getModelById,
-  estimateCost,
-  formatCost,
   modelSupportsTools,
   NSFW_MODEL_ID,
   SFW_MODEL_ID,
@@ -16,13 +14,16 @@ describe('models', () => {
     });
 
     it('each model has required fields', () => {
+      // 🔴 THE THREE `costPer1k*`/`maxContext` ASSERTIONS THAT WERE HERE ARE
+      // GONE WITH THE FIELDS. They pinned the TYPES of values nothing read —
+      // `typeof === 'number'` and `> 0` — which is a test that can only ever
+      // fail if someone types a string into a field with no consumer. Reading
+      // as coverage while providing none is worse than none: it stops anyone
+      // looking. See the note above `AVAILABLE_MODELS` in `models.ts`.
       for (const model of AVAILABLE_MODELS) {
         expect(model.id).toBeTruthy();
         expect(model.name).toBeTruthy();
         expect(model.provider).toBeTruthy();
-        expect(typeof model.costPer1kInput).toBe('number');
-        expect(typeof model.costPer1kOutput).toBe('number');
-        expect(model.maxContext).toBeGreaterThan(0);
       }
     });
   });
@@ -36,15 +37,6 @@ describe('models', () => {
 
     it('returns undefined for unknown', () => {
       expect(getModelById('nonexistent')).toBeUndefined();
-    });
-  });
-
-  describe('estimateCost', () => {
-    it('calculates cost correctly', () => {
-      const model = getModelById('deepseek/deepseek-chat')!;
-      const cost = estimateCost(model, 1000, 500);
-      // 1000 * 0.00014 + 500 * 0.00028 = 0.00014 + 0.00014 = 0.00028
-      expect(cost).toBeCloseTo(0.00028, 6);
     });
   });
 
@@ -103,20 +95,6 @@ describe('models', () => {
       // id before any quote — so the direction is chosen rather than inherited.
       expect(modelSupportsTools('deepseek/deepseek-r1')).toBe(false);
       expect(modelSupportsTools('')).toBe(false);
-    });
-  });
-
-  describe('formatCost', () => {
-    it('formats very small amounts', () => {
-      expect(formatCost(0.0001)).toBe('<$0.001');
-    });
-
-    it('formats small amounts', () => {
-      expect(formatCost(0.005)).toBe('$0.005');
-    });
-
-    it('formats larger amounts', () => {
-      expect(formatCost(0.15)).toBe('$0.15');
     });
   });
 });
