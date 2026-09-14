@@ -18,71 +18,36 @@ platform changes that feedback turned out to require.
 
 ## State now
 
-**sensei** — `trunk` @ `044493b`, clean. **PR #72** `zach/ui-feedback-pass` @ **`82e6c55`**, `MERGEABLE`.
-The five-item feedback pass: app-owned SVG `IconButton`, bubble alignment at `min(68ch, 92%)`, native
-`ResourceCard variant="row"`, an NSFW-mode toggle replacing the model selector, and a `⋮` session-row
-menu carrying the chat id. **Audit ladder CLOSED** after round 0 → round 1 → round 2 plus **three**
-fix rounds; closure recorded as a PR comment with six OPEN items and their closing conditions — that
-comment is the record, not this doc. Untouched this session. Version deliberately still `0.1.22` in both `package.json` and `block.manifest.json`, so a
-`release:` PR is owed after #72 merges. Matrix at `82e6c55`: typecheck rc=0 · node **429** · dom
-**339** · build `index-B6c7mAV3.js` **354,791 B**.
+🔴 **THE `page.fullBleed` MANIFEST FIELD IS DEAD — OPERATOR DECISION, NOT AN AUDIT FINDING.**
+"This should be managed by styling, not a manifest field." civitai **#4812 is CLOSED UNMERGED**
+(`closedAt 2026-09-14T21:23:18Z`, `mergedAt: null`, branch `zach/app-block-full-bleed-manifest`
+preserved). The CSS ledger in `src/styles/globals.css` is now the permanent mechanism, not a
+transitional one. **Do not rebuild the field**; read #4812's closing comment first if tempted.
 
-**civitai PR #4812** @ **`89b9dc5d9b`**, OPEN. 🔴 **THE AUDIT LADDER IS CLOSED.** Rounds 0, 1 and 2
-plus two fix rounds; twelve commits on `cb8233f52c`.
+That call is the lesson of this arc. Three audit rounds asked *"is this change correct?"* and the
+answer kept coming back yes — thirteen findings, all fixed, ladder closed cleanly on the attribution
+gate. **No round could ask "should this exist?"**, which is the only question that closes a PR. One
+sentence from the operator ended it.
 
-| round | fixes | outcome |
-|---|---|---|
-| 0 + 1 | `b073d37d1b` (F2/F3 seam guard), `f5473054da` `c5c35e1883` `11af474ffb` `b838bab8c1` `a1d4b067a9` `849b9abc76` (F4–F8 prose) | 8 findings, all fixed |
-| 2 | `8ac58d2831` `2208f0c37b` `0fd7af726a` `e0426e5d59` `89b9dc5d9b` | 2 🟡 + 3 🟢, all false/misleading PROSE, all fixed |
+**sensei — SHIPPED.** `trunk` @ `30909d1`, clean.
+- **#72 MERGED** (`mergedAt 2026-09-14T21:18:03Z`, merge commit `68b6641`) — the five-item UI
+  feedback pass: app-owned SVG `IconButton`, bubble alignment at `min(68ch, 92%)`, native
+  `ResourceCard variant="row"`, an NSFW-mode toggle, a `⋮` session-row menu. Its audit ladder closed
+  after **round 0 → round 1 → round 2 plus three fix rounds**, with closure recorded as a PR comment
+  carrying six OPEN items and their closing conditions — that comment is the record, not this doc.
+  Verified by CONTENT, not ancestry (a squash never makes the head an ancestor).
+- **#73 MERGED** (`30909d17`) — `release: 0.1.23`. Both `package.json` and `block.manifest.json`
+  read `0.1.23` on trunk, read back from the files rather than inferred from the merge. Gates before
+  merge: typecheck rc=0 · node **429** · dom **339** (run SEPARATELY — the combined summary does not
+  label tiers and this repo's gate requires reading both) · build rc=0 `index-BhrJSPg5.js` 354,840 B
+  · `src/manifest.test.ts` 3/3.
 
-🔴 **The ladder stopped on the ATTRIBUTION GATE, not on a clean round — and that distinction is the
-whole point.** Round 2 returned real findings; so would a round 3. But two consecutive fix rounds
-changed **zero payload lines**, which is the documented signal that the ladder has left the PR and is
-auditing prose the ladder itself wrote. Measured, not asserted: `src/styles/globals.css`,
-`src/shared/constants/block-effective-scopes.ts` and `src/components/AppBlocks/fullBleedMounterSeam.test.ts`
-are **code-identical** between `849b9abc76` and `89b9dc5d9b` once comments are stripped. Round 1's
-round was likewise zero-payload (the auditor proved `globals.css` comment-only by a byte-identical
-comment-stripped comparison at both ends).
-
-Both rounds' claims blocks are posted on the PR as ISSUE comments (review comments are invisible to
-`audit-dispatch.py`), so a round 3 would anchor correctly at `849b9abc76..89b9dc5d9b` if anyone
-reopens it. **Nobody should, on findings alone** — the gate is what ends this, and re-running it
-would re-enter the loop it exists to break.
-
-**What round 2 actually caught, since it justifies the two fix rounds:**
-- `globals.css` claimed the browser tier "inject[s] the rule they render and so [is] not evidence
-  about this file's contents" — **false for one of its two ledger cases**. `LEDGER — every member is
-  full-bleed at 2560x1080` reads `globals.css?raw` and parses the real rules, with its own positive
-  control. Deleting the ledger reds it (12 passed → 1 failed/11 passed, measured twice). The reader
-  consequence was concrete: an engineer performing the retirement trusts that sentence, runs the node
-  tier only, sees the promised 5 red, fixes them, and pushes a red browser tier — and `main` has no
-  required checks to catch it.
-- `docs/features/app-blocks.md` claimed `AppBlock.manifest` is "written in exactly one place". There
-  are **two** writers; the second is the `JOB_TOKEN`-gated `POST /api/v1/developer/block-manifests`.
-  The repo already documents that endpoint as a writer in three places **and carries a retraction of
-  this exact class of claim about this exact endpoint** — the same mistake, made twice.
-- The seam header's "302 node files / 6,475 tests AND 26/26 browser" was a ~17% slice stated as a
-  tier. The substance held HARDER than claimed: at full tier scope the five-site mutation leaves
-  1786 files / 40,666 tests green (baseline 1787/40,678), only pre-existing load-flaky
-  `eventloop-watchdog.capture.test.ts` red. The **browser half was retired rather than restated**,
-  because `b073d37d1b` itself added a case closing site 5, which makes "26/26" unreproducible.
-
-**Merged-tree, re-checked because the base MOVED** (the clone fell 13 behind during an API outage, so
-the round-2 auditor's "merges cleanly" was measured against a possibly-stale base):
-`git merge-tree --write-tree origin/main 849b9abc76` → **rc=0** against the current tip
-`a7b6e324d2`, and the PR's full 41-file set is **disjoint** from the 59 files those 13 commits
-touched. Disjointness is not safety on its own — one side can widen a function's inputs while the
-other adds a caller — but with the exit code it is reasonable. `gh` still reports
-`mergeable: UNKNOWN` (not yet computed), and `gh` is the only authority on that.
-
-**Open decision for the operator, twice flagged and not yet answered:** `b838bab8c1` (amended by
-`e0426e5d59`) adds a tooling caveat beside the "declare it in your manifest" snippet that **nobody
-asked for**, on the grounds that all three schema mirrors reject the field so `civitai app submit`
-refuses before any network call. It carries its own staleness test. Keep or drop.
-
-**civitai base clone** `/home/zach/workspace/civit/civitai` — `main`, fetched to `a7b6e324d2`.
-**The worktree** at `/home/zach/workspace/civit/civitai-fullbleed-manifest` is still deliberately in
-place; remove it with `git -C $CIVITAI worktree remove` when #4812 closes.
+**civitai #4838 — OPEN, audited, awaiting a merge decision.** `zach/stale-cross-references` @
+**`6e4e0a80bf`**, `MERGEABLE`, +43/−20 across 3 files, **comment and docs only**. It de-lines six
+stale cross-references to symbol/branch citations and retracts the false SDK-pin justification in
+`globals.css`. Full audit returned 1 🟡 + 2 🟢, **all three in the new prose** — the predicted failure
+mode. Fixed in `6e4e0a80bf` by **cutting the block rather than redrafting it**, because every sentence
+is a claim that can rot and this block has now been wrong twice.
 
 ## Open investigations — live diagnosis state
 
@@ -172,52 +137,80 @@ as-of: 2026-09-13
   and the `gh api repos/civitai/cli/contents/...` one-liner already recorded above. Both must list
   `fullBleed` before the docs may tell an author to declare it.
 
+### "The manifest schema is three mirrors that must move in lockstep" is WRONG, and I asserted it too
+- as-of: 2026-09-14
+- **Symptom + exact repro:** this doc, #4812's body, and `globals.css` all stated or implied that a
+  new manifest key needs all three schema copies to re-vendor before an author can use it. Repro:
+  compare the canonical against the two mirrors and ask what actually consumes each.
+- **Observed (with values):** measured first-hand from this worktree's `node_modules` —
+  canonical `public/schemas/app-block/v1.json` has **22** top-level properties;
+  `@civitai/app-sdk@0.14.0`'s vendored copy has **17**, missing exactly `bootSkeleton`, `category`,
+  `repository`, `scopeJustifications`, `tagline`. The Go CLI copy is missing `bootSkeleton`. So the
+  mirrors are **drifted right now**, and that drift has been sitting there blocking nothing.
+  At the `page` level they DO agree: all three declare `additionalProperties: false` with the same
+  four keys. The released CLI `0.1.101` is the only measured gate — with an undeclared `page` key
+  `civitai app validate` exits **1** (`page: additional properties 'fullBleed' not allowed`); without
+  it, rc **0**.
+- **Ruled out:** *"the SDK's vendored copy gates an author"* — no. All eight `schemas/app-block`
+  references in `@civitai/app-sdk@0.14.0`'s `dist/` are the canonical **URL** as a string constant
+  (`EXPECTED_SCHEMA_URL`) or prose saying the TS types mirror the file; nothing loads the JSON, and
+  no validator-shaped identifier (`ajv`, `addSchema`, `compileSchema`) appears anywhere in `dist`.
+  A manifest's `$schema` names the canonical URL, so an editor validates against the served
+  canonical. `via: measurement`
+- **Ruled out:** *"the host reads the manifest through an SDK type, so the `^0.14.0` pin is a cost"* —
+  no, and this was the false premise `globals.css` gave for years.
+  `block-manifest-validator.service.ts` imports nothing from `@civitai/app-sdk`, and
+  `src/components/AppBlocks/types.ts` declares the host's own `BlockManifest` and **has no imports at
+  all**. `via: code`
+- **Leading hypothesis:** the real cost of any future manifest key is **one** repo — the Go CLI —
+  plus a release cut. Not three.
+- **Next probe:** before quoting a lockstep cost again, diff the three copies' top-level property
+  sets and ask which one a tool actually LOADS. The drift above is the standing control: if a copy
+  can be five fields behind and block nothing, it is not a gate.
+
 ## Next steps (ranked)
 
-1. **Merge #4812, then #72, then open the sensei `release:` PR** bumping `0.1.22 → 0.1.23` in
-   `package.json` **and** `block.manifest.json` together. #4812's ladder is closed and its remaining
-   items are filed; #72's ladder closed earlier. Both are the operator's merge call.
+1. **Decide civitai#4838** — merge or close. Comment/docs-only, audited, 69 files / 1125 tests green
+   at its head, the `globals.css` guard re-validated ON that tree (a planted `*/` reds
+   `ledgerSelectorSurvivesProdStrip` + `pageBlockHostMaxWidth`, 2 failed / 14 passed; restored 16/16,
+   balance 31/31). **A delta round on `6e4e0a80bf` was NOT run** — see the stop reasoning in Gotchas.
+   Anyone uncomfortable with that should run `/audit-pr 4838 --round 2`; the round-1 claims are not
+   posted as a block, so that would need one first.
    IN FLIGHT: nothing.
-   - forcing: user — the operator asked for the five feedback items and for the full-bleed migration;
-     both are complete, audited and unreleased until the versions move.
-2. **After #4812 merges: declare `page.fullBleed: true` in both ledger apps, then retire the CSS
-   ledger.** Each is a one-line manifest change. 🔴 **Blocked on the schema mirrors, not on the
-   merge** — all three copies reject the key today, so the normal `civitai app submit` path refuses
-   before any network call; `--skip-validate` is the only route until a release cuts and the CLI and
-   SDK re-vendor. When you do it, read `globals.css`'s retirement checklist: it now names the red set
-   for BOTH the ledger step (5 tests) and the cap-inlining step (4 tests), measured.
-   - forcing: gate — the ledger's own stated retirement condition; and once an app declares the flag
-     the host omits `max-width` entirely, so the dead rule's death is unobservable.
-3. **Drive one real submit on `deepseek/deepseek-v4-flash-0731`** in a mod-gated host and reconcile
-   `billed_usd` against `Charged`.
-   - forcing: gate — `chat-completion.step.ts`'s convention is that every registered model was driven
-     to `succeeded` live; this is the first entry to break it, and it is the default arm every viewer
-     lands on.
-4. **Ask OpenRouter/Venice to expose `tools` on the Venice endpoint, or to list
+   - forcing: user — it is open on the operator's account and merges nothing on its own.
+2. **Drive one real submit on `deepseek/deepseek-v4-flash-0731`** in a mod-gated host and reconcile
+   `billed_usd` against `Charged`. It is sensei's DEFAULT model, now shipped in 0.1.23, and has never
+   been driven to `succeeded` live.
+   - forcing: gate — `chat-completion.step.ts`'s own convention is that every registered model was
+     driven to `succeeded` live; this is the first entry to break it, and every viewer lands on it.
+3. **Ask OpenRouter/Venice to expose `tools` on the Venice endpoint, or to list
    `venice-uncensored-1-2`.** Venice's own API already reports `uncensored: true` **and**
    `supportsFunctionCalling: true` at 128k — it is simply not published to OpenRouter. The only route
    to a **grounded** NSFW mode with no code on either side.
    - forcing: none
-5. **`taste.json`'s `reshoot` and `crop-rect-bottom-edge`** remain blocked on a sensei version
-   > 0.1.12 being approved and live; #72's `data-testid="model-selector"` removal adds a third
-   consequence.
+4. **`taste.json`'s `reshoot` and `crop-rect-bottom-edge`** remain blocked on a sensei version
+   > 0.1.12 being approved and live. **0.1.23 is now on trunk**, so the blocker moves to approval
+   rather than to the version existing.
    - forcing: none
 
 ## Defects (batched)
 
-**All thirteen findings across rounds 0–2 on #4812 are FIXED** (`cb8233f52c..89b9dc5d9b`). The
-lessons outlive the fixes, so the two that generalise are kept above in State now. What is NOT fixed,
-filed here rather than as a rank:
-
-- 🔴 **Six stale line-number cross-references, all PRE-EXISTING on `main` and untouched by this PR** —
-  `docs/features/app-blocks.md:678,680,698,757` (four `block-registry.service.ts` citations), and two
-  in `src/shared/constants/block-effective-scopes.ts` pointing at `blocks.router.ts:2787-2789` and
-  `scope-grant.service.ts:222-224`. Verified pre-existing via `git show origin/main:…` and an empty
-  `diff --stat origin/main...HEAD` for those paths. **Closing condition:** a PR correcting the six
-  merges, or a maintainer dismisses them in writing on #4812's thread (posted there as the remainder).
-- The three citations this PR's payload DID break were fixed by **de-lining** them to symbol/branch
-  references rather than renumbering — the same lesson F6 produced. One exact citation was left as
-  the control proving a citation audit here can still return "accurate".
+- 🔴 **The CSS ledger's membership does not match the need, and nothing will force the question
+  again now that the ledger is permanent.** The census in `PageBlockHost.tsx` (self-described as a
+  stale cross-repo reading that nothing asserts) finds 11 first-party page apps: **nine cap
+  themselves at 640–1100px**, so the 1600px cap is a no-op for their layout; **two genuinely stretch
+  — Notepad and Sensei.** The ledger's members are **`playable-collections` and `sensei`**. It
+  EXCLUDES an app that needs it and INCLUDES one for which it is cosmetically inert. Was going to be
+  dissolved by the manifest field; now it is a standing question for whoever owns the ledger.
+  **Closing condition:** the ledger's membership is reconciled against a re-taken census (recording
+  refs), or the owner dismisses the asymmetry in writing.
+- **#4838's audit findings — all three FIXED in `6e4e0a80bf`**, and all three were in prose the PR
+  itself had just written: an unmeasured "and it is strict" about the mirrors; a re-vendor cost
+  attributed to all three copies when only the CLI was ever measured to block; and an
+  `its`-clause bound to `BlockManifest`, which has no docblock (the quoted line belongs to the
+  BLOCK_INIT payload type).
+- **Pre-existing citation rot beyond #4838's scope:** `block-effective-scopes.ts:126` is 105 chars
+  against `printWidth: 100` (prettier does not reflow comments, so CI is green).
 
 ## Gotchas / decisions / dead-ends
 
@@ -372,6 +365,54 @@ something that reads like a normal failure".**
   `audit-dispatch.py` until a claims block was reconstructed and posted. Correct refusal: without one
   a "delta" audit silently widens into a full audit that then reads as covered. Post the block in the
   round that produces it.
+
+**Why #4838's ladder stopped at one round, stated explicitly because a gate-stop and a converged
+stop look identical in a findings list.** The attribution gate CANNOT fire here — this PR's payload
+IS prose, so every round changes payload lines by construction. The prose criterion is what applies:
+no 🔴; blast radius is "a comment contains a false sentence"; and the recurring SHAPE was swept at
+every site rather than at the one reported — all three findings were **deleted, not reworded**, and
+the two claims the replacement does assert (the five-field SDK drift; that nothing loads the vendored
+copy) were re-measured first-hand rather than inherited from the auditor. What is NOT claimed: that a
+round 2 would be clean. It was not run.
+
+**Instrument traps measured this session — three, all "the tool answered about something other than
+what I asked".**
+- 🔴 **A `count=1` replace used as a POSITIVE CONTROL mutated the wrong occurrence and reported
+  PASS-shaped garbage.** Checking whether edits were comment-only, the control mutated
+  `--app-page-max-width: none;` — **3× raw, 2× after comment-stripping**. `.replace(…, 1)` hit the
+  first, which is INSIDE a comment, so the stripper deleted the mutation and the control reported
+  "no difference detected" — claiming the instrument was blind when it was fine. The tell was that
+  the control returned the value it MUST NOT return; written to expect "no difference", the run would
+  have looked clean. **Count occurrences before mutating, mutate one that provably survives the
+  transform under test, and run the control in the SAME invocation as the measurement.**
+- 🔴 **Piping `handoff_doc.py --confirm --push` through `head` KILLED THE WRITER MID-RUN.** The broken
+  pipe ended the process before it committed; the visible output looked like a normal proposal, and
+  only `git log` revealed nothing had landed. The standing rule is usually stated as *`$?` becomes
+  the pipe's status* — this is the OTHER failure: the pipe does not mis-report the result, it
+  PREVENTS it.
+- 🔴 **The shell cwd RESETS between tool calls, so a relative `./node_modules/.bin/vitest` runs the
+  WRONG REPO'S vitest** and dies with `Error: No projects matched the filter "unit*"` — which reads
+  as a flag or config error, not as "wrong repository". Use absolute binary paths. Related, measured
+  by a subagent: `--root` fixes vitest's CONFIG resolution but **not `process.cwd()`**, which then
+  spuriously fails cwd-walking tests; that test's own positive control caught it (99 files, not
+  >3000).
+
+**An agent that dies on an API limit may have done far MORE than its result field shows.** A
+terminated audit reported only `"I'll start by reading the brief in full."` while disk held a
+populated worktree at the right sha, its `refs/audit/` ref, and ~20 artefacts including two FULL
+node-tier runs. **Check the artefacts before concluding a failed agent did nothing**, and resume
+rather than restart — resuming recovered all of it.
+
+**Process decisions, with why.**
+- **Both audit-claims blocks were posted as ISSUE comments** — `gh pr view --json comments` returns
+  issue comments only, so a block posted as a REVIEW is invisible to `audit-dispatch.py` and the next
+  round silently becomes a blind full audit. `audit-dispatch.py` correctly REFUSED a delta round
+  until a block existed.
+- **The #4838 tightening was done in-session rather than dispatched.** The failure mode being fixed
+  is an agent's instinct to draft a replacement justification; the fix was deletion, and handing a
+  deletion to a drafter invites a fourth draft.
+- **#4812's PR body was corrected PUBLICLY** (a comment, not a silent body edit) — it still claimed
+  "the mirror is two declarations, not three", and anyone who read it earlier read the wrong version.
 
 ## How to verify
 
