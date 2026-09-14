@@ -369,7 +369,7 @@ export function ChatArea({
             and is wrong: `sendGate === 'consent'` is the DEFAULT state of a
             first-time viewer — `ai:write:budgeted` is consent-gated and simply
             opening the app does not grant it — so `disabled` there ships a dead
-            `＋ Model` button to every new viewer with nothing to explain it.
+            `+ Model` button to every new viewer with nothing to explain it.
             That is the 0.1.4 defect class this file's own comments are about.
 
             `isStreaming` → DISABLED, because Send itself is replaced by Stop for

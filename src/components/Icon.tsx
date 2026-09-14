@@ -1,4 +1,4 @@
-import type { CSSProperties, MouseEvent, ReactNode } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
 import { token, radius } from '../theme.js';
 
 /**
@@ -37,14 +37,15 @@ export type IconName =
   | 'close'
   | 'pencil'
   | 'trash'
-  | 'more';
+  | 'more'
+  | 'plus';
 
 /**
  * The path geometry, keyed by name.
  *
  * All drawn on a 16×16 grid with `stroke: currentColor` and no fill, so one
- * `color` on the parent tints every icon and `IconButton`'s hover/disabled
- * states need no per-icon work. `more` is the one exception — three dots read
+ * `color` on the parent tints every icon and `IconButton`'s `tone` needs no
+ * per-icon work. `more` is the one exception — three dots read
  * better as filled circles than as a stroked path.
  */
 const PATHS: Record<IconName, ReactNode> = {
@@ -92,6 +93,28 @@ const PATHS: Record<IconName, ReactNode> = {
       <circle cx="8" cy="3.4" r="1.3" fill="currentColor" stroke="none" />
       <circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none" />
       <circle cx="8" cy="12.6" r="1.3" fill="currentColor" stroke="none" />
+    </>
+  ),
+  /*
+   * A plus: attach a model to the composer.
+   *
+   * 🔴 THIS ONE IS NOT ICON-ONLY, AND IT IS STILL HERE FOR TWO OF THE THREE
+   * REASONS IN THIS FILE'S HEADER. It replaced `＋` (U+FF0B FULLWIDTH PLUS SIGN)
+   * on `add-mention-button`, which carries a real text label ("Model"), so the
+   * ANNOUNCEMENT half of the emoji argument genuinely did not apply — a screen
+   * reader read "Model" either way, and that is why this glyph outlived the
+   * other five. The other two halves applied in full: a character renders in
+   * whatever font the platform resolves for it, so it ignored `currentColor`
+   * (it could not be tinted to the button's own text colour in either theme)
+   * and its advance width was font-dependent, which is the metrics problem that
+   * made five `px`-sized buttons come out five different sizes. Fullwidth
+   * specifically also reserves a full CJK em of advance, so the gap to "Model"
+   * was set by the font rather than by a `gap`.
+   */
+  plus: (
+    <>
+      <path d="M8 3.25v9.5" />
+      <path d="M3.25 8h9.5" />
     </>
   ),
 };
@@ -148,7 +171,6 @@ export interface IconButtonProps {
   onClick: (e: MouseEvent) => void;
   /** Forwarded verbatim. Every caller has one; there is no derived default. */
   testId: string;
-  disabled?: boolean;
   /**
    * Set on a control that opens a menu — emits `aria-expanded`.
    *
@@ -163,7 +185,28 @@ export interface IconButtonProps {
   /** `'error'` tints the glyph with the host's error token — used by Delete. */
   tone?: 'default' | 'error';
   size?: number;
-  style?: CSSProperties;
+
+  /*
+   * ───────────────────────────────────────────────────────────────────────────
+   * 🔴 `disabled` AND `style` WERE HERE AND ARE DELIBERATELY GONE. DO NOT
+   * RE-ADD EITHER WITHOUT A CALLER IN THE SAME COMMIT.
+   * ───────────────────────────────────────────────────────────────────────────
+   *
+   * All four call sites — `MessageBubble.tsx:117` and `:125`,
+   * `SessionList.tsx:264`, `ResourceMention.tsx:83` — passed NEITHER. `disabled`
+   * drove two branches (`cursor`, `opacity`) that nothing could reach, and this
+   * repo already documents that exact shape as a defect, in a file this PR
+   * touched: `ChatArea.test.tsx:301` — "The picker declared a `disabled` prop and
+   * NOTHING PASSED IT — a control that reads as gated and is not."
+   *
+   * Removed at FOUR call sites rather than at fourteen. A prop that reads as a
+   * gate and is not gets copied into every new site before anyone notices, and by
+   * then the cost of removing it is a survey. If a control here genuinely needs
+   * to be gated, add `disabled` back WITH the caller that passes it and a test
+   * that presses the disabled control and asserts `onClick` did not fire —
+   * `disabled` on a `<button>` is real behaviour, so it is testable, and an
+   * untested one is indistinguishable from decoration.
+   */
 }
 
 /**
@@ -185,17 +228,14 @@ export function IconButton({
   icon,
   onClick,
   testId,
-  disabled,
   expanded,
   tone = 'default',
   size,
-  style,
 }: IconButtonProps) {
   return (
     <button
       type="button"
       onClick={onClick}
-      disabled={disabled}
       title={label}
       aria-label={label}
       {...(expanded === undefined ? {} : { 'aria-expanded': expanded })}
@@ -206,13 +246,11 @@ export function IconButton({
         justifyContent: 'center',
         background: 'none',
         border: 'none',
-        cursor: disabled ? 'default' : 'pointer',
+        cursor: 'pointer',
         color: tone === 'error' ? token.error : token.dimmed,
         padding: 3,
         borderRadius: radius.sm,
         lineHeight: 1,
-        opacity: disabled ? 0.5 : 1,
-        ...style,
       }}
     >
       <Icon name={icon} size={size} />

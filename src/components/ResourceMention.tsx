@@ -1,6 +1,6 @@
 import { Button, ResourceCard, resourceDisplayName } from '@civitai/blocks-react/ui';
 import type { ResolvedResource } from '../lib/mentions.js';
-import { IconButton } from './Icon.js';
+import { Icon, IconButton } from './Icon.js';
 import { token, radius } from '../theme.js';
 
 /**
@@ -148,7 +148,22 @@ export function MentionPickerButton({
         aria-expanded={menuVisible}
         title="Attach a model from the Civitai catalog"
       >
-        ＋ Model
+        {/*
+          🔴 A BARE `<Icon>`, NOT AN `IconButton`. This control has a TEXT LABEL,
+          and `IconButton` is for an icon-ONLY control — the same distinction
+          `SessionList.tsx`'s Rename/Delete rows make. The glyph is decoration
+          beside "Model", so it stays `aria-hidden` (which `Icon` always is) and
+          the accessible name keeps coming from the text.
+
+          It replaced `＋` (U+FF0B FULLWIDTH PLUS SIGN). See the `plus` arm in
+          `Icon.tsx` for why a labelled control still wanted converting: the
+          a11y half of the emoji argument did not apply here, the `currentColor`
+          and metrics halves did.
+        */}
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          <Icon name="plus" size={12} />
+          Model
+        </span>
       </Button>
       {menuVisible && (
         <div
