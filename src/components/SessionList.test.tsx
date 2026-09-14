@@ -471,6 +471,63 @@ describe('🔴 SessionList — the ⋮ panel can be DISMISSED, and gives focus b
     }
   });
 
+  it('🔴 DELETE BY MOUSE does NOT pull focus to "+ New" — the route the policy exempts', async () => {
+    // ─────────────────────────────────────────────────────────────────────────
+    // 🔴 THE POINTER HALF OF THE RULE THE CASE ABOVE PINS, AND THE ONE NOTHING
+    // WATCHED. This describe's own policy is that "the outside-pointer and
+    // tab-out routes pass `false`, because the viewer is deliberately somewhere
+    // else and pulling them back would be a focus trap" — and `deleteAndRefocus`
+    // was applying the opposite rule to the pointer route, unconditionally.
+    //
+    // Measured at `1210d628`: mouse-click ⋮ → mouse-click Delete left
+    // `document.activeElement` on `new-session-button`, so the viewer's next
+    // Space press fired `onCreate` — creating or switching to a blank chat —
+    // where before the delta focus fell to `<body>` and Space scrolled the
+    // sidebar. Bounded (`createSession` reuses an unused chat and spends no
+    // Buzz), but it is the stated policy inverted.
+    //
+    // 🔴 `user.click` IS LOAD-BEARING AND `fireEvent.click` WOULD MAKE THIS
+    // VACUOUS. The gate reads `event.detail` — 0 for a keyboard activation, 1 for
+    // a pointer press — and `fireEvent.click` synthesises `detail: 0`, i.e. it
+    // looks exactly like the keyboard route (measured: pointer via `user.click`
+    // = 1, Enter = 0, Space = 0, `fireEvent.click` = 0). A fireEvent-driven
+    // version of this case passes with the gate deleted.
+    //
+    // It also has to be `user.click`, not a focus-scoped assertion, for the
+    // reason the handler records: `user.click` reproduces Chrome's focus-on-click,
+    // so at handler time `activeElement` is the Delete button — INSIDE the row's
+    // actions. A gate on "was focus inside the container" reads "keyboard" here
+    // and leaves the defect in place; this case is red under that gate too.
+    //
+    // The row is not re-rendered away (`onDelete` is a spy and this component is
+    // controlled), so what is asserted is where the focus was PUT — the decision
+    // under test — exactly as in the keyboard case above.
+    // ─────────────────────────────────────────────────────────────────────────
+    const user = userEvent.setup();
+    const onDelete = vi.fn();
+    const onCreate = vi.fn();
+    renderBeside({ onDelete, onCreate });
+
+    await user.click(screen.getByTestId(`session-menu-${ID}`));
+    const del = screen.getByTestId(`delete-session-${ID}`);
+    await user.click(del);
+    expect(onDelete).toHaveBeenCalledWith(ID);
+
+    // THE KILLING ASSERTION: focus was not yanked to the top of the column.
+    expect(document.activeElement).not.toBe(screen.getByTestId('new-session-button'));
+    // …and where it lands instead is `<body>`, which is the pre-delta behaviour
+    // this route is supposed to keep. Chrome's click focused `del`, the close
+    // then detached it, and a detached element cannot hold focus — so nothing
+    // moved focus deliberately, which is the whole point. (Asserting `del` here
+    // would be asserting a node that is no longer in the document.)
+    expect(document.activeElement).toBe(document.body);
+
+    // …and the consequence the viewer actually feels, asserted rather than
+    // implied: the next Space press does not create a chat.
+    await user.keyboard(' ');
+    expect(onCreate).not.toHaveBeenCalled();
+  });
+
   it('the document listeners are removed when the panel closes', () => {
     // A listener left behind would close a REOPENED panel on the first outside
     // pointerdown of a row that is no longer the open one — and, 15 rows deep,

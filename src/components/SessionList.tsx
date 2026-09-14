@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { Button } from '@civitai/blocks-react/ui';
 import type { Session } from '../types.js';
 import { groupSessionsByRecency, formatRelativeTime } from '../lib/sessions.js';
@@ -91,11 +91,20 @@ export function SessionList({
    * one the viewer was on, and the list can be emptied entirely by this very
    * press. `Button` from `@civitai/blocks-react/ui` is ref-forwarded to its
    * native `<button>` (checked against the installed `dist/ui/Button.d.ts`).
+   *
+   * 🔴 AND IT FIRES ON THE KEYBOARD ROUTE ONLY. `SessionRowMenu` decides which
+   * route this was and says so in `fromKeyboard`; see the Delete handler. The
+   * panel's own policy is that "the outside-pointer and tab-out routes pass
+   * `false`, because the viewer is deliberately somewhere else and pulling them
+   * back would be a focus trap" — an unconditional refocus here applied the
+   * opposite rule to the pointer route. Measured: mouse-click ⋮ → mouse-click
+   * Delete left `document.activeElement` on "+ New", so the next Space press
+   * fired `onCreate` instead of scrolling the sidebar.
    */
   const newButtonRef = useRef<HTMLButtonElement | null>(null);
   const deleteAndRefocus = useCallback(
-    (id: string) => {
-      newButtonRef.current?.focus();
+    (id: string, fromKeyboard: boolean) => {
+      if (fromKeyboard) newButtonRef.current?.focus();
       onDelete(id);
     },
     [onDelete],
@@ -312,7 +321,8 @@ export function SessionList({
  * tab-out routes pass `false`, because the viewer is deliberately somewhere else
  * and pulling them back would be a focus trap. Delete is the one route the
  * trigger cannot serve — it unmounts with the row — and is handled a level up in
- * `SessionList`'s `deleteAndRefocus`.
+ * `SessionList`'s `deleteAndRefocus`, which applies that same rule: it refocuses
+ * on the keyboard route and leaves focus alone on the pointer one.
  */
 function SessionRowMenu({
   session,
@@ -325,7 +335,8 @@ function SessionRowMenu({
   open: boolean;
   onOpenChange: (next: boolean) => void;
   onRename: (id: string) => void;
-  onDelete: (id: string) => void;
+  /** `fromKeyboard` decides the refocus; see `deleteAndRefocus` and the handler. */
+  onDelete: (id: string, fromKeyboard: boolean) => void;
 }) {
   const [copyState, setCopyState] = useState<'idle' | 'done' | 'failed'>('idle');
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -530,12 +541,38 @@ function SessionRowMenu({
             testId={`delete-session-${session.id}`}
             icon="trash"
             tone="error"
-            onClick={() => {
-              // 🔴 NO FOCUS RETURN HERE, AND THAT IS NOT AN OVERSIGHT. This row —
-              // trigger included — is about to unmount. `SessionList` focuses
-              // "+ New" on its way into `onDelete`; see `deleteAndRefocus`.
+            onClick={(e) => {
+              // 🔴 NO FOCUS RETURN TO THE TRIGGER HERE, AND THAT IS NOT AN
+              // OVERSIGHT. This row — trigger included — is about to unmount.
+              // `SessionList` sends focus to "+ New" instead, on the keyboard
+              // route only; see `deleteAndRefocus`.
               close(false);
-              onDelete(session.id);
+              // ─────────────────────────────────────────────────────────────
+              // 🔴 `detail === 0` IS "THE KEYBOARD ACTIVATED THIS", AND IT IS
+              // THE ONLY PREDICATE THAT SEPARATES THE TWO ROUTES.
+              //
+              // A click synthesised by Enter or Space on a `<button>` carries
+              // `detail: 0` (the click count); a real pointer press carries
+              // `detail: 1`. That split is what the panel's stated policy needs:
+              // the refocus exists for the viewer who tabbed deep into the
+              // sidebar, and must NOT fire for the one who used the mouse and is
+              // deliberately somewhere else.
+              //
+              // 🔴 "WAS FOCUS INSIDE THE CONTAINER?" DOES NOT WORK HERE, and the
+              // reason is measured, not argued: Chrome focuses a `<button>` on
+              // click, so by the time this handler runs on the pointer route
+              // `document.activeElement` IS the Delete button — inside the
+              // container. A focus-scoped gate therefore reads "keyboard" for a
+              // mouse press in the majority browser and changes nothing.
+              // (Measured with `user.click`, which reproduces that focus move:
+              // `activeElement` is `delete-session-<id>` at handler time.)
+              //
+              // ⚠️ AND THAT IS WHY THE POINTER GUARD MUST USE `user.click`.
+              // `fireEvent.click` also yields `detail: 0`, so a fireEvent-driven
+              // "pointer" case is indistinguishable from the keyboard one and
+              // would pass with this gate deleted.
+              // ─────────────────────────────────────────────────────────────
+              onDelete(session.id, e.detail === 0);
             }}
           />
         </div>
@@ -563,7 +600,12 @@ function MenuItem({
   testId: string;
   icon: IconName;
   tone?: 'default' | 'error';
-  onClick: () => void;
+  /**
+   * The event is forwarded because Delete reads `detail` off it to tell a
+   * keyboard activation from a pointer one; see that handler. A handler that
+   * does not care simply declares no parameter.
+   */
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <button
