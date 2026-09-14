@@ -18,36 +18,41 @@ platform changes that feedback turned out to require.
 
 ## State now
 
-🔴 **THE `page.fullBleed` MANIFEST FIELD IS DEAD — OPERATOR DECISION, NOT AN AUDIT FINDING.**
-"This should be managed by styling, not a manifest field." civitai **#4812 is CLOSED UNMERGED**
-(`closedAt 2026-09-14T21:23:18Z`, `mergedAt: null`, branch `zach/app-block-full-bleed-manifest`
-preserved). The CSS ledger in `src/styles/globals.css` is now the permanent mechanism, not a
-transitional one. **Do not rebuild the field**; read #4812's closing comment first if tempted.
+🔴 **THE ARC IS DONE. Its frozen closing-condition is UNSATISFIABLE AS WRITTEN, and that is the
+correct outcome, not a failure.** The condition required `gh pr view 72` (sensei) **and**
+`gh pr view 4812 --repo civitai/civitai` to both report a `mergedAt`. #72 does. **#4812 never will —
+it was CLOSED UNMERGED by operator decision, so its `mergedAt` is `null` permanently.**
 
-That call is the lesson of this arc. Three audit rounds asked *"is this change correct?"* and the
-answer kept coming back yes — thirteen findings, all fixed, ladder closed cleanly on the attribution
-gate. **No round could ask "should this exist?"**, which is the only question that closes a PR. One
-sentence from the operator ended it.
+**VERDICT: ADDRESSED ⇒ arc CLOSED.** The condition asked whether both halves of the work reached a
+terminal state; both did. One shipped, one was deliberately killed. Recording this rather than
+rewriting the condition to match the outcome — a condition edited after the fact proves nothing.
 
-**sensei — SHIPPED.** `trunk` @ `30909d1`, clean.
-- **#72 MERGED** (`mergedAt 2026-09-14T21:18:03Z`, merge commit `68b6641`) — the five-item UI
-  feedback pass: app-owned SVG `IconButton`, bubble alignment at `min(68ch, 92%)`, native
-  `ResourceCard variant="row"`, an NSFW-mode toggle, a `⋮` session-row menu. Its audit ladder closed
-  after **round 0 → round 1 → round 2 plus three fix rounds**, with closure recorded as a PR comment
-  carrying six OPEN items and their closing conditions — that comment is the record, not this doc.
-  Verified by CONTENT, not ancestry (a squash never makes the head an ancestor).
-- **#73 MERGED** (`30909d17`) — `release: 0.1.23`. Both `package.json` and `block.manifest.json`
-  read `0.1.23` on trunk, read back from the files rather than inferred from the merge. Gates before
-  merge: typecheck rc=0 · node **429** · dom **339** (run SEPARATELY — the combined summary does not
-  label tiers and this repo's gate requires reading both) · build rc=0 `index-BhrJSPg5.js` 354,840 B
-  · `src/manifest.test.ts` 3/3.
+**Everything is merged and verified by CONTENT, not ancestry** (a squash never makes the branch head
+an ancestor, so every ancestry check below returns false and that is expected):
 
-**civitai #4838 — OPEN, audited, awaiting a merge decision.** `zach/stale-cross-references` @
-**`6e4e0a80bf`**, `MERGEABLE`, +43/−20 across 3 files, **comment and docs only**. It de-lines six
-stale cross-references to symbol/branch citations and retracts the false SDK-pin justification in
-`globals.css`. Full audit returned 1 🟡 + 2 🟢, **all three in the new prose** — the predicted failure
-mode. Fixed in `6e4e0a80bf` by **cutting the block rather than redrafting it**, because every sentence
-is a claim that can rot and this block has now been wrong twice.
+| PR | outcome | evidence |
+|---|---|---|
+| sensei **#72** | MERGED `2026-09-14T21:18:03Z`, `68b6641` | the five-item UI feedback pass |
+| sensei **#73** | MERGED, `30909d17` | `0.1.23` read back from both `package.json` and `block.manifest.json` on trunk |
+| civitai **#4812** | 🔴 **CLOSED UNMERGED** `2026-09-14T21:23:18Z` | operator decision; branch `zach/app-block-full-bleed-manifest` preserved at `89b9dc5d9b` |
+| civitai **#4838** | MERGED `2026-09-14T22:37:09Z`, `26b47fa9` | four probes each present exactly once on `main` |
+
+**`page.fullBleed` is dead. The CSS ledger is the permanent mechanism, not a transitional one.**
+Do not rebuild the field; read #4812's closing comment first if tempted. Three audit rounds all asked
+*"is this change correct?"* — thirteen findings, all fixed, ladder closed cleanly — and none could
+ask *"should this exist?"*, which is the only question that closes a PR. One sentence from the
+operator ended it.
+
+**Housekeeping done:** the `civitai-fullbleed-manifest` worktree is REMOVED (clean and fully pushed
+first; `worktree remove` refuses a tree containing submodules, so `--force` was required, which was
+safe only because both checks passed). The base clone `/home/zach/workspace/civit/civitai` was
+**34 behind** and is re-synced `--ff-only` to `26b47fa98e`.
+
+⚠️ **A leftover worktree that is NOT this arc's and was deliberately left alone:**
+`/home/zach/workspace/civit/civitai-sensei-fullbleed` on `zach/sensei-full-bleed` @ `a2ed370451`.
+That is **PR #4804's branch, merged 2026-09-13** — so it is stale leftover, not work in flight, and
+its four files overlap the ones #4838 just rewrote. Not removed here because it is another session's
+checkout and removing one is a cross-session write. Whoever owns it can drop it.
 
 ## Open investigations — live diagnosis state
 
@@ -170,47 +175,34 @@ as-of: 2026-09-13
 
 ## Next steps (ranked)
 
-1. **Decide civitai#4838** — merge or close. Comment/docs-only, audited, 69 files / 1125 tests green
-   at its head, the `globals.css` guard re-validated ON that tree (a planted `*/` reds
-   `ledgerSelectorSurvivesProdStrip` + `pageBlockHostMaxWidth`, 2 failed / 14 passed; restored 16/16,
-   balance 31/31). **A delta round on `6e4e0a80bf` was NOT run** — see the stop reasoning in Gotchas.
-   Anyone uncomfortable with that should run `/audit-pr 4838 --round 2`; the round-1 claims are not
-   posted as a block, so that would need one first.
+1. **Drive one real submit on `deepseek/deepseek-v4-flash-0731`** in a mod-gated host and reconcile
+   `billed_usd` against `Charged`. It is sensei's DEFAULT model, now shipped in **0.1.23 on trunk**,
+   and has never been driven to `succeeded` live — so every viewer lands on an arm nothing has
+   exercised end to end.
    IN FLIGHT: nothing.
-   - forcing: user — it is open on the operator's account and merges nothing on its own.
-2. **Drive one real submit on `deepseek/deepseek-v4-flash-0731`** in a mod-gated host and reconcile
-   `billed_usd` against `Charged`. It is sensei's DEFAULT model, now shipped in 0.1.23, and has never
-   been driven to `succeeded` live.
    - forcing: gate — `chat-completion.step.ts`'s own convention is that every registered model was
-     driven to `succeeded` live; this is the first entry to break it, and every viewer lands on it.
-3. **Ask OpenRouter/Venice to expose `tools` on the Venice endpoint, or to list
+     driven to `succeeded` live; this is the first entry to break it.
+2. **Ask OpenRouter/Venice to expose `tools` on the Venice endpoint, or to list
    `venice-uncensored-1-2`.** Venice's own API already reports `uncensored: true` **and**
    `supportsFunctionCalling: true` at 128k — it is simply not published to OpenRouter. The only route
    to a **grounded** NSFW mode with no code on either side.
    - forcing: none
-4. **`taste.json`'s `reshoot` and `crop-rect-bottom-edge`** remain blocked on a sensei version
-   > 0.1.12 being approved and live. **0.1.23 is now on trunk**, so the blocker moves to approval
-   rather than to the version existing.
+3. **`taste.json`'s `reshoot` and `crop-rect-bottom-edge`.** **0.1.23 is on trunk**, so the blocker
+   moves from "a version > 0.1.12 must exist" to "it must be APPROVED and live".
    - forcing: none
 
 ## Defects (batched)
 
-- 🔴 **The CSS ledger's membership does not match the need, and nothing will force the question
-  again now that the ledger is permanent.** The census in `PageBlockHost.tsx` (self-described as a
-  stale cross-repo reading that nothing asserts) finds 11 first-party page apps: **nine cap
-  themselves at 640–1100px**, so the 1600px cap is a no-op for their layout; **two genuinely stretch
-  — Notepad and Sensei.** The ledger's members are **`playable-collections` and `sensei`**. It
-  EXCLUDES an app that needs it and INCLUDES one for which it is cosmetically inert. Was going to be
-  dissolved by the manifest field; now it is a standing question for whoever owns the ledger.
-  **Closing condition:** the ledger's membership is reconciled against a re-taken census (recording
-  refs), or the owner dismisses the asymmetry in writing.
-- **#4838's audit findings — all three FIXED in `6e4e0a80bf`**, and all three were in prose the PR
-  itself had just written: an unmeasured "and it is strict" about the mirrors; a re-vendor cost
-  attributed to all three copies when only the CLI was ever measured to block; and an
-  `its`-clause bound to `BlockManifest`, which has no docblock (the quoted line belongs to the
-  BLOCK_INIT payload type).
-- **Pre-existing citation rot beyond #4838's scope:** `block-effective-scopes.ts:126` is 105 chars
-  against `printWidth: 100` (prettier does not reflow comments, so CI is green).
+- 🔴 **The CSS ledger's membership does not match the need, and nothing forces the question now.**
+  The census in `PageBlockHost.tsx` (self-described as a stale cross-repo reading that nothing
+  asserts) finds 11 first-party page apps: **nine cap themselves at 640–1100px**, so the 1600px cap
+  is a no-op for their layout; **two genuinely stretch — Notepad and Sensei.** The ledger holds
+  **`playable-collections` and `sensei`**: it EXCLUDES one that needs it and INCLUDES one where it is
+  cosmetically inert. The manifest field would have dissolved this; with the ledger permanent,
+  nothing will raise it again. **Closing condition:** the membership is reconciled against a re-taken
+  census (recording refs), or the owner dismisses the asymmetry in writing.
+- **Pre-existing, out of scope, left alone:** `block-effective-scopes.ts:126` is 105 chars against
+  `printWidth: 100` (prettier does not reflow comments, so CI is green).
 
 ## Gotchas / decisions / dead-ends
 
@@ -413,6 +405,19 @@ rather than restart — resuming recovered all of it.
   deletion to a drafter invites a fourth draft.
 - **#4812's PR body was corrected PUBLICLY** (a comment, not a silent body edit) — it still claimed
   "the mirror is two declarations, not three", and anyone who read it earlier read the wrong version.
+
+**A grep across a WRAPPED line returns a false zero, and it reads as "the text is gone".** Verifying
+#4838 landed, a contiguous search for the retracted quote `would be UNTYPED at exactly the point`
+returned **0** — because the sentence wraps mid-phrase in the source. Flattening whitespace first
+(`re.sub(r'\s+',' ',text)`) returns **1**. The tell was that the zero was the answer I wanted
+("the false premise is gone"), when the text was in fact deliberately RETAINED as a quoted
+retraction. **Normalise whitespace before grepping prose you expect to span lines, and be most
+suspicious of a zero that confirms your hypothesis.**
+
+**`git worktree remove` REFUSES a tree containing submodules** — `fatal: working trees containing
+submodules cannot be moved or removed`, rc 128, which reads like a safety stop about uncommitted
+work and is not. `--force` is the answer, but only AFTER proving there is nothing to lose: `git
+status -s` empty AND `git log @{u}..` empty (all commits pushed). Both, not either.
 
 ## How to verify
 
