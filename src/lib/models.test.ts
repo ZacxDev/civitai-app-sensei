@@ -76,6 +76,13 @@ describe('models', () => {
       // OpenRouter endpoint (Venice) does not expose tools, and OpenRouter treats
       // `tools` as a SOFT preference — so declarations sent for it are silently
       // dropped and the viewer is charged anyway.
+      //
+      // ⚠️ WHAT THIS PINS IS THE TABLE, NOT THE WORLD. The NSFW arm's `false` is
+      // measured (that endpoint listing); the SFW arm's `true` is INFERRED from
+      // the step's parameter schema and DeepSeek's documented function calling —
+      // see the per-value premises in `models.ts`. Nothing local can measure a
+      // released `toolCalls` verdict, so read this as "the app branches on these
+      // values", never as "these values were observed".
       expect(modelSupportsTools(SFW_MODEL_ID)).toBe(true);
       expect(modelSupportsTools(NSFW_MODEL_ID)).toBe(false);
     });

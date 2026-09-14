@@ -20,6 +20,38 @@ export interface ModelConfig {
    * `toolChoice` and publishes `toolCalls` on a released verdict, which is the
    * whole tool loop this app runs. What remains true for exactly ONE entry is
    * narrower and lives at its own site below.
+   *
+   * ─────────────────────────────────────────────────────────────────────────
+   * 🔴 EXACTLY ONE OF THE FOUR VALUES BELOW IS MEASURED. THE OTHER THREE ARE
+   * INFERRED, AND EACH CARRIES ITS OWN PREMISE AT ITS OWN SITE.
+   * ─────────────────────────────────────────────────────────────────────────
+   *
+   * This is worth naming because the field READS as a measured capability
+   * table and is not one, and because the two directions of error are not
+   * symmetric now that something branches on it:
+   *
+   *   • A `true` that should be `false` is the FABRICATION defect, not a
+   *     no-op. Declarations go on the wire for a model that cannot use them
+   *     (OpenRouter treats `tools` as a SOFT preference and drops them
+   *     silently, no error, no refusal) AND the system prompt tells the model
+   *     it can look things up. The model then answers from its own knowledge
+   *     while believing it searched, and the viewer is charged for the round.
+   *     That is precisely the defect `types.ts`'s prompt header exists for,
+   *     reached through the model instead of through a failed declarations
+   *     fetch.
+   *
+   *   • A `false` that should be `true` costs the grounded arm on that model
+   *     and nothing else: no tools sent, `NO_TOOLS_NOTICE` appended, the reply
+   *     is honest about what it could not do.
+   *
+   * So the fail-closed direction is `false`, and any `true` here is a claim
+   * that needs its premise stated. `modelSupportsTools` already fails closed on
+   * an UNKNOWN id; it cannot fail closed on a WRONG value.
+   *
+   * ⚠️ None of the three inferred values is locally measurable. Proving one
+   * needs a released `toolCalls` verdict from a real charged submit on that
+   * model, in a real host — Turnstile + auth gated, so a green suite here is
+   * only evidence about what the app SENDS.
    */
   supportsTools: boolean;
   supportsStreaming: boolean;
@@ -72,6 +104,20 @@ export const AVAILABLE_MODELS: ModelConfig[] = [
     id: 'deepseek/deepseek-chat',
     name: 'DeepSeek V3',
     provider: 'DeepSeek',
+    /**
+     * INFERRED, not measured. Premise: the `chat-completion` step accepts
+     * `tools`/`toolChoice` and publishes `toolCalls` on a released verdict, and
+     * DeepSeek V3 advertises OpenAI-compatible function calling on its
+     * OpenRouter endpoints. No released `toolCalls` verdict has been observed
+     * from this block on this id.
+     *
+     * ⚠️ IT FLIPPED `false` → `true` HERE, and the flip is the risky direction.
+     * A viewer whose persisted `settings.model` is still this id — reachable
+     * from settings written by any older build — now gets declarations sent AND
+     * a prompt claiming lookup capability, on the premise above rather than on
+     * an observation. See the field's own doc for why that direction is the
+     * fabricate-then-charge defect and not a no-op.
+     */
     supportsTools: true,
     supportsStreaming: false,
     costPer1kInput: 0.00014,
@@ -82,6 +128,12 @@ export const AVAILABLE_MODELS: ModelConfig[] = [
     id: 'openai/gpt-4o-mini',
     name: 'GPT-4o mini',
     provider: 'OpenAI',
+    /**
+     * INFERRED, not measured — same premise and same flip as the entry above:
+     * the step accepts `tools`/`toolChoice`, and function calling is a
+     * first-party OpenAI feature this model documents. No released `toolCalls`
+     * verdict has been observed from this block on this id either.
+     */
     supportsTools: true,
     supportsStreaming: false,
     costPer1kInput: 0.00015,
@@ -93,8 +145,13 @@ export const AVAILABLE_MODELS: ModelConfig[] = [
     name: 'Dolphin Mistral 24B (uncensored)',
     provider: 'Cognitive Computations',
     /**
-     * 🔴 THE ONE `false`, AND IT IS A PROPERTY OF THE ENDPOINT RATHER THAN OF
-     * THE WEIGHTS. This model's own weights implement Mistral tool calling; its
+     * 🔴 THE ONE `false` — AND THE ONE MEASURED VALUE IN THIS LIST. It is a
+     * property of the ENDPOINT rather than of the weights: the model's sole
+     * OpenRouter endpoint (Venice) exposes no tools, read off the endpoint
+     * listing rather than argued from the step's parameter schema, which is what
+     * the other three values rest on.
+     *
+     * This model's own weights implement Mistral tool calling; its
      * only OpenRouter endpoint (Venice) does not EXPOSE tools. OpenRouter treats
      * `tools` as a SOFT preference, so declarations sent for this model are
      * silently dropped — no error, no refusal, and the viewer is CHARGED for the
@@ -129,6 +186,15 @@ export const AVAILABLE_MODELS: ModelConfig[] = [
     id: 'deepseek/deepseek-v4-flash-0731',
     name: 'DeepSeek V4 Flash',
     provider: 'DeepSeek',
+    /**
+     * INFERRED, and the WEAKEST of the three — which matters because this is the
+     * SFW arm, i.e. the default every viewer lands on. The premise is the same
+     * step-accepts-`tools` argument as the two entries above, plus the DeepSeek
+     * family's documented function calling. But per the `⚠️` note above this id
+     * has never been driven to `succeeded` against the live step AT ALL, so
+     * nothing has exercised ANY path on this model, tools included — there is no
+     * observation to weaken, because there is no observation.
+     */
     supportsTools: true,
     supportsStreaming: false,
     costPer1kInput: 0.00007,
