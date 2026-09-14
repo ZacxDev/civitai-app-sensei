@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SessionList } from './SessionList.js';
+import { NSFW_MODEL_ID, SFW_MODEL_ID } from '../lib/models.js';
 import type { Session } from '../types.js';
 
 const MODEL = 'deepseek/deepseek-chat';
@@ -28,6 +29,9 @@ function renderList(over: Partial<Parameters<typeof SessionList>[0]> = {}) {
       onDelete={vi.fn()}
       onRename={vi.fn()}
       currentModel={MODEL}
+      // The production default, and the fail-closed one: every mock of
+      // `useDomainMaturity()` in this repo answers SFW-only. See `lib/maturity.ts`.
+      nsfwAllowed={false}
       now={NOW}
       {...over}
     />,
@@ -290,6 +294,7 @@ describe('🔴 SessionList — the ⋮ panel can be DISMISSED, and gives focus b
           onDelete={vi.fn()}
           onRename={vi.fn()}
           currentModel={MODEL}
+          nsfwAllowed={false}
           now={NOW}
           {...over}
         />
@@ -527,6 +532,65 @@ describe('🔴 SessionList — the noise the live sidebar was full of', () => {
     renderList({
       sessions: [makeSession('s1', 'Chat 1', { model: 'openai/gpt-4o-mini' })],
       currentModel: MODEL,
+    });
+    expect(screen.getByTestId('session-item-s1')).toHaveTextContent('GPT-4o mini');
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 🔴 …AND NEVER NAMES A MODEL THIS VIEWER MAY NOT BE OFFERED.
+  //
+  // The two halves of one PR were applying opposite rules to the same fact.
+  // `SettingsBar.tsx:91-94`: the NSFW toggle is ABSENT rather than disabled,
+  // because a control labelled "NSFW mode" on a green domain is "an
+  // advertisement for something the platform has decided they will not be shown,
+  // on a surface that cannot explain why". The sidebar then printed the model's
+  // NAME on exactly that surface: a session created under a red ceiling stores
+  // `NSFW_MODEL_ID`, the viewer narrows their level, `currentModel` clamps to the
+  // SFW arm — so `session.model !== currentModel` and the row rendered
+  // `· Dolphin Mistral 24B (uncensored)`.
+  // ───────────────────────────────────────────────────────────────────────────
+  it('🔴 does NOT name the uncensored model to a viewer who may not be offered it', () => {
+    renderList({
+      sessions: [makeSession('s1', 'Chat 1', { model: NSFW_MODEL_ID })],
+      // The viewer's ceiling narrowed, so the app clamped — this is what `App.tsx`
+      // really passes in that state, not a contrived pair.
+      currentModel: SFW_MODEL_ID,
+      nsfwAllowed: false,
+    });
+    const row = screen.getByTestId('session-item-s1');
+    // The whole label, and the id it is derived from, and the one word that is
+    // the actual harm — a mutant that trims the parenthetical still dies.
+    expect(row).not.toHaveTextContent('Dolphin');
+    expect(row).not.toHaveTextContent('uncensored');
+    expect(row).not.toHaveTextContent(NSFW_MODEL_ID);
+    expect(row).not.toHaveTextContent('dolphin-mistral-24b-venice-edition');
+    // The row itself is still there and still readable — suppressed label, not a
+    // suppressed session.
+    expect(row).toHaveTextContent('Chat 1');
+  });
+
+  it('🔴 POSITIVE CONTROL: it DOES name it when the viewer may be offered it', () => {
+    // Without this, the case above is satisfied by deleting the label outright —
+    // and by an implementation that suppresses every model name, which is the
+    // 15-identical-rows defect this feature exists to fix, reached from the other
+    // side. Same session, same stored id, opposite ceiling.
+    renderList({
+      sessions: [makeSession('s1', 'Chat 1', { model: NSFW_MODEL_ID })],
+      currentModel: SFW_MODEL_ID,
+      nsfwAllowed: true,
+    });
+    expect(screen.getByTestId('session-item-s1')).toHaveTextContent('uncensored');
+  });
+
+  it('🔴 the gate is on OFFERABILITY, not on "is it the NSFW id" — an ordinary model still shows', () => {
+    // Discriminating case. An implementation that suppressed the label whenever
+    // `nsfwAllowed` is false — rather than whenever THIS model is unofferable —
+    // passes the first case and silently blanks every legitimate label for every
+    // viewer on a green domain, which is the majority of them.
+    renderList({
+      sessions: [makeSession('s1', 'Chat 1', { model: 'openai/gpt-4o-mini' })],
+      currentModel: MODEL,
+      nsfwAllowed: false,
     });
     expect(screen.getByTestId('session-item-s1')).toHaveTextContent('GPT-4o mini');
   });

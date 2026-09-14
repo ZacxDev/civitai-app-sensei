@@ -109,6 +109,10 @@ describe('🔴 prefers-reduced-motion is honoured, not merely declared', () => {
       onDelete: vi.fn(),
       onRename: vi.fn(),
       currentModel: 'deepseek/deepseek-chat',
+      // Fail-closed SFW, the production default — see `lib/maturity.ts`. Irrelevant
+      // to the transition this case reads, required because the label gate is not
+      // allowed a default.
+      nsfwAllowed: false,
       now: 1,
     };
 

@@ -174,3 +174,27 @@ export function clampModelToMaturity(model: string, nsfwAllowed: boolean): strin
   if (model === NSFW_MODEL_ID && !nsfwAllowed) return SFW_MODEL_ID;
   return model;
 }
+
+/**
+ * Whether this model may be NAMED to this viewer at all.
+ *
+ * 🔴 DERIVED FROM THE CLAMP, NOT A SECOND PREDICATE. "Offerable" is exactly
+ * "the clamp leaves it alone", so this asks the one rule rather than restating
+ * it — the failure mode `clampModelToMaturity`'s own note is about. Add a second
+ * gated model and both answers move together with no edit here.
+ *
+ * 🔴 WHY A SEPARATE QUESTION IS NEEDED AT ALL, given the clamp. The clamp
+ * answers "what do I SEND"; a label answers "what do I SHOW", and substituting
+ * is wrong for the second one. A sidebar row records the model a past
+ * conversation actually used, so a row holding the uncensored id must go SILENT
+ * rather than be relabelled with the clamp's target — relabelling would tell the
+ * viewer that conversation ran on a model it did not run on.
+ *
+ * The consumer is `SessionList`. `SettingsBar.tsx:91-94` already forbids the
+ * mirror image for the toggle — "an advertisement for something the platform has
+ * decided they will not be shown, on a surface that cannot explain why" — and the
+ * sidebar was applying the opposite rule to the same fact.
+ */
+export function isModelOfferable(model: string, nsfwAllowed: boolean): boolean {
+  return clampModelToMaturity(model, nsfwAllowed) === model;
+}

@@ -2996,6 +2996,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
             onDelete={deleteSession}
             onRename={renameSession}
             currentModel={activeModel}
+            // The SAME read that clamps `activeModel` — one `useDomainMaturity()`
+            // call for the whole app, so the sidebar's label gate, the footer
+            // toggle and the wire cannot disagree. See `SessionListProps`.
+            nsfwAllowed={nsfwAllowed}
           />
 
           {/* Chat area */}

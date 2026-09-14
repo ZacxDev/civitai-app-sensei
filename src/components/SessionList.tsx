@@ -3,6 +3,7 @@ import { Button } from '@civitai/blocks-react/ui';
 import type { Session } from '../types.js';
 import { groupSessionsByRecency, formatRelativeTime } from '../lib/sessions.js';
 import { getModelById } from '../lib/models.js';
+import { isModelOfferable } from '../lib/maturity.js';
 import { copyText } from '../lib/clipboard.js';
 import { Icon, IconButton, type IconName } from './Icon.js';
 import { useMotion } from '../lib/motion.js';
@@ -27,6 +28,30 @@ export interface SessionListProps {
    * neighbours.
    */
   currentModel: string;
+  /**
+   * Whether this viewer may be offered the uncensored arm — the SAME read that
+   * clamps `activeModel` in `App.tsx`, passed down rather than re-derived.
+   *
+   * 🔴 IT GATES THE LABEL, AND THAT IS NOT COSMETIC. A session created under a red
+   * ceiling stores `NSFW_MODEL_ID`. Narrow the ceiling and `currentModel` clamps to
+   * the SFW arm, so `session.model !== currentModel` and the row happily rendered
+   * `· Dolphin Mistral 24B (uncensored)` — naming an uncensored model to a viewer
+   * the platform has decided will not be shown one, in a 240px column with no room
+   * to explain why. `SettingsBar.tsx:91-94` forbids exactly that for the toggle
+   * ("ABSENT, NOT DISABLED … an advertisement for something the platform has
+   * decided they will not be shown"); this surface was applying the opposite rule
+   * to the same fact.
+   *
+   * 🔴 SUPPRESSED, NOT RELABELLED. The honest alternative would be to name the
+   * clamp's target instead, and that is worse: the row records what a past
+   * conversation actually ran on, so substituting would state something false
+   * about it. No label beats a wrong one. See `isModelOfferable`.
+   *
+   * 🔴 A REQUIRED PROP, deliberately. A default of `true` would fail OPEN — the one
+   * direction this must never fail — and a default of `false` would silently
+   * suppress a legitimate label at any site that forgot to pass it.
+   */
+  nsfwAllowed: boolean;
   /** Injected so grouping and relative times are not clock-dependent in tests. */
   now?: number;
 }
@@ -39,6 +64,7 @@ export function SessionList({
   onDelete,
   onRename,
   currentModel,
+  nsfwAllowed,
   now,
 }: SessionListProps) {
   /**
@@ -143,9 +169,10 @@ export function SessionList({
             </div>
             {group.sessions.map((session) => {
               const isActive = session.id === activeSessionId;
-              // See `currentModel`: named only when it is not the current one.
+              // Named only when it is not the current one (see `currentModel`) AND
+              // when this viewer may be offered it at all (see `nsfwAllowed`).
               const otherModel =
-                session.model === currentModel
+                session.model === currentModel || !isModelOfferable(session.model, nsfwAllowed)
                   ? null
                   : (getModelById(session.model)?.name ?? session.model.split('/').pop());
               return (
