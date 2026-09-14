@@ -27,17 +27,85 @@ import { NSFW_MODEL_ID, SFW_MODEL_ID } from './models.js';
  * below exists as well as the hidden control.
  */
 
+/*
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE ASK WAS DOMAIN-SHAPED. THE GATE IS CEILING-SHAPED. THEY COINCIDE — AND
+ * THIS IS THE ONLY PLACE THAT RECORDS WHY.
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * The request this control answers was phrased as a DOMAIN rule: show the NSFW
+ * toggle "only on .red … and not on .com". What is implemented above is
+ * `isLevelAllowed(BrowsingLevel.X)` over the effective browsing ceiling — a
+ * LEVEL predicate. Those are not obviously the same set, and nothing in THIS
+ * repo makes them one, so the equivalence was read out of the host on
+ * 2026-09-13 and is written down here rather than left to be re-derived by the
+ * next reader (who would otherwise, reasonably, suspect the ask was missed):
+ *
+ *   • `civitai/civitai` `src/server/routers/blocks.router.ts:483-501` —
+ *     `resolveBlockMaturity` derives `isGreen: allowMatureContent === false`
+ *     from the host-minted `maxBrowsingLevel`, i.e. from the CEILING, and its
+ *     own comment at `:496-499` states the choice: "Tie it to the maturity
+ *     ceiling rather than the literal green domain: a blue (SFW, per the
+ *     App-Blocks product decision) block gets the SFW audit too."
+ *
+ *   • `civitai/civitai` `src/server/utils/buzz-helpers.ts:130-138` — states the
+ *     mapping outright: the ceiling is "identical in result to keying on the
+ *     domain (green domain ⇒ SFW ceiling; red domain ⇒ mature ceiling)", where
+ *     SFW covers green AND blue and mature is red. It gives the reason the
+ *     ceiling is preferred: it is FORGE-SAFE, where the advisory `domain`
+ *     string is not.
+ *
+ * And a viewer's own setting can only NARROW a ceiling, never widen it — that
+ * is exactly what `effectiveBrowsingCeiling` computes. So the state a level
+ * gate would let through and a domain gate would not — an adult opted-in `.com`
+ * viewer whose effective ceiling carries the `X` bit — CANNOT EXIST upstream.
+ * The level predicate answers the domain question, and answers it more safely
+ * than a domain check would, because `domain` is a string the SDK documents as
+ * informational and the host itself declines to key on.
+ *
+ * 🔴 THIS IS A CROSS-REPO READING OF ANOTHER REPO AT A POINT IN TIME. IT IS NOT
+ * AN INVARIANT THIS REPO ASSERTS, AND NO GATE IN EITHER REPO COVERS THE
+ * COUPLING. Nothing in `src/` can see `blocks.router.ts`; no test here goes red
+ * if the two files above change. The consequence, stated plainly: if upstream
+ * ever revises the blue ⇒ SFW product decision, or stops deriving `isGreen`
+ * from the ceiling, THIS APP BEGINS OFFERING THE UNCENSORED TOGGLE ON `.com`
+ * SILENTLY. Nothing fails, the disclosure copy still renders, and the first
+ * signal is a viewer on the green domain being shown an uncensored affordance.
+ * Re-read both files before trusting this paragraph.
+ *
+ * 🔴 AND DO NOT `&&` A `domain` CHECK IN AS BELT-AND-BRACES. The SDK documents
+ * that field as informational; it is the WEAKER input. ANDing a weaker signal
+ * into a stronger one buys no safety and creates a second place for one policy
+ * to live — the failure this file's own `clampModelToMaturity` note is about.
+ * If the coupling above ever needs enforcing, the instrument is a guard in
+ * `civitai/civitai`, not a second predicate here.
+ */
+
 /**
  * The bit NSFW mode is gated on.
  *
- * 🔴 `X`, NOT `R`, AND THE CHOICE IS ABOUT WHAT THE VIEWER GETS FOR THEIR BUZZ.
- * An uncensored model's output is not bounded at R — that is what "uncensored"
- * means — so offering it to a viewer whose ceiling stops at R buys a reply the
- * host's output scan will WITHHOLD, on a submit that was already quoted and
- * charged. Gating on the higher bit means the toggle appears only where the
- * answer can actually be released. It is the conservative direction on both
- * axes: a viewer who may see R but not X keeps the grounded SFW arm, which is
- * the one that can still look things up.
+ * 🔴 `X`, NOT `R` — AND THE JUSTIFICATION IS AN ASSUMPTION, NOT A MEASUREMENT.
+ * The argument is that an uncensored model's output is not bounded at R (that is
+ * what "uncensored" means), so offering it to a viewer whose ceiling stops at R
+ * would buy a reply the host's output scan WITHHOLDS, on a submit that was
+ * already quoted and charged.
+ *
+ * ⚠️ NOBODY HAS OBSERVED THAT, and it is not observable here. The spend loop is
+ * Turnstile + auth gated, so no local run, harness run or test in this repo can
+ * produce a charged R-capped submit and read whether its output came back
+ * released or withheld. Read the paragraph above as the reason the narrowing was
+ * CHOSEN, not as evidence that the wider gate misbehaves.
+ *
+ * It is kept anyway because it is the cheap direction on both axes. If the
+ * assumption is WRONG, the whole cost is that a viewer who may see R but not X
+ * keeps the grounded SFW arm — the one that can still look things up — which is
+ * a smaller loss than a charged reply with nothing to show. And it is reversible
+ * in one token.
+ *
+ * 🔴 WHAT WOULD SETTLE IT: one real submit on the uncensored arm, in a real
+ * mod-gated host, as a viewer whose effective ceiling allows `R` but not `X` —
+ * then read whether the reply was released or withheld and whether Buzz moved.
+ * That needs a human in that host; nothing in this repo can run it.
  */
 export const NSFW_MODE_LEVEL: number = BrowsingLevel.X;
 
