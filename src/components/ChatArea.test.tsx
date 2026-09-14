@@ -470,6 +470,19 @@ describe('🔴 ChatArea — bubble alignment and measure', () => {
     // geometry, so DOM order is what a test can actually read.
     renderChat({ messages: transcript });
     const [user, assistant] = wraps();
+
+    // 🔴 THE BINDING IS POSITIONAL, SO THE ROLES MUST BE PINNED — WITHOUT THIS THE
+    // NEXT ASSERTION IS A TAUTOLOGY. `getAllByTestId` returns document order, so
+    // `user` and `assistant` are element[0] and element[1] WHATEVER their roles
+    // are, and element[0] always precedes element[1]: `compareDocumentPosition`
+    // cannot fail. Measured — render the transcript with the assistant FIRST and
+    // the comparison below still passed; only the separate role→`alignSelf` test
+    // above went red, i.e. the test named for this invariant was not the test
+    // pinning it. These two lines are what make the comparison a claim about
+    // READING ORDER rather than about array indices.
+    expect(user.dataset.bubbleRole).toBe('user');
+    expect(assistant.dataset.bubbleRole).toBe('assistant');
+
     expect(
       user.compareDocumentPosition(assistant) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
@@ -482,6 +495,13 @@ describe('🔴 ChatArea — bubble alignment and measure', () => {
       expect(w.style.order).toBe('');
       expect(w.style.flexDirection).not.toBe('row-reverse');
     }
+
+    // ⚠️ THE RESIDUAL BLIND SPOT, ON THE RECORD. Every assertion here reads INLINE
+    // `.style`, so a reversal arriving via a CSS class or the dependency's injected
+    // stylesheet is invisible to all of them — and `src/index.css` is imported only
+    // by `main.tsx`, so no jsdom test in this repo ever loads it. jsdom computes no
+    // geometry either. Closing this needs a real browser, not another assertion;
+    // `taste.json` is where that belongs if it is ever wanted.
   });
 
   it('the wrapper can shrink below its content — a long URL cannot push past the cap', () => {
