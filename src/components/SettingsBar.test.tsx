@@ -166,14 +166,38 @@ describe('🔴 SettingsBar — the NSFW-mode toggle', () => {
     //      still quoted and billed
     // Rendered while the switch is OFF, because "before they flip it, not after"
     // is the whole point.
+    //
+    // 🔴 THE WHOLE NORMALISED STRING, NOT FIVE WORDS. This assertion used to be
+    // five `toMatch` regexes (`/uncensored/i`, `/stripped/i`, `/cost Buzz/i`, …).
+    // When the artifact under test is PROSE, a guard on WORDS is walkable by
+    // REWORDING: a rewrite that keeps all five tokens while losing or INVERTING
+    // the meaning passed it. "Uncensored answers with no catalog limits: this
+    // model can’t look anything up, so nothing is stripped and replies cost Buzz
+    // only when grounded." carries every token and discloses the opposite. On a
+    // surface whose only mitigation IS the copy, that is not a nit.
+    //
+    // ⚠️ THE PRICE, ACCEPTED DELIBERATELY: a purely cosmetic reword now fails
+    // this test. That is the trade — a machine-readable claim about a spend path
+    // is worth a red test on an intentional edit, and the fix is one line (paste
+    // the new copy here). Do NOT "fix" a failure by loosening this back to
+    // tokens; re-read the three facts above and check the new copy still carries
+    // all three, then update the literal.
+    //
+    // Whitespace is normalised because the source is JSX: the copy is wrapped
+    // across three lines in `SettingsBar.tsx`, so `textContent` carries the
+    // newlines and indentation of whatever column the formatter chose. Reflowing
+    // those lines is not a reword, and must not be a failure.
+    const EXPECTED_NSFW_NOTE =
+      'Uncensored answers, but no catalog: this model can’t look anything up, ' +
+      'so it answers from its own knowledge and any model link it writes is ' +
+      'stripped. Replies cost Buzz either way.';
+
     renderBar({ nsfwAllowed: true });
     expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
-    const note = screen.getByTestId('nsfw-mode-note').textContent ?? '';
-    expect(note).toMatch(/uncensored/i);
-    expect(note).toMatch(/can’t look anything up|cannot look anything up/i);
-    expect(note).toMatch(/own knowledge/i);
-    expect(note).toMatch(/stripped/i);
-    expect(note).toMatch(/cost Buzz/i);
+    const note = (screen.getByTestId('nsfw-mode-note').textContent ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    expect(note).toBe(EXPECTED_NSFW_NOTE);
   });
 });
 
