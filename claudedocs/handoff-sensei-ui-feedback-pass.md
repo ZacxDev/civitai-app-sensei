@@ -419,6 +419,17 @@ submodules cannot be moved or removed`, rc 128, which reads like a safety stop a
 work and is not. `--force` is the answer, but only AFTER proving there is nothing to lose: `git
 status -s` empty AND `git log @{u}..` empty (all commits pushed). Both, not either.
 
+🔴 **THE DECISION THAT ENDED THIS ARC, IN THE OPERATOR'S OWN WORDS — the author of record for
+`page.fullBleed` being dead:**
+
+> "drop the field, this should be managed by styling not a manifest field"
+
+Said on 2026-09-14, after civitai#4812 had passed three audit rounds and thirteen fixed findings.
+Kept verbatim because a paraphrase invites re-litigation and this is the whole justification: not a
+defect, not a measurement, not an audit finding — a product call about where a layout decision
+belongs. Anyone tempted to rebuild the manifest field is arguing with this sentence, and should say
+so out loud before starting.
+
 ## How to verify
 
 **civitai #4812 — the new seam guard**, from the worktree, instrument validated first:
