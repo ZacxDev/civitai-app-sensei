@@ -234,6 +234,41 @@ as-of: 2026-09-13
 - **Next probe:** query ClickHouse for the step at 2026-09-14 21:29 CDT on this account and compare
   `billed_usd` against `Charged`. That is the only remaining unknown; execution is settled.
 
+### RECONCILED server-side: the send SUCCEEDED and charged 1 Buzz — but the MARGIN question is not answerable as this doc claimed
+- as-of: 2026-09-14
+- **Symptom + exact repro:** this doc's standing next-probe said `openrouter_cost_usd` "does reach
+  ClickHouse as `billed_usd` beside `Charged`, so the quote-vs-actual gap is measurable today without
+  new instrumentation." Repro: read `orchestration.workflowSteps` for the step this session created.
+- **Observed (with values):** prod ClickHouse Cloud, reached read-only via the kubeconfig at
+  `civit/datapacket-talos/prod-kubeconfig` → secret `clickhouse-tracker-env` in ns
+  `civitai-clickhouse-tracker`. Server 26.2.1.641. **Exactly ONE row of type
+  `chat/deepseek/deepseek-v4-flash-0731` exists in 24h**, at `2026-09-15 02:30:03` UTC
+  (= 21:30 CDT, the send): `status succeeded · jobs 1 · charged 1 · cost 0 · billedUsd NULL ·
+  jobDuration 2.436s · failureClass empty`.
+- 🔴 **The step type NAMES the model**, so this is a server-side confirmation of which model ran —
+  strictly stronger than the UI deduction recorded in the previous entry, and it agrees with it.
+- 🔴 **`billedUsd` IS NULL FOR EVERY CHAT STEP, NOT JUST THIS ONE.** Measured across 24h: all 11
+  `chat/%` types, 60 steps total, **0 with a non-null `billedUsd`** — `deepseek-chat-v3-0324` (29),
+  `gpt-4o-mini` (12), `deepseek-v4-pro-0813` (10), and eight others. **The column is not dead
+  globally**: 12,371 of 20,634,136 rows in the same window carry a value, so it populates for other
+  step families (GPU work) and simply never for chat. **So the recorded next-probe was based on a
+  false premise and cannot be run as written.**
+- **Ruled out:** *"`cost` carries the quote, so `Math.Max(1, cost…)` explains the 1 Buzz"* — no:
+  `cost` is **0 for every chat type**, while `charged` ranges 1 → 54 across them
+  (`deepseek-v4-pro-0813` avg 21.3, `openai/gpt-4o` 54). Whatever sets `charged` for chat, this
+  table's `cost` is not it. `via: measurement`
+- **Leading hypothesis:** chat/completion steps do not write a provider cost into this table at all,
+  so quote-vs-actual margin is NOT observable from `orchestration.workflowSteps`. Answering it needs
+  either a different sink (the orchestrator's own logs/metrics) or new instrumentation — which is
+  exactly what this doc asserted was unnecessary.
+- **Next probe:** find where `openrouter_cost_usd` is actually written, starting from
+  `WorkflowStepManager.cs:1633`/`:1650-1658` in `civitai/civitai` — read whether that write is
+  conditional on a step family that excludes chat. Until that is known, do NOT quote a margin figure.
+- ⚠️ **Access note for whoever runs this next:** read-only was enforced server-side with
+  `?readonly=1` and PROVEN — a `CREATE TABLE` probe returned `Code: 164 … Cannot execute query in
+  readonly mode`. Credentials were passed via a `curl -K` config file (mode 600, shredded after) so
+  they never entered argv. Do the same; the connection string is a ClickHouse Cloud admin user.
+
 ## Next steps (ranked)
 
 1. **Drive one real submit on `deepseek/deepseek-v4-flash-0731`** in a mod-gated host and reconcile
