@@ -201,6 +201,39 @@ as-of: 2026-09-13
   confirm the live bundle carries the id (`curl -s https://sensei.civit.ai/assets/index-*.js | grep -c
   deepseek-v4-flash-0731`, with a positive control), THEN one message, then reconcile.
 
+### RESOLVED: `deepseek/deepseek-v4-flash-0731` DOES execute live — first completed reply, 2026-09-14
+- as-of: 2026-09-14
+- **Symptom + exact repro:** the model became sensei's default (`SFW_MODEL_ID`) in #72 and had never
+  been driven to `succeeded`. Repro: send one message in the embedded app at
+  `https://civitai.com/apps/run/sensei` and read whether a reply arrives.
+- **Observed (with values):** on 0.1.23 live (deploy `live`, bundle `index-CdACwkKG.js`, the model id
+  present 4x in the served JS), one charged send of `Reply with exactly the word pong and nothing
+  else.` at **21:29 CDT returned exactly `pong`**. Driven through the operator's real logged-in
+  browser via the bridge; `browser activate` was NEVER invoked, so no screen was taken.
+- **The model was identified by DEDUCTION from the UI's own rendering rule, not by a server read.**
+  `SessionList.tsx:179-186` labels a session row with a model name ONLY when
+  `session.model !== currentModel && isModelOfferable(...)`. The OLD rows render `· DeepSeek V3`
+  (⇒ `deepseek-chat !== currentModel`); the NEW row renders **no model name** (⇒ its model EQUALS
+  `currentModel`); and `createSessionRecord(model)` stamps the model at creation, which happened
+  after `Reset Defaults` → `Save` set `settings.model = SFW_MODEL_ID`. Hence v4-flash.
+- **Ruled out:** *"the missing model label on the new row is a regression #72 introduced"* — no, it is
+  deliberate: the comment at `SessionList.tsx:20-38` says a row names its model only when it differs
+  from the current one, because "a column whose every cell is identical is noise with a line of
+  height". `via: code`
+- **Ruled out:** *"this viewer's persisted settings pinned `deepseek/deepseek-chat`, so a send would
+  use the old model"* — **FALSE, and it was disprovable BEFORE the reset**: in the first probe run,
+  taken before any settings change, the old rows ALREADY rendered `· DeepSeek V3`, which by the rule
+  above means `currentModel` was already not `deepseek-chat`. The `Reset Defaults` performed on that
+  premise was almost certainly unnecessary. It was harmless — every visible field already held its
+  default — but the reasoning was wrong. `via: measurement`
+- 🔴 **Still NOT answered — the margin question, which was the other half of this investigation.**
+  The Buzz balance read `197.8K` before and after: at that display precision a ~1 Buzz charge is
+  invisible, so this is NOT evidence of what was charged. The quote-vs-actual gap still needs the
+  server-side read — `openrouter_cost_usd` lands in ClickHouse as `billed_usd` beside `Charged`
+  (`WorkflowStepManager.cs:1633`, `:1650-1658`).
+- **Next probe:** query ClickHouse for the step at 2026-09-14 21:29 CDT on this account and compare
+  `billed_usd` against `Charged`. That is the only remaining unknown; execution is settled.
+
 ## Next steps (ranked)
 
 1. **Drive one real submit on `deepseek/deepseek-v4-flash-0731`** in a mod-gated host and reconcile
