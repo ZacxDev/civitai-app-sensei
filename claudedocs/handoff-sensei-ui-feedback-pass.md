@@ -18,41 +18,55 @@ platform changes that feedback turned out to require.
 
 ## State now
 
-🔴 **THE ARC IS DONE. Its frozen closing-condition is UNSATISFIABLE AS WRITTEN, and that is the
-correct outcome, not a failure.** The condition required `gh pr view 72` (sensei) **and**
-`gh pr view 4812 --repo civitai/civitai` to both report a `mergedAt`. #72 does. **#4812 never will —
-it was CLOSED UNMERGED by operator decision, so its `mergedAt` is `null` permanently.**
+🔴 **THE ORIGINAL ARC IS CLOSED — its frozen closing-condition was answered two updates ago
+(ADDRESSED ⇒ CLOSED; #72 merged, #4812 deliberately closed unmerged so its `mergedAt` is `null`
+forever).** Everything below descends from that arc's own ranked item "drive one real submit on
+`deepseek/deepseek-v4-flash-0731` and reconcile", so it is recorded here rather than in a new doc —
+but it has grown into a **cost-telemetry thread in a third repo** and the next session may
+legitimately split it out.
 
-**VERDICT: ADDRESSED ⇒ arc CLOSED.** The condition asked whether both halves of the work reached a
-terminal state; both did. One shipped, one was deliberately killed. Recording this rather than
-rewriting the condition to match the outcome — a condition edited after the fact proves nothing.
+**All four original PRs terminal**, verified by CONTENT not ancestry: sensei **#72** MERGED
+(`68b6641`), sensei **#73** MERGED (`0.1.23` in both version fields on trunk), civitai **#4812**
+CLOSED UNMERGED (operator: *"drop the field, this should be managed by styling not a manifest
+field"*), civitai **#4838** MERGED (`26b47fa9`). **#4812's branch
+`zach/app-block-full-bleed-manifest` is PRESERVED on the remote at `89b9dc5d9b`** — the seam guard,
+the host plumbing and the dev-tunnel resolver tests all live there if any of it is ever wanted.
 
-**Everything is merged and verified by CONTENT, not ancestry** (a squash never makes the branch head
-an ancestor, so every ancestry check below returns false and that is expected):
+⚠️ **A stale leftover worktree that is NOT this arc's:**
+`/home/zach/workspace/civit/civitai-sensei-fullbleed` on `zach/sensei-full-bleed` @ `a2ed370451` —
+that is **PR #4804's branch, MERGED 2026-09-13**, so it is leftover, not work in flight. Left alone
+deliberately: removing another session's checkout is a cross-session write. Whoever owns it can drop it.
 
-| PR | outcome | evidence |
-|---|---|---|
-| sensei **#72** | MERGED `2026-09-14T21:18:03Z`, `68b6641` | the five-item UI feedback pass |
-| sensei **#73** | MERGED, `30909d17` | `0.1.23` read back from both `package.json` and `block.manifest.json` on trunk |
-| civitai **#4812** | 🔴 **CLOSED UNMERGED** `2026-09-14T21:23:18Z` | operator decision; branch `zach/app-block-full-bleed-manifest` preserved at `89b9dc5d9b` |
-| civitai **#4838** | MERGED `2026-09-14T22:37:09Z`, `26b47fa9` | four probes each present exactly once on `main` |
+**sensei is SHIPPED AND LIVE.** `civitai app status sensei` → version **0.1.23**, status `approved`,
+deploy state `live`, source commit `30abeeba`, publish request `pubreq_01M2HCZ5C36P5G6Y1T3G5HST9C`
+(submitted 21:05 CDT, reviewed 21:07, live by ~21:14). The served bundle is
+`index-CdACwkKG.js` and carries `deepseek/deepseek-v4-flash-0731` **4×** (control string: 0).
 
-**`page.fullBleed` is dead. The CSS ledger is the permanent mechanism, not a transitional one.**
-Do not rebuild the field; read #4812's closing comment first if tempted. Three audit rounds all asked
-*"is this change correct?"* — thirteen findings, all fixed, ladder closed cleanly — and none could
-ask *"should this exist?"*, which is the only question that closes a PR. One sentence from the
-operator ended it.
+🔴 **THE MODEL EXECUTES — the arc's last open question, now settled server-side.** One real charged
+send returned `pong`. Prod ClickHouse `orchestration.workflowSteps` holds **exactly one** row of type
+`chat/deepseek/deepseek-v4-flash-0731` in 24h, at `2026-09-15 02:30:03` UTC:
+`status succeeded · jobs 1 · charged 1 · cost 0 · billedUsd NULL · jobDuration 2.436s`.
+The step type NAMES the model, so this is platform-side confirmation. `browser activate` was never
+invoked — the operator's screen was never taken.
 
-**Housekeeping done:** the `civitai-fullbleed-manifest` worktree is REMOVED (clean and fully pushed
-first; `worktree remove` refuses a tree containing submodules, so `--force` was required, which was
-safe only because both checks passed). The base clone `/home/zach/workspace/civit/civitai` was
-**34 behind** and is re-synced `--ff-only` to `26b47fa98e`.
+**The ONE open thread: `civitai/civitai-spine-controller` PR #259** @ **`d287c91e`**, OPEN,
+`MERGEABLE`, **assigned to `koenbeuk`**, 3 files +391/−11. It makes chat provider cost observable by
+reading `usage.cost` inline. Round-1 audit returned 1 🔴 + 3 🟡 + 1 🟢; all fixed in `d287c91e`, which
+**shrank** the PR — the entire request-side half was deleted. Verified independently:
+`OpenAIChatCompletionRequest.cs`, `OpenAIChatCompletionJsonSerializerContext.cs` and
+`OpenAIChatCompletionRequestTests.cs` are **byte-identical to `origin/main`**, and `BuildRequest`'s
+signature is back to its original shape — so the outbound request is provably untouched.
+**No delta re-audit was run on `d287c91e`**, and CI has not run on it either; all gates were local
+(10 deterministic failures, all pre-existing environment: 8 `ffmpeg`-missing + 2 comfy image-pin).
 
-⚠️ **A leftover worktree that is NOT this arc's and was deliberately left alone:**
-`/home/zach/workspace/civit/civitai-sensei-fullbleed` on `zach/sensei-full-bleed` @ `a2ed370451`.
-That is **PR #4804's branch, merged 2026-09-13** — so it is stale leftover, not work in flight, and
-its four files overlap the ones #4838 just rewrote. Not removed here because it is another session's
-checkout and removing one is a cross-session write. Whoever owns it can drop it.
+**Worktree deliberately left in place:** `/home/zach/workspace/civit/spine-inline-usage`
+(branch `zach/openrouter-inline-usage-cost` @ `d287c91e`), for PR iteration. Remove with
+`git -C /home/zach/workspace/civit/civitai-spine-controller worktree remove /home/zach/workspace/civit/spine-inline-usage`
+when #259 closes.
+
+**No clawgate task recorded** — `clawgate_handoff.sh resolve` returned rc=5, 0 tasks for this
+session, with its own positive control proving the board was reachable. That is not a clean bill of
+health: an unknown session id also answers 200 with an empty array.
 
 ## Open investigations — live diagnosis state
 
@@ -373,22 +387,87 @@ as-of: 2026-09-13
 - **Not verified:** the actual prod failure mode (404 vs 200-with-null vs timeout); whether the
   deployed spine-controller image matches `origin/main`.
 
+### UNSIZED: how much money moves if #259 merges
+- as-of: 2026-09-15
+- **Symptom + exact repro:** #259 makes `openrouter_cost_usd` arrive on ~every chat job instead of
+  0.025% of them. On two step classes that value is PREFERRED over the estimate when pricing, so
+  those steps change price. Nobody has measured by how much.
+- **Observed (with values):** `WorkflowStepManager.cs:1255` (civitai-orchestration `origin/main`)
+  re-prices when `@event.Status is not WorkflowStatus.Succeeded || handler.HasPostBilling(step)`.
+  `HasPostBilling` is `ServerToolCallCount > 0` (`ChatCompletionHandler.cs:84-85`). On those paths
+  `ChatCompletionHandler.cs:127-138` uses `actual × 1000 × 1.3` when the key is present, else
+  `EstimateOpenRouterCostAsync`. The only real actual ever recorded for a chat step —
+  `z-ai/glm-5.3-flash:nitro`, 2026-09-10 — was `charged 1` against `billedUsd 0.00473686`, i.e. an
+  implied **6.16 Buzz at 1.3×: a ~6× UNDER-collection**.
+- **Ruled out:** *"it is telemetry only, nothing changes price"* — I asserted this repeatedly and
+  wrote it into the PR body; it is FALSE, and retracted. It reasoned from `HasPostBilling` being
+  false for a *succeeded* plain chat step (true) and dropped the `is not Succeeded` disjunct and the
+  server-tool case entirely. `via: code`
+- **Ruled out:** *"`charged: 1` is the `Math.Max(1, …)` floor"* — no. A floor RAISES to 1; it cannot
+  cap at 1. `glm-5.3-flash:nitro` charged exactly 1 while its own recorded actual implies 6.16, so
+  `charged` came from the pre-execution estimate and the post-execution re-price never ran.
+  `via: measurement`
+- **Leading hypothesis:** direction is probably user-favourable (actual < estimate for most short
+  completions — 7 of the 8 recorded rows OVER-collect, some grossly: `gpt-4o-mini` charged 4 against
+  an implied 0.009), but the tail is the risk and nobody has sized it.
+- **Next probe:** count chat steps with `ServerToolCallCount > 0` and non-`Succeeded` chat steps over
+  30 days, then apply `actual × 1.3` vs the recorded `charged` to the 8 rows that carry a cost.
+  ClickHouse access recipe is in the entry below.
+
+### The cost producer: found, and it loses a race ~99.95% of the time
+- as-of: 2026-09-15
+- **Producer is in a THIRD repo** — `civitai/civitai-spine-controller` (`origin/main` `2135908a`),
+  `…/Middleware/BuiltIn/OpenAIChatCompletion/OpenAIChatCompletionMiddleware.cs`, write sites
+  `:123-128` (non-streaming) and `:290-297` (streaming), both gated on `TryGetGenerationCostAsync`
+  (`:453-496`) — a **one-shot `GET /api/v1/generation?id=` with zero delay and zero retry**; 404 is
+  not in the retry set. Landed 2026-03-12 (`bcce87bb`).
+- 🔴 **MEASURED DISCRIMINATOR — every per-model and per-route hypothesis is DEAD.** 30-day
+  denominators: `qwen3.7-flash` **3/6,296** · `glm-5.3-flash:nitro` **1/1,858** · `gpt-4o-mini`
+  **1/1,660** · `openai/gpt-4o-mini` **1/348** · `xiaomi/mimo-v2.5` **2/191**. Uniform near-zero
+  across every model, `:nitro` included — the signature of a race, not a model property.
+- 🔴 **Ruled out:** *"`usage: {include: true}` is what makes OpenRouter return the cost"* — **FALSE,
+  and I reported the opposite after "verifying" it.** OpenRouter's own docs, one paragraph ABOVE the
+  response-shape example I quoted: *"The `usage: { include: true }` and `stream_options:
+  { include_usage: true }` parameters are deprecated and have no effect. Full usage details are now
+  always included automatically in every response."* `usage.cost` was always on the response; the
+  middleware simply never read it. `via: doc`
+- **Ruled out:** streaming-vs-non-streaming (both call the same helper); `ServerToolsEnabled` (selects
+  accumulate-vs-overwrite in the CONSUMER only); `total_cost == 0` for free models (would store a
+  NON-null `0.0`). `via: code`
+- **The rival not killed, and the probe that separates it:** "spine-controller ran and the GET
+  failed" vs "something else produced the job". The middleware writes sibling keys UNCONDITIONALLY —
+  `integration_duration_ms`, `integration_status_code`, `openai_response_id`, `openai_model`,
+  `openai_prompt_tokens`. Not in ClickHouse, but in the job-event record:
+  `GET /v1/producer/jobs/{jobId}/events`. For the sensei job at `2026-09-15 02:30:03`: `openai_*`
+  present + `openrouter_cost_usd` absent ⇒ race confirmed. (dpprod Loki carries no spine-controller
+  logs, so the middleware's three distinguishing warnings could not be read.)
+- **Next probe:** that job-events read. #259 fixes the mechanism regardless of which rival is true.
+
 ## Next steps (ranked)
 
-1. **Drive one real submit on `deepseek/deepseek-v4-flash-0731`** in a mod-gated host and reconcile
-   `billed_usd` against `Charged`. It is sensei's DEFAULT model, now shipped in **0.1.23 on trunk**,
-   and has never been driven to `succeeded` live — so every viewer lands on an arm nothing has
-   exercised end to end.
+1. 🔴 **ROTATE THE COMMITTED CREDENTIALS IN `civitai-spine-controller`.** Independently verified
+   present on `origin/main` at `2135908a`: a **live-format `sk-or-v1-…` OpenRouter key (73 chars)** in
+   `src/Civitai.SpineController/profiles/optional/openai-managed.json`, and a 37-char orchestration
+   `AccessToken` in `src/Civitai.SpineController/appsettings.json`. Values were never printed or
+   copied anywhere. They predate PR #259 by several commits and are unrelated to it. Rotation also
+   needs history scrubbing or acceptance that the old key is burned.
    IN FLIGHT: nothing.
-   - forcing: gate — `chat-completion.step.ts`'s own convention is that every registered model was
-     driven to `succeeded` live; this is the first entry to break it.
-2. **Ask OpenRouter/Venice to expose `tools` on the Venice endpoint, or to list
+   - forcing: security — a live provider key in a repo's default branch, spending real money.
+2. **Review and merge `civitai-spine-controller#259`** (assigned `koenbeuk`). 🔴 **Do not merge on the
+   old promise:** an earlier PR body claimed "telemetry only — does not change what anyone is
+   charged"; that was FALSE and is retracted in the body and in two PR comments. Before merging,
+   SIZE THE BILLING DELTA — see the open investigation below. A delta re-audit of `d287c91e` was not
+   run; the round-1 fixes were verified but the ladder is not formally closed.
+   IN FLIGHT: `civitai/civitai-spine-controller#259`.
+   - forcing: user — it is assigned to a named reviewer and blocks nothing else until they act.
+3. **Ask OpenRouter/Venice to expose `tools` on the Venice endpoint, or to list
    `venice-uncensored-1-2`.** Venice's own API already reports `uncensored: true` **and**
    `supportsFunctionCalling: true` at 128k — it is simply not published to OpenRouter. The only route
    to a **grounded** NSFW mode with no code on either side.
    - forcing: none
-3. **`taste.json`'s `reshoot` and `crop-rect-bottom-edge`.** **0.1.23 is on trunk**, so the blocker
-   moves from "a version > 0.1.12 must exist" to "it must be APPROVED and live".
+4. **`taste.json`'s `reshoot` and `crop-rect-bottom-edge`.** **0.1.23 is now approved and LIVE**, so
+   the long-standing blocker ("a version > 0.1.12 must be approved and live") is GONE. These are
+   now actually runnable.
    - forcing: none
 
 ## Defects (batched)
@@ -629,6 +708,43 @@ Kept verbatim because a paraphrase invites re-litigation and this is the whole j
 defect, not a measurement, not an audit finding — a product call about where a layout decision
 belongs. Anyone tempted to rebuild the manifest field is arguing with this sentence, and should say
 so out loud before starting.
+
+🔴 **TWO ERRORS I MADE THIS SESSION, BOTH CAUGHT BY AN ADVERSARIAL AUDIT RATHER THAN BY ME.**
+Recorded because the *shape* of each recurs, not the specifics.
+
+1. **I reasoned from a guard being false in the common case to "it never fires."**
+   `HasPostBilling` is false for a succeeded plain chat step, so I wrote "telemetry only, nothing
+   changes price" — into my report, the handoff AND a PR body as a 🔴 promise a reviewer would have
+   approved on. The enclosing condition was `status is not Succeeded || HasPostBilling(step)`. **I
+   read the guard and not the disjunction around it.** Ask what ELSE reaches the branch.
+2. 🔴 **I "verified" a premise by searching for confirmation and stopping when I found it.** Asked to
+   check that OpenRouter returns `usage.cost` when sent `usage: {include: true}`, I fetched the docs,
+   grepped for `cost`, found the response example, and reported the premise confirmed. **The sentence
+   declaring that parameter deprecated and inert was one paragraph above the block I quoted.**
+   Searching for support finds support. Search for the CONTRADICTION — grep `deprecated`, `no effect`,
+   `always` — before reporting a premise confirmed.
+
+**A command reporting success is a claim about the COMMAND, not the outcome.**
+`gh pr edit 259 --add-assignee koenb` exited **0**, printed the PR URL, wrote nothing to stderr — and
+assigned nobody, because GitHub silently drops assignees who are not assignable on the repo. `koenb`
+is a real GitHub user but returns **404** from
+`repos/civitai/civitai-spine-controller/assignees/koenb`; the assignable one is **`koenbeuk`**.
+**Read the assignment back** (`gh pr view --json assignees`) rather than trusting the exit code —
+which was itself the pipe's status, not `gh`'s, because the call was piped through `tail`.
+
+**ClickHouse prod access, read-only — the recipe, for the probes above.** Creds are a ClickHouse
+Cloud admin connection string in k8s secret `clickhouse-tracker-env`, ns `civitai-clickhouse-tracker`,
+key `ClickhouseConsumer__ConnectionString`, reachable with the kubeconfig at
+`civit/datapacket-talos/prod-kubeconfig` (`$KC_DPPROD`). **Pass the password via a `curl -K` config
+file (mode 600, shred after) so it never enters argv**, and append `?readonly=1` — which is ENFORCED,
+proven: a `CREATE TABLE` probe returns `Code: 164 … Cannot execute query in readonly mode`.
+⚠️ **`rg -c` counts matching LINES, and a minified bundle is a handful of enormous lines** — use
+`str.count()` for occurrences, or every count is wrong by an order of magnitude.
+
+⚠️ **A grep across a WRAPPED line returns a false zero that reads as "the text is gone".** Verifying
+#4838 landed, a contiguous search for the retracted quote returned **0** because the sentence wraps
+mid-phrase; flattening whitespace first returns **1**. The tell was that the zero was the answer I
+WANTED. Be most suspicious of a zero that confirms your hypothesis.
 
 ## How to verify
 
