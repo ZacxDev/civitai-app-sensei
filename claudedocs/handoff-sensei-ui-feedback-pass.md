@@ -173,6 +173,34 @@ as-of: 2026-09-13
   sets and ask which one a tool actually LOADS. The drift above is the standing control: if a copy
   can be five fields behind and block nothing, it is not a gate.
 
+### The deepseek live-submit test is BLOCKED ON APPROVAL, and driving the live app today measures the WRONG model
+- as-of: 2026-09-14
+- **Symptom + exact repro:** next-step 1 is "send one message in a real mod-gated host on
+  `deepseek/deepseek-v4-flash-0731` and reconcile `billed_usd` against `Charged`". Doing that against
+  `https://sensei.civit.ai` right now spends real Buzz on a DIFFERENT model and cannot answer it.
+- **Observed (with values):** `civitai app status` reports live sensei is **0.1.22, built from
+  `6fd63c0`** — a commit that PREDATES #72. Measured against that tree: `deepseek-v4-flash-0731`
+  appears **0 times** in `src/lib/models.ts` (positive control: **2** at trunk, so the search works),
+  and `6fd63c0`'s `DEFAULT_SETTINGS.model` is **`deepseek/deepseek-chat`** — a different model.
+  `SFW_MODEL_ID` was introduced by `68b6641` (#72). The model is not in 0.1.22's list at all, so the
+  Settings selector cannot reach it either.
+- **Ruled out:** *"pick the model manually in the live app's Settings to avoid waiting for a
+  release"* — impossible: the id does not exist in the shipped 0.1.22 bundle. `via: measurement`
+- **Ruled out:** *"the CLI account lacks the scopes to spend Buzz, so the test needs a different
+  login"* — no: `civitai whoami` reports `Read Buzz balance: yes` / `Spend Buzz (AI Services): yes`.
+  And the browser run spends through the VIEWER's own session in the live app, not through the CLI,
+  so CLI scopes do not gate it regardless. `via: command`
+- **Leading hypothesis:** the test is simply gated on 0.1.23 going live. **0.1.23 IS NOW SUBMITTED** —
+  `pubreq_01M2HCZ5C36P5G6Y1T3G5HST9C`, status `pending`, source commit `30abeeba` — awaiting a
+  MODERATOR, which is a human gate no agent here can drive.
+- 🔴 **A second trap waiting on the other side of approval:** `DEFAULT_SETTINGS` applies only to a
+  viewer with NO persisted settings, and `sensei:settings` has been written by this account since
+  0.1.0. So a stored `model` may pin the old id even after 0.1.23 ships. **The browser run must READ
+  the model the UI actually shows before sending**, never assume the default took effect.
+- **Next probe:** `civitai app status sensei` until `Status: approved` / `Deploy state: live`; then
+  confirm the live bundle carries the id (`curl -s https://sensei.civit.ai/assets/index-*.js | grep -c
+  deepseek-v4-flash-0731`, with a positive control), THEN one message, then reconcile.
+
 ## Next steps (ranked)
 
 1. **Drive one real submit on `deepseek/deepseek-v4-flash-0731`** in a mod-gated host and reconcile
