@@ -310,6 +310,69 @@ as-of: 2026-09-13
   worker does supply it; `qwen3.7-flash`, `xiaomi/mimo-v2.5`, `gpt-4o-mini` and
   `z-ai/glm-5.3-flash:nitro` are the models seen doing so.
 
+### SOLVED: the cost producer is in a THIRD repo, and it loses a race ~99.95% of the time
+- as-of: 2026-09-14
+- **The producer is NOT in `civitai-orchestration`.** It is `civitai/civitai-spine-controller`
+  (read at `origin/main` `2135908a`),
+  `src/Civitai.SpineController/Services/Integrations/Middleware/BuiltIn/OpenAIChatCompletion/OpenAIChatCompletionMiddleware.cs`
+  — two write sites, `:123-128` (non-streaming) and `:290-297` (streaming), both gated on
+  `TryGetGenerationCostAsync` (`:453-496`). That helper does a **one-shot `GET
+  {base}/api/v1/generation?id={responseId}` with zero delay and zero retry**, returning null silently
+  four ways; **404 is not in the retry set** (`Services/Integrations/ServiceCollectionExtensions.cs:298-309`).
+  Landed 2026-03-12 (`bcce87bb`), materially unchanged.
+  `IsOpenRouterRequest` (`:443-447`) is NOT a model check — it means "not routed to a local vLLM
+  container". Transport onward is intact: `UploadBlobsMiddleware.cs:1229-1244` → `X-Claim-Context`
+  header → orchestration `BlobController.cs:287-294` → `JobEvent.Context` →
+  `ChatCompletionHandler.cs:196-210` → `WorkflowStepManager.cs:1631-1636` → `BilledUsd`.
+- 🔴 **MEASURED DISCRIMINATOR — every per-model and per-route hypothesis is DEAD.** 30-day
+  denominators for the only models ever seen recording a cost:
+  `qwen3.7-flash` **3 / 6,296 = 0.048%** · `z-ai/glm-5.3-flash:nitro` **1 / 1,858 = 0.054%** ·
+  `gpt-4o-mini` **1 / 1,660 = 0.06%** · `openai/gpt-4o-mini` **1 / 348 = 0.287%** ·
+  `xiaomi/mimo-v2.5` **2 / 191 = 1.05%**. Uniform near-zero across every model, `:nitro` included.
+  That is the signature of a RACE against OpenRouter's eventually-consistent generation index, not a
+  property of any model, route or provider.
+- **Ruled out by reading source, not by absence:** `usage: {include:true}` is not the current
+  mechanism (`OpenAIChatCompletionRequest` has no `usage` field, `OpenAIChatUsage` no `Cost`);
+  streaming vs non-streaming (both call the same helper); `ServerToolsEnabled` (selects
+  accumulate-vs-overwrite in the CONSUMER only); a shipped-at-some-point code path (producer predates
+  the window by six months and the 8 dates do not cluster); `total_cost == 0` for free models (would
+  store `0.0`, i.e. NON-null — the rows are NULL, so the key is genuinely absent). `via: code`
+- **Ruled out:** *"a different worker serves most chat"* — largely, by construction:
+  `ChatCompletionJob.GetWorkerSupport` requires `Capabilities.ChatCompletion != null` AND
+  `SupportsAdditionalResources == false` for any non-AIR model, matching only `openai-managed.json`.
+  Not fully eliminated. `via: code`
+- **The one rival not killed, and the probe that separates it:** "spine-controller ran and the GET
+  failed" vs "something else produced the job". The middleware writes sibling keys
+  UNCONDITIONALLY — `integration_duration_ms`, `integration_status_code`, `openai_response_id`,
+  `openai_model`, `openai_prompt_tokens` (`:97-98`, `:379-398`). They are not in ClickHouse but ARE
+  in the job-event record: `GET /v1/producer/jobs/{jobId}/events`. For the sensei job at
+  `2026-09-15 02:30:03`: `openai_*` present + `openrouter_cost_usd` absent ⇒ race confirmed; all
+  absent ⇒ different producer. (dpprod Loki carries no spine-controller logs, so the middleware's
+  three distinguishing warnings could not be read.)
+- 🔴 **SCOPE CAVEAT THAT MATTERS MORE THAN THE FIX: this is TELEMETRY, NOT BILLING.**
+  `ChatCompletionHandler.HasPostBilling` (`:84-85`) is false unless server tool calls ran, and
+  `WorkflowStepManager.cs:1261-1271` therefore never recomputes cost for a succeeded plain chat step
+  — its own comment says so. The actual-cost branch at `ChatCompletionHandler.cs:127-138` is
+  **effectively dead for plain chat**. So chat is billed **entirely** on
+  `EstimateOpenRouterCostAsync` (`:149-172`) **with no reconciliation of any kind**, and the one
+  observed actual (`glm-5.3-flash:nitro`, charged 1 vs implied 6.16) under-collected ~6x.
+- **Minimal fix — all worker-side in `civitai-spine-controller`, no orchestrator change:** add
+  `usage: {include: true}` to the request (`OpenAIChatCompletionRequest.cs` + its
+  `JsonSerializerContext`), add `Cost` to `OpenAIChatUsage`, set it only when
+  `IsOpenRouterRequest(claim)` in `BuildRequest` (`:498-527`) so vLLM requests stay byte-identical,
+  and read it in both process paths, keeping `TryGetGenerationCostAsync` as fallback. This REMOVES
+  the round trip rather than racing it; `stream_options.include_usage = true` is already sent
+  (`:521`) so the streaming path is covered. The inferior alternative — delay+retry inside the
+  helper — holds the worker claim open and still races.
+- 🔴 **NOTHING TESTS THE PRODUCER**, verified with positive controls: `TryGetGenerationCost|total_cost|openrouter_cost|IsOpenRouterRequest`
+  over spine-controller `tests/` at `origin/main` → rc=1, no matches (control `BuildRequest` matches
+  in 4 test files). In orchestration the only hit is incidental filler in
+  `JobFailureClassTests.cs:75,80`. Neither the accumulation nor the `billedUsd` fold has a test.
+  A guard belongs in `OpenAIChatCompletionRequestTests.cs`, which already string-asserts serialised
+  `BuildRequest` output.
+- **Not verified:** the actual prod failure mode (404 vs 200-with-null vs timeout); whether the
+  deployed spine-controller image matches `origin/main`.
+
 ## Next steps (ranked)
 
 1. **Drive one real submit on `deepseek/deepseek-v4-flash-0731`** in a mod-gated host and reconcile
