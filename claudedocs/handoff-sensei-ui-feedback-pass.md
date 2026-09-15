@@ -269,6 +269,47 @@ as-of: 2026-09-13
   readonly mode`. Credentials were passed via a `curl -K` config file (mode 600, shredded after) so
   they never entered argv. Do the same; the connection string is a ClickHouse Cloud admin user.
 
+### TRACED: why `billedUsd` is null for chat — and the margin hypothesis has ONE measured instance, which CONFIRMS it
+- as-of: 2026-09-14
+- **Symptom + exact repro:** every chat step reads `billedUsd NULL`, so quote-vs-actual could not be
+  computed for this session's send. Repro: read `orchestration.workflowSteps` filtered to `chat/%`.
+- **The orchestrator-side chain is INTACT and NOT gated by step family** — read from `origin/main`,
+  not from a working tree (the local `orch-workflow-authz` checkout is on
+  `zach/fix-workflow-owner-authz` and differs from main by **733 lines** in these two files, so
+  reasoning from it would have been reasoning about undeployed code).
+  `ChatCompletionHandler.OnJobEventAsync` (`origin/main:196-209`) writes
+  `workflowStep.Metadata["openrouter_cost_usd"]` **only if `jobEvent.Context` already contains that
+  key**; `WorkflowStepManager:1633` — the exact line this doc cites — then folds it into `billedUsd`
+  unconditionally. So the orchestrator is READY to record it and the producer upstream (the worker's
+  job-event context) is what almost never supplies it.
+- **Observed (with values), 30 days, platform-wide:** **32,571 chat steps, 8 with a non-null
+  `billedUsd`** — 0.025%. In the last 24h the non-null rows are `image` 9,600 · `video` 2,748 ·
+  `3d` 28 · `model` 1, and **no `chat` at all**. So the path is not chat-excluded by construction; it
+  just essentially never fires for chat.
+- 🔴 **THE MARGIN HYPOTHESIS IS CONFIRMED BY ONE REAL ROW.** Of those 8, comparing `charged` (Buzz)
+  against `billedUsd * 1000 * 1.3` (the documented markup):
+  `2026-09-10 16:40:14 · chat/z-ai/glm-5.3-flash:nitro · succeeded · charged 1 · billedUsd
+  0.00473686 · implied 6.158 Buzz` — **the platform collected 1 and the markup implies 6.16, an
+  under-collection of ~6x on a single send.** The other 7 over-collect, some grossly
+  (`gpt-4o-mini` charged 4 against an implied 0.009). So the exposure this doc hypothesised is real,
+  and it is the PRE-EXECUTION ESTIMATE that is charged.
+- **Ruled out:** *"charged 1 is the `Math.Max(1, …)` floor doing its job"* — no. A floor RAISES to 1;
+  it cannot cap at 1. `glm-5.3-flash:nitro` charged exactly 1 while its own recorded actual implies
+  6.16, so `charged` came from the pre-execution estimate and the post-execution re-price never
+  ran — consistent with `HasPostBilling => ServerToolCallCount > 0` being false for app-block
+  function tools. `via: measurement`
+- **Ruled out:** *"the quote-vs-actual gap is measurable today without new instrumentation"* — this
+  doc's own standing claim, now **FALSE**: it is measurable for 0.025% of chat steps, and was not
+  measurable for this session's send. `via: measurement`
+- **This session's own send remains uncomputable for margin:** `chat/deepseek/deepseek-v4-flash-0731`
+  at `2026-09-15 02:30:03` UTC — `succeeded · charged 1 · cost 0 · billedUsd NULL · 2.436s`.
+  Execution is settled; its margin is not, and no query can settle it after the fact.
+- **Next probe:** find what puts `openrouter_cost_usd` into a job event's Context — that is in the
+  WORKER, not in this orchestrator repo, and it is the single change that would make chat margin
+  observable. The 8 rows above are the positive control that the sink works end to end when the
+  worker does supply it; `qwen3.7-flash`, `xiaomi/mimo-v2.5`, `gpt-4o-mini` and
+  `z-ai/glm-5.3-flash:nitro` are the models seen doing so.
+
 ## Next steps (ranked)
 
 1. **Drive one real submit on `deepseek/deepseek-v4-flash-0731`** in a mod-gated host and reconcile
