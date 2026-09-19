@@ -607,7 +607,7 @@ describe('orchestrator-bridge — lifecycle contract', () => {
 
   describe('clamping, at the edges that decide what reaches the host', () => {
     function paramsFor(request: Partial<Parameters<typeof buildChatCompletionBody>[0]>) {
-      return buildChatCompletionBody({ model: MODEL, messages: ONE_MESSAGE, ...request }).params;
+      return buildChatCompletionBody({ model: MODEL, messages: ONE_MESSAGE, ...request }).input;
     }
 
     it('raises a zero or negative maxTokens to the host minimum of 1', () => {

@@ -16,11 +16,14 @@ interface SubmittedParams {
   maxTokens: number;
   temperature?: number;
   tools?: Array<{ type: string; function: { name: string } }>;
-  // 🔴 `toolChoice`, NOT `tool_choice` — the HOST's key. This declaration was
-  // the THIRD place the wrong spelling was written down (payload, assertion,
-  // and this type), and the type is why the mistake type-checked: it made the
-  // fixture agree with the defect, so nothing anywhere disagreed.
-  toolChoice?: string;
+  // 🔴 `tool_choice` — the ORCHESTRATOR's key, and the app now talks to it
+  // directly through the pass-through arm. This declaration has been BOTH
+  // spellings: it was `tool_choice` while that was the 0.1.6 defect, then
+  // `toolChoice` for the registry arm, and is `tool_choice` again now for a
+  // different reason. It is listed here because a fixture type that agrees
+  // with the payload is exactly how the original mistake type-checked — so
+  // this must be changed deliberately, never to make a test pass.
+  tool_choice?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -32,10 +35,12 @@ interface SubmittedParams {
 // invention is what was actually PUT ON THE WIRE, so every assertion here reads
 // the params the app handed to `submit` and the requests it handed to `fetch`.
 //
-// 🔴 AND IT PINS THE WIRE SPELLING. The app's field is `toolChoice`; the host
-// reads `tool_choice`. Getting that backwards does not error — the orchestrator
-// would ignore an unknown key and the feature would be silently inert — so the
-// snake_case key is asserted explicitly rather than assumed.
+// 🔴 AND IT PINS THE WIRE SPELLING. The app's own request field is `toolChoice`
+// (camel); what goes ON THE WIRE is `tool_choice` (snake), because the
+// pass-through arm forwards `input` byte-identically to the orchestrator and
+// nothing maps it. Getting that backwards does NOT error on this arm — nothing
+// validates `input` — so the feature would be silently inert with every test
+// green. That is precisely why it is asserted rather than assumed.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const submitted: SubmittedParams[] = [];
@@ -52,8 +57,8 @@ let toolRequests: Array<{ url: string; method: string; authorization: string; bo
  */
 const estimateFn = vi.fn().mockResolvedValue({ workflowId: 'e', status: 'succeeded', cost: { total: 1 } });
 
-const submitFn = vi.fn(async (body: { params?: Record<string, unknown> }) => {
-  if (body?.params) submitted.push(body.params as unknown as SubmittedParams);
+const submitFn = vi.fn(async (body: { input?: Record<string, unknown> }) => {
+  if (body?.input) submitted.push(body.input as unknown as SubmittedParams);
   return { workflowId: `wf-${submitted.length}`, status: 'pending' };
 });
 
@@ -192,12 +197,13 @@ describe('tool calling: the model forms its own query, one submit per round', ()
 
     const first = all[0];
     expect(first.tools?.[0].function.name).toBe('search_models');
-    // 🔴 THE HOST'S KEY IS `toolChoice`. This assertion previously pinned
-    // `tool_choice` — the ORCHESTRATOR's spelling, one layer too low — and the
-    // host's `.strict()` schema rejects it as `unrecognized_keys`, failing the
-    // whole request rather than ignoring the field.
-    expect(first.toolChoice).toBe('auto');
-    expect('tool_choice' in first).toBe(false);
+    // 🔴 THE WIRE KEY IS `tool_choice` AGAIN, for the opposite reason it was
+    // wrong in 0.1.6: this body is a pass-through step, so the host forwards
+    // `input` unmodified and the orchestrator's own spelling is the correct
+    // one. Both directions pinned, because on this arm the wrong spelling is
+    // silent rather than a BAD_REQUEST.
+    expect(first.tool_choice).toBe('auto');
+    expect('toolChoice' in first).toBe(false);
   });
 
   it('drives a tool POST with the MODEL-authored arguments, then resubmits with the result', async () => {

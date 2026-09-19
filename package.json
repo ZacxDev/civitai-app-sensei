@@ -16,7 +16,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@civitai/app-sdk": "^0.42.0",
+    "@civitai/app-sdk": "^0.43.0",
     "@civitai/blocks-react": "^0.51.0",
     "@civitai/components-react": "^0.4.1",
     "@civitai/theme": "^0.3.1",
@@ -24,6 +24,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@civitai/client": "0.2.0-beta.98",
     "@testing-library/jest-dom": "^6.6.0",
     "@testing-library/react": "^16.1.0",
     "@testing-library/user-event": "^14.5.0",

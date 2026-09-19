@@ -83,8 +83,8 @@ let storage = fakeAppStorage();
 const estimateFn = vi
   .fn()
   .mockResolvedValue({ workflowId: 'e', status: 'succeeded', cost: { total: 1 } });
-const submitFn = vi.fn(async (body: { params?: Record<string, unknown> }) => {
-  if (body?.params) submitted.push(body.params as unknown as SubmittedParams);
+const submitFn = vi.fn(async (body: { input?: Record<string, unknown> }) => {
+  if (body?.input) submitted.push(body.input as unknown as SubmittedParams);
   return { workflowId: `wf-${submitted.length}`, status: 'pending' };
 });
 const pollFn = vi.fn(async () => {

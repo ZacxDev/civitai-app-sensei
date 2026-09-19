@@ -7,7 +7,7 @@ import {
   extractToolCalls,
   isAllowedModel,
   TextOutputWithheldError,
-  CHAT_COMPLETION_STEP_ID,
+  CHAT_COMPLETION_STEP_TYPE,
   CHAT_COMPLETION_MODELS,
   MAX_OUTPUT_TOKENS,
   MAX_MESSAGES,
@@ -59,16 +59,36 @@ describe('orchestrator-bridge', () => {
   });
 
   describe('the wire body', () => {
-    it('uses the registered kebab-case step id, not the orchestrator $type', () => {
+    it('names the orchestrator $type and OMITS `step` — the arm discriminator', () => {
       const body = buildChatCompletionBody({
         model: MODEL,
         messages: [{ role: 'user', content: 'hi' }],
       });
       expect(body.kind).toBe('step');
-      expect(body.step).toBe('chat-completion');
-      // The camelCase spelling is the entry's internal `orchestratorType`; it is
-      // not a member of the wire enum and is rejected fail-closed at the schema.
-      expect(body.step).not.toBe('chatCompletion');
+      expect(body.$type).toBe('chatCompletion');
+      // 🔴 ABSENCE is the discriminator, and `undefined` is NOT absence here:
+      // the SDK transport is postMessage/structured clone, which preserves an
+      // explicit `undefined` rather than dropping the key. A body carrying a
+      // `step` key at all lands on the REGISTRY arm, where 'chatCompletion' is
+      // not a registered id — so this would fail closed rather than silently,
+      // but for the opposite reason than before.
+      expect('step' in body).toBe(false);
+      expect(body.step).toBeUndefined();
+    });
+
+    it('declares maxBuzz, which is ALSO the step timeout in seconds', () => {
+      const body = buildChatCompletionBody({
+        model: MODEL,
+        messages: [{ role: 'user', content: 'hi' }],
+      });
+      // Not a price: the host stamps `stepTimeoutSeconds = maxBuzz`, so this
+      // number is the wall-clock budget as much as the Buzz ceiling. Lowering
+      // it to "save money" shortens the timeout and expires live completions.
+      expect(body.maxBuzz).toBe(120);
+      expect(Number.isInteger(body.maxBuzz)).toBe(true);
+      // The server bound is 1..250 (PASS_THROUGH_MAX_BUZZ).
+      expect(body.maxBuzz).toBeGreaterThanOrEqual(1);
+      expect(body.maxBuzz).toBeLessThanOrEqual(250);
     });
 
     it('emits EXACTLY the four keys the .strict() param schema accepts', () => {
@@ -78,13 +98,13 @@ describe('orchestrator-bridge', () => {
         temperature: 0.7,
         max_tokens: 100,
       });
-      expect(Object.keys(body.params).sort()).toEqual([
+      expect(Object.keys(body.input).sort()).toEqual([
         'maxTokens',
         'messages',
         'model',
         'temperature',
       ]);
-      expect(Object.keys(body).sort()).toEqual(['kind', 'params', 'step']);
+      expect(Object.keys(body).sort()).toEqual(['$type', 'input', 'kind', 'maxBuzz']);
     });
 
     it('omits temperature entirely when not supplied, rather than sending undefined', () => {
@@ -92,8 +112,8 @@ describe('orchestrator-bridge', () => {
         model: MODEL,
         messages: [{ role: 'user', content: 'hi' }],
       });
-      expect(Object.keys(body.params).sort()).toEqual(['maxTokens', 'messages', 'model']);
-      expect('temperature' in body.params).toBe(false);
+      expect(Object.keys(body.input).sort()).toEqual(['maxTokens', 'messages', 'model']);
+      expect('temperature' in body.input).toBe(false);
     });
 
     it('still drops the params the host rejects — and no longer drops tools', () => {
@@ -116,15 +136,15 @@ describe('orchestrator-bridge', () => {
         modalities: ['image'],
       } as unknown as Parameters<typeof buildChatCompletionBody>[0]);
       for (const banned of ['response_format', 'stream', 'max_tokens', 'modalities']) {
-        expect(banned in body.params).toBe(false);
+        expect(banned in body.input).toBe(false);
       }
       // No tools were declared on THIS request, so neither key is emitted — an
       // empty `tools` array is a different thing from an absent one.
-      expect('tools' in body.params).toBe(false);
-      expect('tool_choice' in body.params).toBe(false);
+      expect('tools' in body.input).toBe(false);
+      expect('tool_choice' in body.input).toBe(false);
     });
 
-    it('forwards declared tools, and keeps the HOST key `toolChoice` (camelCase)', () => {
+    it('forwards declared tools, and spells the key `tool_choice` (ORCHESTRATOR)', () => {
       const tools = [
         { type: 'function' as const, function: { name: 'search_models', description: 'd', parameters: {} } },
       ];
@@ -134,21 +154,27 @@ describe('orchestrator-bridge', () => {
         tools,
         toolChoice: 'auto',
       });
-      expect(body.params.tools).toEqual(tools);
-      // 🔴 THIS TEST USED TO ASSERT THE DEFECT, AND ITS OLD COMMENT EXPLAINED
-      // WHY IT WAS RIGHT TO. It read: "SNAKE_CASE ON THE WIRE … the orchestrator
-      // reads `tool_choice`; an unknown key is IGNORED rather than rejected, so
-      // getting this backwards would leave the feature silently inert with every
-      // test still green." Both halves were wrong, and being asserted is what
-      // made the mistake survive review, five audits and a release.
+      expect(body.input.tools).toEqual(tools);
+      // 🔴 READ THE WHOLE HISTORY BEFORE "FIXING" THIS LINE, BECAUSE IT HAS NOW
+      // BEEN CORRECT BOTH WAYS AND THE FILE STILL CARRIES BOTH ARGUMENTS.
       //
-      // The app talks to the HOST, not the orchestrator. The host's params
-      // schema takes `toolChoice` and does the camel→snake mapping itself; and
-      // that schema is `.strict()`, so an unknown key is a BAD_REQUEST for the
-      // WHOLE request, never an ignored field. 0.1.6 shipped `tool_choice` and
-      // broke EVERY send.
-      expect(body.params.toolChoice).toBe('auto');
-      expect('tool_choice' in body.params).toBe(false);
+      //   0.1.6  shipped `tool_choice` to the HOST and broke EVERY send. The
+      //          host's params schema is `.strict()` and takes `toolChoice`,
+      //          doing the camel→snake mapping itself, so the snake spelling
+      //          was a BAD_REQUEST for the whole request.
+      //   then   this test asserted `toolChoice`, correctly, for that arm.
+      //   now    the body is a PASS-THROUGH step: the host forwards `input`
+      //          byte-identically and does no mapping, so the orchestrator's
+      //          own `ChatCompletionInput` spelling — `tool_choice` — is the
+      //          correct one again.
+      //
+      // 🔴 AND THE FAILURE MODE FLIPPED WITH IT. On the old arm the wrong
+      // spelling was LOUD (BAD_REQUEST on every send). On this arm nothing
+      // validates `input` at all, so the wrong spelling is SILENT: the
+      // orchestrator simply never receives a tool-choice policy and the model
+      // picks its own. That is why both directions are pinned here.
+      expect(body.input.tool_choice).toBe('auto');
+      expect('toolChoice' in body.input).toBe(false);
     });
 
     it('emits no tool keys for an EMPTY tools array — absent and empty differ', () => {
@@ -158,8 +184,8 @@ describe('orchestrator-bridge', () => {
         tools: [],
         toolChoice: 'auto',
       });
-      expect('tools' in body.params).toBe(false);
-      expect('tool_choice' in body.params).toBe(false);
+      expect('tools' in body.input).toBe(false);
+      expect('tool_choice' in body.input).toBe(false);
     });
 
     it('rejects a model that is not on the host allowlist', () => {
@@ -190,7 +216,7 @@ describe('orchestrator-bridge', () => {
         messages: [{ role: 'user', content: 'hi' }],
         max_tokens: 999_999,
       });
-      expect(body.params.maxTokens).toBe(MAX_OUTPUT_TOKENS);
+      expect(body.input.maxTokens).toBe(MAX_OUTPUT_TOKENS);
     });
 
     it('always sends maxTokens, because the host requires it', () => {
@@ -198,9 +224,9 @@ describe('orchestrator-bridge', () => {
         model: MODEL,
         messages: [{ role: 'user', content: 'hi' }],
       });
-      expect(typeof body.params.maxTokens).toBe('number');
-      expect(body.params.maxTokens).toBeGreaterThanOrEqual(1);
-      expect(body.params.maxTokens).toBeLessThanOrEqual(MAX_OUTPUT_TOKENS);
+      expect(typeof body.input.maxTokens).toBe('number');
+      expect(body.input.maxTokens).toBeGreaterThanOrEqual(1);
+      expect(body.input.maxTokens).toBeLessThanOrEqual(MAX_OUTPUT_TOKENS);
     });
 
     it('clamps temperature into the 0..2 range', () => {
@@ -209,14 +235,14 @@ describe('orchestrator-bridge', () => {
           model: MODEL,
           messages: [{ role: 'user', content: 'hi' }],
           temperature: 9,
-        }).params.temperature,
+        }).input.temperature,
       ).toBe(2);
       expect(
         buildChatCompletionBody({
           model: MODEL,
           messages: [{ role: 'user', content: 'hi' }],
           temperature: -3,
-        }).params.temperature,
+        }).input.temperature,
       ).toBe(0);
     });
 
@@ -331,7 +357,11 @@ describe('orchestrator-bridge', () => {
       const estimateBody = (helpers.estimate as ReturnType<typeof vi.fn>).mock.calls[0][0];
       const submitBody = (helpers.submit as ReturnType<typeof vi.fn>).mock.calls[0][0];
       expect(estimateBody).toEqual(submitBody);
-      expect(estimateBody.step).toBe(CHAT_COMPLETION_STEP_ID);
+      expect(estimateBody.$type).toBe(CHAT_COMPLETION_STEP_TYPE);
+      // 🔴 estimate MUST carry the same maxBuzz, because on this arm `estimate`
+      // echoes it back as `cost.total`. An estimate built with a different
+      // ceiling would quote the viewer a number the submit does not honour.
+      expect(estimateBody.maxBuzz).toBe(submitBody.maxBuzz);
     });
 
     it('polls at least once even when submit already reports a terminal status', async () => {
@@ -1131,7 +1161,10 @@ const HOST_ACCEPTED_PARAM_KEYS = new Set([
   'maxTokens',
   'temperature',
   'tools',
-  'toolChoice',
+  // 🔴 snake_case NOW. This arm forwards `input` byte-identically to the
+  // orchestrator, whose `ChatCompletionInput` spells it `tool_choice`. On the
+  // registry arm it was `toolChoice`, because the HOST owned that mapping.
+  'tool_choice',
 ]);
 
 describe('buildChatCompletionBody — params must satisfy the host .strict() schema', () => {
@@ -1154,7 +1187,7 @@ describe('buildChatCompletionBody — params must satisfy the host .strict() sch
       toolChoice: 'auto' as const,
     });
 
-    const emitted = Object.keys(withTools.params as Record<string, unknown>);
+    const emitted = Object.keys(withTools.input as Record<string, unknown>);
     const unknown = emitted.filter((k) => !HOST_ACCEPTED_PARAM_KEYS.has(k));
     expect(
       unknown,
@@ -1163,9 +1196,17 @@ describe('buildChatCompletionBody — params must satisfy the host .strict() sch
     ).toEqual([]);
   });
 
-  it('🔴 spells the tool-choice key `toolChoice`, never the orchestrator wire name', () => {
-    // The direct regression. The host owns the camel->snake mapping; this app
-    // talks to the HOST, so sending `tool_choice` skips a layer.
+  it('🔴 spells the tool-choice key `tool_choice` — INVERTED when the arm changed', () => {
+    // 🔴 THIS ASSERTION IS THE EXACT OPPOSITE OF WHAT IT USED TO BE, AND BOTH
+    // VERSIONS WERE RIGHT FOR THEIR ARM. On the registry arm the app talked to
+    // the HOST, which owned the camel->snake mapping, so `tool_choice` was the
+    // 0.1.6 bug that BAD_REQUESTed every send. On the pass-through arm the host
+    // forwards `input` byte-identically to the orchestrator, whose
+    // `ChatCompletionInput` spells it `tool_choice` — so the old spelling is now
+    // the one that is wrong, and it fails SILENTLY (no host schema rejects it;
+    // the orchestrator just never sees a tool-choice policy).
+    //
+    // That silence is why this is pinned in both directions.
     const body = buildChatCompletionBody({
       ...baseRequest,
       tools: [
@@ -1176,16 +1217,16 @@ describe('buildChatCompletionBody — params must satisfy the host .strict() sch
       ],
       toolChoice: 'auto' as const,
     });
-    const params = body.params as Record<string, unknown>;
-    expect(params.toolChoice).toBe('auto');
-    expect(params).not.toHaveProperty('tool_choice');
+    const input = body.input as Record<string, unknown>;
+    expect(input.tool_choice).toBe('auto');
+    expect(input).not.toHaveProperty('toolChoice');
   });
 
   it('positive control: a tool-less request still emits only accepted keys', () => {
     // Without this, a build that emitted NOTHING would satisfy the set check
     // above vacuously.
     const plain = buildChatCompletionBody(baseRequest);
-    const emitted = Object.keys(plain.params as Record<string, unknown>);
+    const emitted = Object.keys(plain.input as Record<string, unknown>);
     expect(emitted.length).toBeGreaterThan(0);
     expect(emitted.filter((k) => !HOST_ACCEPTED_PARAM_KEYS.has(k))).toEqual([]);
     expect(emitted).toContain('model');
