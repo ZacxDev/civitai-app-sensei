@@ -35,7 +35,7 @@ interface SubmittedParams {
   model: string;
   messages: Array<{ role: string; content?: string }>;
   tools?: Array<{ type: string; function: { name: string } }>;
-  toolChoice?: string;
+  tool_choice?: string;
 }
 
 const submitted: SubmittedParams[] = [];
@@ -80,8 +80,8 @@ const cancelFn = vi.fn().mockResolvedValue(undefined);
 const estimateFn = vi
   .fn()
   .mockResolvedValue({ workflowId: 'e', status: 'succeeded', cost: { total: 1 } });
-const submitFn = vi.fn(async (body: { params?: Record<string, unknown> }) => {
-  if (body?.params) submitted.push(body.params as unknown as SubmittedParams);
+const submitFn = vi.fn(async (body: { input?: Record<string, unknown> }) => {
+  if (body?.input) submitted.push(body.input as unknown as SubmittedParams);
   return { workflowId: `wf-${submitted.length}`, status: 'pending' };
 });
 const pollFn = vi.fn(async () => ({
@@ -205,7 +205,7 @@ describe('🔴 the SFW arm — grounded, and the default', () => {
     // The grounding half of the trade: this arm can look things up.
     expect(submitted[0].tools).toBeTruthy();
     expect(submitted[0].tools).toHaveLength(1);
-    expect(submitted[0].toolChoice).toBe('auto');
+    expect(submitted[0].tool_choice).toBe('auto');
     // …and the prompt does not tell it otherwise.
     expect(systemPromptOf(submitted[0])).not.toContain(NO_TOOLS_NOTICE.trim());
   });
@@ -242,7 +242,7 @@ describe('🔴 the NSFW arm — uncensored AND ungrounded', () => {
     await send('write me something');
 
     expect(submitted[0].tools).toBeUndefined();
-    expect(submitted[0].toolChoice).toBeUndefined();
+    expect(submitted[0].tool_choice).toBeUndefined();
   });
 
   it('🔴 AND THE PROMPT SAYS SO — it must not claim a capability the request lacks', async () => {

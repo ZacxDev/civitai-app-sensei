@@ -2,7 +2,12 @@ import type { ChatCompletionRequest, ChatCompletionResult } from './completion-t
 import type { ToolCall } from './tools.js';
 import type { OrchestratorAdapter } from './orchestrator.js';
 import { simulateStreaming } from './streaming.js';
-import type { WorkflowBody, WorkflowBodyStep, BlockWorkflowSnapshot } from '@civitai/app-sdk/blocks';
+import type {
+  WorkflowBody,
+  WorkflowBodyPassThroughStep,
+  BlockWorkflowSnapshot,
+} from '@civitai/app-sdk/blocks';
+import type { WorkflowStepInputFor } from '@civitai/app-sdk/orchestrator/steps';
 // 🔴 VALUE IMPORTS, AND `instanceof` IS THE DOCUMENTED BRANCH. Both classes are
 // re-exported from the package root (`dist/index.js`), and neither pulls in a DOM
 // — the module they live in imports only `useCallback`/`useState`, so this file
@@ -55,8 +60,41 @@ export interface WorkflowHelpers {
 // fail-closed at the schema, before any handler runs.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The registered step id. Wire value, not the orchestrator `$type`. */
+/**
+ * The registered step id. Wire value, not the orchestrator `$type`.
+ *
+ * 🔴 NO LONGER SENT. Kept exported because `mentions.ts` and two test files
+ * still name it, and because the registry arm is the documented rollback: put
+ * this back as `step` and drop `$type`/`maxBuzz` and the old body returns.
+ */
 export const CHAT_COMPLETION_STEP_ID = 'chat-completion';
+
+/**
+ * The ORCHESTRATOR `$type` this app now submits, replacing the registry id
+ * above. Not a Civitai step-registry id and not resolved against any allowlist
+ * — see `buildChatCompletionBody` for what that costs.
+ */
+export const CHAT_COMPLETION_STEP_TYPE = 'chatCompletion';
+
+/**
+ * The per-job Buzz ceiling this app declares on the pass-through arm.
+ *
+ * 🔴 IT IS ALSO THE STEP TIMEOUT, IN SECONDS. The host stamps
+ * `stepTimeoutSeconds = maxBuzz` — one number, not two — so this is not a
+ * "price" to be minimised: `maxBuzz: 10` does not buy a cheap completion, it
+ * buys one KILLED after 10 seconds that comes back `expired`. Billing is
+ * post-paid against measured GPU seconds with the unused remainder refunded,
+ * so a generous ceiling costs nothing extra on a job that finishes early.
+ *
+ * **120 chosen to match the SDK's existing 120 s workflow bound**, so the step
+ * timeout is not a new and different deadline from the one the transport
+ * already imposes. Operator decision, 2026-09-19; bound is 1…250
+ * (`PASS_THROUGH_MAX_BUZZ`). The host also requires `maxBuzz <= token.buzzBudget`.
+ *
+ * ⚠️ `estimate` echoes this back as `cost.total`. That is an UPPER BOUND, not a
+ * price — surface it as "up to 120 Buzz", never as the cost.
+ */
+export const CHAT_COMPLETION_MAX_BUZZ = 120;
 
 /**
  * The host's model allowlist (`CHAT_COMPLETION_MODELS`).
@@ -265,7 +303,7 @@ export function toStepMessages(messages: ChatCompletionRequest['messages']): Ste
 }
 
 /** Build the `kind: 'step'` body. Exported so a test can pin the exact key set. */
-export function buildChatCompletionBody(request: ChatCompletionRequest): WorkflowBodyStep {
+export function buildChatCompletionBody(request: ChatCompletionRequest): WorkflowBodyPassThroughStep {
   if (!isAllowedModel(request.model)) {
     throw new Error(
       `Model "${request.model}" is not available. Choose one of: ${CHAT_COMPLETION_MODELS.join(', ')}`,
@@ -330,21 +368,80 @@ export function buildChatCompletionBody(request: ChatCompletionRequest): Workflo
   //
   // The exact accepted key set is pinned in `orchestrator-bridge.test.ts`, so a
   // future rename fails here rather than in production.
+  // 🔴 THE ARM CHANGED, AND WITH IT EVERY SPELLING RULE ABOVE. Everything from
+  // "ONLY KEYS THE HOST'S `.strict()` SCHEMA ACCEPTS" down describes the
+  // REGISTRY arm, where the host owned a camel→snake mapping and rejected
+  // unknown keys. On THIS arm the host does not read, rewrite, merge or default
+  // any field in `input` — it is forwarded BYTE-IDENTICALLY to the orchestrator
+  // — so the orchestrator's `ChatCompletionInput` is the only authority and
+  // there is no host-side reject to discover a bad key with.
+  //
+  // 🔴 CONSEQUENCE, AND IT INVERTS THIS FILE'S OLDEST SCAR: the wire key is
+  // `tool_choice`, snake_case — the EXACT spelling whose 0.1.6 appearance broke
+  // every send. It was wrong then because it was sent to the HOST; it is right
+  // now because it is sent THROUGH the host to the orchestrator. Do not "fix"
+  // it back to `toolChoice` on the strength of the comment above.
+  //
+  // ⚠️ The orchestrator's own input is MIXED-CASE and that is not a typo:
+  // `maxTokens`, `topP`, `presencePenalty`, `responseFormat` are camel while
+  // `tool_choice` and `image_config` are snake. Read the spec per field.
+  const typedInput: WorkflowStepInputFor<'chatCompletion'> = {
+    model: request.model,
+    messages,
+    maxTokens: clampMaxTokens(request.max_tokens),
+    ...(temperature !== undefined ? { temperature } : {}),
+  };
+
+  // 🔴 `tools` AND `tool_choice` ARE CARRIED OUTSIDE THE GENERATED TYPE, AND
+  // THAT IS A DEFECT IN `@civitai/client@0.2.0-beta.98`, NOT A SHORTCUT.
+  // Wherever the orchestrator's OpenAPI spec declares a field with no schema
+  // type, codegen renders it `null`, so the generated type admits ONLY `null`:
+  //
+  //   - `tool_choice?: null`                 → `'auto'` is inexpressible
+  //   - `ChatCompletionFunction.parameters?: null | undefined`
+  //                                          → a real JSON-schema object is
+  //                                            inexpressible, which takes the
+  //                                            whole `tools` array with it
+  //
+  // The block body's `input` is `Record<string, unknown>`, so the honest move
+  // is to type-check everything the generated type CAN express and add these
+  // explicitly — rather than cast the whole object and lose the checking on
+  // all of it, which is the version that looks typed and is not.
+  //
+  // 🔴 AND THE THIRD ONE, WHICH IS WHY THIS ARM BUYS MUCH LESS TYPE SAFETY THAN
+  // ITS NAME SUGGESTS: `ChatCompletionMessage` is a DISCRIMINATED UNION on
+  // `role` in the spec (user/system/assistant/tool, carrying `content`,
+  // `tool_calls`, `refusal`, …), but codegen flattened it to the bare base
+  // `{ role: string }`. `messages` therefore satisfies `typedInput` while the
+  // type cannot see `content` AT ALL — a message with a misspelled or missing
+  // `content` type-checks clean. So of the four fields this app sends, THREE
+  // are unchecked and one (`model`, `maxTokens`, `temperature`) is real.
+  //
+  // Sibling of `civitai-client-javascript#5`. 🔴 WHEN THE CLIENT IS
+  // REGENERATED, re-check whether this block collapses into `typedInput` — and
+  // if it does, that is the point at which this migration starts paying for
+  // itself. Until then see the PR body: the costs land, the benefit does not.
+  const input: Record<string, unknown> = {
+    ...typedInput,
+    ...(request.tools && request.tools.length > 0
+      ? {
+          tools: request.tools,
+          ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
+        }
+      : {}),
+  };
+
   return {
     kind: 'step',
-    step: CHAT_COMPLETION_STEP_ID,
-    params: {
-      model: request.model,
-      messages,
-      maxTokens: clampMaxTokens(request.max_tokens),
-      ...(temperature !== undefined ? { temperature } : {}),
-      ...(request.tools && request.tools.length > 0
-        ? {
-            tools: request.tools,
-            ...(request.toolChoice ? { toolChoice: request.toolChoice } : {}),
-          }
-        : {}),
-    },
+    // 🔴 `step` IS OMITTED, NOT SET TO undefined. Its ABSENCE is the arm
+    // discriminator, and the SDK transport is postMessage/structured clone,
+    // which PRESERVES an explicit `undefined` rather than dropping the key the
+    // way `JSON.stringify` would — so `step: undefined` would ship a `step` key
+    // and land on the registry arm. Same trap `toStepMessages` documents for
+    // `content`.
+    $type: CHAT_COMPLETION_STEP_TYPE,
+    input,
+    maxBuzz: CHAT_COMPLETION_MAX_BUZZ,
   };
 }
 

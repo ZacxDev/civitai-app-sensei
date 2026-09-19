@@ -76,11 +76,11 @@ const estimateFn = vi
   .mockResolvedValue({ workflowId: 'e', status: 'succeeded', cost: { total: 1 } });
 
 /** Bodies as submitted, in order. A submit is the BILLED event — count these. */
-let submittedBodies: Array<{ params: { messages: Array<Record<string, unknown>> } }> = [];
+let submittedBodies: Array<{ input: { messages: Array<Record<string, unknown>> } }> = [];
 /** 1-based submit index that should REJECT, modelling a host-side failure. */
 let failSubmitAt: number | null = null;
 const submitFn = vi.fn(async (body: unknown) => {
-  submittedBodies.push(body as { params: { messages: Array<Record<string, unknown>> } });
+  submittedBodies.push(body as { input: { messages: Array<Record<string, unknown>> } });
   if (failSubmitAt !== null && submittedBodies.length === failSubmitAt) {
     throw new Error('workflow submit exploded');
   }
@@ -395,7 +395,7 @@ describe('Layer 2 — the correction round', () => {
     await send('how do I improve faces?', /no id for that one/);
 
     expect(submittedBodies.length).toBe(2);
-    const corrective = submittedBodies[1].params.messages;
+    const corrective = submittedBodies[1].input.messages;
     const [echo, instruction] = corrective.slice(-2);
 
     // 🔴 THE ECHO. Without it the corrective user turn follows the previous USER
@@ -415,7 +415,7 @@ describe('Layer 2 — the correction round', () => {
     // `role:'tool'` messages in a `.superRefine` and BAD_REQUESTs the payload
     // past 3; a corrective round that consumed one would silently take a lookup
     // away from the answer it is asking for.
-    const toolMessagesBefore = submittedBodies[0].params.messages.filter(
+    const toolMessagesBefore = submittedBodies[0].input.messages.filter(
       (m) => m.role === 'tool',
     ).length;
     const toolMessagesAfter = corrective.filter((m) => m.role === 'tool').length;
