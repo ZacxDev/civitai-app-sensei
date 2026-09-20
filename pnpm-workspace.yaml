@@ -1,42 +1,60 @@
-# Single-package repo. The root has to be declared explicitly: the moment this
-# file exists at all, pnpm — and `actions/setup-node`'s `cache: pnpm`, which
-# `.github/workflows/ci.yml` uses — error with "packages field missing or
-# empty". `pnpm install` AUTO-CREATES this file when it needs an age exclusion
-# (pnpm 11.25 writes the `minimumReleaseAgeExclude` block below on its own) and
-# it does NOT write this key, so it has to be added by hand afterwards.
-# `civitai-app-gen-matrix` and `civitai-app-playable-collections` both carry the
-# same line for the same reason.
+# 🔴 THIS FILE IS TEMPORARY AND SHOULD BE DELETED. Its only load-bearing content
+# is the age exclusion below, which stops mattering once both versions are older
+# than pnpm's ~24h `minimumReleaseAge` cutoff:
+#
+#   @civitai/app-sdk@0.45.0      published 2026-09-19T19:03:44Z  → free 2026-09-20T19:03Z
+#   @civitai/blocks-react@0.53.1 published 2026-09-20T02:20:25Z  → free 2026-09-21T02:20Z
+#
+# After 2026-09-21T02:20Z this whole file can be removed and `pnpm install
+# --frozen-lockfile` still passes. Delete it then rather than letting it accrete
+# a line per bump.
+
+# Required while the file exists at all. 🔴 The reason is the PLATFORM BUILDER,
+# not CI — an earlier version of this comment said CI and that was measured
+# FALSE. `actions/setup-node`'s `cache: pnpm` runs exactly one pnpm command,
+# `pnpm store path --silent`, and on pnpm 10 and 11 that returns rc=0 against a
+# `packages`-less workspace file. It errors `packages field missing or empty`
+# only on **pnpm 9**. CI pins pnpm 11 (`pnpm/action-setup`), so CI is fine
+# either way. The platform builder is not: per CLAUDE.md's third-environment
+# table it runs `corepack enable` UNPINNED on `node:22-alpine`, so pnpm 9 is in
+# reach there, and `civitai app submit` bundles this file with the tree. Under
+# pnpm 9 its absence would break the build of the LIVE app while every signal
+# this repo produces stays green.
 packages:
   - '.'
 
-# pnpm's default `minimumReleaseAge` policy (~24h) refuses package versions
-# published very recently. Both entries below were under that cutoff when this
-# repo moved onto them — `@civitai/app-sdk@0.46.0` and
-# `@civitai/blocks-react@0.53.1` were each ~1.7h old (published
-# 2026-09-20T02:20Z, measured against `npm view <pkg> time`). Excluding them is
-# what lets the app build against the pair at all.
+# pnpm's `minimumReleaseAge` policy (~24h) rejects very fresh versions.
+# 🔴 The two install paths behave DIFFERENTLY and only one of them is CI's:
+#   - bare `pnpm install`        → succeeds, and silently WRITES this file's
+#                                  exclusion block for you (without `packages`).
+#   - `pnpm install --frozen-lockfile` → FAILS with
+#     ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION until the exclusion is committed.
+# `.github/workflows/ci.yml` uses `--frozen-lockfile`, so the exclusion has to
+# be in the tree. (CLAUDE.md's "the install fails" is correct for that path.)
 #
-# Both are Civitai first-party packages already pinned in `package.json`, and
-# the versions listed are exactly what the lockfile resolved to, so nothing here
-# loosens what the app builds against:
-#   - @civitai/app-sdk@0.46.0      — the block message/type contract. Carries
-#     `BLOCK_MESSAGE_REJECTED`, the block→host report this app has to emit for a
-#     dropped-reply rejection to be visible to the host's telemetry at all.
-#     0.46.0's only other change is a type-only rename on the ORCHESTRATOR
-#     surface (`WorkflowStatus` → `OrchestratorWorkflowStatus`); this app imports
-#     `@civitai/app-sdk/blocks`, whose own `WorkflowStatus` is untouched, and
-#     references the name zero times.
+# Both entries are Civitai first-party packages already pinned in package.json,
+# at exactly the versions the lockfile resolved to — nothing here loosens what
+# the app builds against:
+#   - @civitai/app-sdk@0.45.0      — the block message/type contract. This is the
+#     FIRST version carrying `BLOCK_MESSAGE_REJECTED`, the block→host report that
+#     makes a dropped reply visible to the host instead of silent. 0.42.0/0.43.0/
+#     0.44.0 each contain zero occurrences of it. 🔴 Deliberately NOT 0.46.0:
+#     nothing requires it, it is a breaking release (a type-only rename on the
+#     ORCHESTRATOR surface, which this app does not import), and it also carries
+#     a runtime change in `dist/cookies/` this app cannot reach. Taking the
+#     minimum version that satisfies the requirement is the point.
 #   - @civitai/blocks-react@0.53.1 — the hooks + `IframeTransport`. 0.53.0 adds
-#     the emit at the validator drop site; 0.53.1 fixes `useBlockResize` to
-#     observe a root that mounts on a later render, which is this app's shape
-#     (it renders a skeleton until `BLOCK_INIT`).
+#     the emit at the validator drop site; 0.53.1 is a single-hook patch
+#     (`useBlockResize` only — the 0.53.0→0.53.1 tarball diff touches nothing
+#     else) fixing it to observe a root that mounts on a LATER render, which is
+#     this app's shape: it renders a skeleton until `BLOCK_INIT`. Its peer floor
+#     is `@civitai/app-sdk >=0.45.0 <1.0.0`, which `^0.45.0` satisfies.
 #
-# `@civitai/components-react@^0.4.1` and `@civitai/theme@^0.3.1` are NOT listed
-# and did NOT move: `blocks-react@0.53.1` exact-pins `theme 0.3.1` +
-# `components 0.4.1` in its own dependencies, and `components-react@0.4.1` pins
-# the same two — the four packages are already the canonical pairing, so this
-# bump is the two halves that were behind it. `src/civitai-dependency-lockstep.test.ts`
-# is what actually proves that, not this comment.
+# @civitai/components-react and @civitai/theme are NOT listed and did NOT move:
+# blocks-react@0.53.1 exact-pins theme 0.3.1 + components 0.4.1, and
+# components-react@0.4.1 pins the same two, so the four are already the
+# canonical pairing. `src/civitai-dependency-lockstep.test.ts` is what proves
+# that mechanically; this comment does not.
 minimumReleaseAgeExclude:
-  - '@civitai/app-sdk@0.46.0'
+  - '@civitai/app-sdk@0.45.0'
   - '@civitai/blocks-react@0.53.1'

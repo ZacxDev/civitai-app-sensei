@@ -58,23 +58,46 @@ Only `x86_64-linux` is exercised; the flake also evaluates for `aarch64-linux`
 and `aarch64-darwin`. `x86_64-darwin` is absent because nixpkgs-unstable dropped
 it — listing it hands an Intel-Mac contributor a `throw` instead of a shell.
 
-No `pnpm-workspace.yaml` — **but do not read that as "there is no freshness
-gate".** pnpm 11 enforces a minimum-release-age policy on the lockfile by
-default; `pnpm install` here prints `✓ Lockfile passes supply-chain policies`
-because the pinned `@civitai/*` versions are simply old enough. Bump any of
-them to a release younger than the cutoff (~24h) and the install **fails**:
+There IS a `pnpm-workspace.yaml`, and it is **temporary** — it exists only to
+carry a `minimumReleaseAgeExclude` for two freshly-published `@civitai`
+versions, and its own header names the timestamp after which it can be deleted.
+Read that header before adding to it.
+
+pnpm 11 enforces a minimum-release-age policy (~24h) on the lockfile by
+default. 🔴 **The two install paths behave DIFFERENTLY, and an earlier version
+of this section described only one of them:**
+
+- **bare `pnpm install`** — **succeeds**, and silently *writes*
+  `pnpm-workspace.yaml` for you with a `minimumReleaseAgeExclude` block naming
+  the offending versions. It does **not** write a `packages:` key.
+- **`pnpm install --frozen-lockfile`** — which is what
+  `.github/workflows/ci.yml` runs, and what any reproducible build uses —
+  **fails** until that exclusion is committed:
 
 ```
 [ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] … was published at …, within the
 minimumReleaseAge cutoff
 ```
 
-The fix then is a `pnpm-workspace.yaml` with `packages: ['.']` and a
-`minimumReleaseAgeExclude` naming those exact versions — `civitai-app-gen-matrix`
-and `civitai-app-playable-collections` both carry one for this reason. Until
-then the file buys nothing. ⚠️ `pnpm config get minimumReleaseAge` reports
-`undefined`, which means "no user override", **not** "no policy" — it is the
-wrong instrument for this question; run an install and read its output.
+So the exclusion has to be **in the tree**, not just on your disk. Either commit
+it, or wait for the version to age past the cutoff and commit neither.
+
+🔴 **The `packages: ['.']` key is for the PLATFORM BUILDER, not CI — do not
+repeat the sibling repos' reason for it.** `civitai-app-gen-matrix` and
+`civitai-app-playable-collections` both say `actions/setup-node`'s `cache: pnpm`
+errors `packages field missing or empty` without it. Measured: that command is
+`pnpm store path --silent`, which returns rc=0 on pnpm 10 and 11 and errors only
+on **pnpm 9**. CI pins pnpm 11, so CI does not need the key. The builder does —
+it runs `corepack enable` unpinned on `node:22-alpine` (see the third-environment
+table below), so pnpm 9 is in reach, and `civitai app submit` ships this file
+with the tree.
+
+⚠️ `pnpm config get minimumReleaseAge` reports `undefined`, which means "no user
+override", **not** "no policy" — it is the wrong instrument for this question;
+run an install and read its output. ⚠️ And read the *right* install's output:
+`pnpm clean --lockfile && pnpm install` re-resolves the WHOLE tree and will
+quietly upgrade unrelated devDependencies. To move one pin, edit `package.json`
+and run a plain `pnpm install` against the existing lockfile.
 
 ### The third environment: the platform builder
 

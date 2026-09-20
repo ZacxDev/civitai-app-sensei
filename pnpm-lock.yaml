@@ -9,11 +9,11 @@ importers:
   .:
     dependencies:
       '@civitai/app-sdk':
-        specifier: ^0.46.0
-        version: 0.46.0
+        specifier: ^0.45.0
+        version: 0.45.0
       '@civitai/blocks-react':
         specifier: ^0.53.1
-        version: 0.53.1(@civitai/app-sdk@0.46.0)(react@19.2.8)
+        version: 0.53.1(@civitai/app-sdk@0.45.0)(react@19.2.8)
       '@civitai/components-react':
         specifier: ^0.4.1
         version: 0.4.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -101,8 +101,8 @@ packages:
     resolution: {integrity: sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA==}
     engines: {node: '>=18'}
 
-  '@civitai/app-sdk@0.46.0':
-    resolution: {integrity: sha512-7fR9bTJDzTwsiGZshTWNCfshCYSmrZ13wMfGhQfatgUJuElo1IMv3nSjhwLPhEOe29WszAV1WmL+iDpjxKCiiA==}
+  '@civitai/app-sdk@0.45.0':
+    resolution: {integrity: sha512-xsiUxNAIwj4JznZP7rwr5Kp1oXUKDF6XaJIxdbxZLdqH+zwj5dYxC12WiSJL22z0JCTVMW0SGNWLKKzCsXYIzw==}
     engines: {node: '>=20'}
     peerDependencies:
       '@civitai/client': ^0.2.0-beta.98
@@ -1033,11 +1033,11 @@ snapshots:
 
   '@bcoe/v8-coverage@1.0.2': {}
 
-  '@civitai/app-sdk@0.46.0': {}
+  '@civitai/app-sdk@0.45.0': {}
 
-  '@civitai/blocks-react@0.53.1(@civitai/app-sdk@0.46.0)(react@19.2.8)':
+  '@civitai/blocks-react@0.53.1(@civitai/app-sdk@0.45.0)(react@19.2.8)':
     dependencies:
-      '@civitai/app-sdk': 0.46.0
+      '@civitai/app-sdk': 0.45.0
       '@civitai/components': 0.4.1
       '@civitai/theme': 0.3.1
       react: 19.2.8
