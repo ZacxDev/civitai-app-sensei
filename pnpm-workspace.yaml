@@ -1,0 +1,42 @@
+# Single-package repo. The root has to be declared explicitly: the moment this
+# file exists at all, pnpm — and `actions/setup-node`'s `cache: pnpm`, which
+# `.github/workflows/ci.yml` uses — error with "packages field missing or
+# empty". `pnpm install` AUTO-CREATES this file when it needs an age exclusion
+# (pnpm 11.25 writes the `minimumReleaseAgeExclude` block below on its own) and
+# it does NOT write this key, so it has to be added by hand afterwards.
+# `civitai-app-gen-matrix` and `civitai-app-playable-collections` both carry the
+# same line for the same reason.
+packages:
+  - '.'
+
+# pnpm's default `minimumReleaseAge` policy (~24h) refuses package versions
+# published very recently. Both entries below were under that cutoff when this
+# repo moved onto them — `@civitai/app-sdk@0.46.0` and
+# `@civitai/blocks-react@0.53.1` were each ~1.7h old (published
+# 2026-09-20T02:20Z, measured against `npm view <pkg> time`). Excluding them is
+# what lets the app build against the pair at all.
+#
+# Both are Civitai first-party packages already pinned in `package.json`, and
+# the versions listed are exactly what the lockfile resolved to, so nothing here
+# loosens what the app builds against:
+#   - @civitai/app-sdk@0.46.0      — the block message/type contract. Carries
+#     `BLOCK_MESSAGE_REJECTED`, the block→host report this app has to emit for a
+#     dropped-reply rejection to be visible to the host's telemetry at all.
+#     0.46.0's only other change is a type-only rename on the ORCHESTRATOR
+#     surface (`WorkflowStatus` → `OrchestratorWorkflowStatus`); this app imports
+#     `@civitai/app-sdk/blocks`, whose own `WorkflowStatus` is untouched, and
+#     references the name zero times.
+#   - @civitai/blocks-react@0.53.1 — the hooks + `IframeTransport`. 0.53.0 adds
+#     the emit at the validator drop site; 0.53.1 fixes `useBlockResize` to
+#     observe a root that mounts on a later render, which is this app's shape
+#     (it renders a skeleton until `BLOCK_INIT`).
+#
+# `@civitai/components-react@^0.4.1` and `@civitai/theme@^0.3.1` are NOT listed
+# and did NOT move: `blocks-react@0.53.1` exact-pins `theme 0.3.1` +
+# `components 0.4.1` in its own dependencies, and `components-react@0.4.1` pins
+# the same two — the four packages are already the canonical pairing, so this
+# bump is the two halves that were behind it. `src/civitai-dependency-lockstep.test.ts`
+# is what actually proves that, not this comment.
+minimumReleaseAgeExclude:
+  - '@civitai/app-sdk@0.46.0'
+  - '@civitai/blocks-react@0.53.1'
