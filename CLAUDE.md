@@ -58,23 +58,46 @@ Only `x86_64-linux` is exercised; the flake also evaluates for `aarch64-linux`
 and `aarch64-darwin`. `x86_64-darwin` is absent because nixpkgs-unstable dropped
 it — listing it hands an Intel-Mac contributor a `throw` instead of a shell.
 
-No `pnpm-workspace.yaml` — **but do not read that as "there is no freshness
-gate".** pnpm 11 enforces a minimum-release-age policy on the lockfile by
-default; `pnpm install` here prints `✓ Lockfile passes supply-chain policies`
-because the pinned `@civitai/*` versions are simply old enough. Bump any of
-them to a release younger than the cutoff (~24h) and the install **fails**:
+There IS a `pnpm-workspace.yaml`, and it is **temporary** — it exists only to
+carry a `minimumReleaseAgeExclude` for two freshly-published `@civitai`
+versions, and its own header names the timestamp after which it can be deleted.
+Read that header before adding to it.
+
+pnpm 11 enforces a minimum-release-age policy (~24h) on the lockfile by
+default. 🔴 **The two install paths behave DIFFERENTLY, and an earlier version
+of this section described only one of them:**
+
+- **bare `pnpm install`** — **succeeds**, and silently *writes*
+  `pnpm-workspace.yaml` for you with a `minimumReleaseAgeExclude` block naming
+  the offending versions. It does **not** write a `packages:` key.
+- **`pnpm install --frozen-lockfile`** — which is what
+  `.github/workflows/ci.yml` runs, and what any reproducible build uses —
+  **fails** until that exclusion is committed:
 
 ```
 [ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] … was published at …, within the
 minimumReleaseAge cutoff
 ```
 
-The fix then is a `pnpm-workspace.yaml` with `packages: ['.']` and a
-`minimumReleaseAgeExclude` naming those exact versions — `civitai-app-gen-matrix`
-and `civitai-app-playable-collections` both carry one for this reason. Until
-then the file buys nothing. ⚠️ `pnpm config get minimumReleaseAge` reports
-`undefined`, which means "no user override", **not** "no policy" — it is the
-wrong instrument for this question; run an install and read its output.
+So the exclusion has to be **in the tree**, not just on your disk. Either commit
+it, or wait for the version to age past the cutoff and commit neither.
+
+🔴 **The `packages: ['.']` key is for the PLATFORM BUILDER, not CI — do not
+repeat the sibling repos' reason for it.** `civitai-app-gen-matrix` and
+`civitai-app-playable-collections` both say `actions/setup-node`'s `cache: pnpm`
+errors `packages field missing or empty` without it. Measured: that command is
+`pnpm store path --silent`, which returns rc=0 on pnpm 10 and 11 and errors only
+on **pnpm 9**. CI pins pnpm 11, so CI does not need the key. The builder does —
+it runs `corepack enable` unpinned on `node:22-alpine` (see the third-environment
+table below), so pnpm 9 is in reach, and `civitai app submit` ships this file
+with the tree.
+
+⚠️ `pnpm config get minimumReleaseAge` reports `undefined`, which means "no user
+override", **not** "no policy" — it is the wrong instrument for this question;
+run an install and read its output. ⚠️ And read the *right* install's output:
+`pnpm clean --lockfile && pnpm install` re-resolves the WHOLE tree and will
+quietly upgrade unrelated devDependencies. To move one pin, edit `package.json`
+and run a plain `pnpm install` against the existing lockfile.
 
 ### The third environment: the platform builder
 
@@ -221,6 +244,21 @@ something that looks unfinished.
   `src/toolchain-lockstep.test.ts` mirrors that regex, pins the exact string,
   checks the named script exists in `package.json`, and requires exactly one
   lockfile. Still the highest-blast-radius line in the repo.
+- 🔴 **This repo deliberately sits ONE MINOR BELOW the starter's canonical
+  `@civitai/app-sdk`, and that is not drift.** `civitai-app-starters`'
+  `starters/civitai-block-starter/package.json` pins `^0.46.0`; this repo pins
+  **`^0.45.0`**, which on a `0.x` caret hard-caps below `0.46.0`. The reason:
+  `0.45.0` is the FIRST version carrying `BLOCK_MESSAGE_REJECTED` — the report
+  that makes a validator-dropped bridge reply visible instead of silent — and
+  it is the floor `@civitai/blocks-react@0.53.x` peers on. `0.46.0` adds nothing
+  this app can use: a type-only rename on the ORCHESTRATOR surface (this app
+  imports only `@civitai/app-sdk/blocks`, whose same-named union is untouched,
+  and references the name zero times) plus a runtime change in `dist/cookies/`
+  it never imports. **Measured: the built bundle is byte-identical between
+  `0.45.0` and `0.46.0`** — same content hash on every `dist/assets/*`. So the
+  cap costs nothing and avoids taking a breaking release for no benefit.
+  Re-derive this before raising the pin; do not "sync to the starter" on the
+  strength of the version numbers differing.
 - Bumping `@civitai/*` is a **paired** change — and the pair is **four packages,
   not two**. `app-sdk` + `blocks-react` have been mismatched before:
   `blocks-react@0.37.0` peered on `^0.28.0` against an exact `app-sdk@0.30.0`

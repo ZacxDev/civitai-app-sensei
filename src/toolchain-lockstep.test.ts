@@ -393,6 +393,89 @@ describe('toolchain lockstep', () => {
     expect(rootFiles).toContain('pnpm-lock.yaml');
     expect(rootFiles).not.toContain('package-lock.json');
     expect(rootFiles).not.toContain('yarn.lock');
+
+    // A `pnpm-workspace.yaml` is OPTIONAL here — but if one exists it must
+    // declare a non-empty `packages`.
+    //
+    // 🔴 THIS GUARD HAS NO ESTABLISHED RATIONALE. Two were written and BOTH
+    // were refuted by measurement. Read this before writing a third — the
+    // reaching for a fresh justification is what produced the first two.
+    //
+    //   DEAD DRAFT 1: "actions/setup-node's `cache: pnpm` errors without the
+    //   key." FALSE. That step runs one command, `pnpm store path --silent`,
+    //   which returns rc=0 against a packages-less file on pnpm 10 and 11.
+    //
+    //   DEAD DRAFT 2: "the platform builder runs `corepack enable` UNPINNED on
+    //   node:22-alpine, so pnpm 9 is in reach and pnpm 9 fails." FALSE in the
+    //   direction that matters. Measured IN that image, with a paired control
+    //   in the same container: unpinned corepack resolves FORWARD to the latest
+    //   pnpm (12.5.1), not back to 9, and pnpm 12 does NOT error. The control —
+    //   `corepack prepare pnpm@9.15.9` in the same container, same fixture —
+    //   does error, so the fixture can produce the failure; the builder just
+    //   never reaches the major that has it.
+    //
+    // What IS measured: pnpm 9.15.9 errors `packages field missing or empty`;
+    // pnpm 10.34.5, 11.27.0 and 12.5.1 do not. And a bare `pnpm install` of a
+    // <24h-old dependency really does auto-write this file with only a
+    // `minimumReleaseAgeExclude` block and no `packages` key — reproduced live.
+    //
+    // So: no environment this repo is known to ship through resolves pnpm 9.
+    // The guard is kept because it is one line, it pins a real property of a
+    // real pnpm major, and the file it guards is scheduled for deletion anyway
+    // — NOT because a reachable hazard has been demonstrated. If you are here
+    // because you want to delete it, that is a defensible call and this comment
+    // is the evidence for it. Do not keep it on a rationale nobody has measured.
+    if (rootFiles.includes('pnpm-workspace.yaml')) {
+      const ws = repoFile('../pnpm-workspace.yaml');
+
+      // A STRUCTURAL read, not a substring search for the word `packages` —
+      // that word appears in this file's own prose, so a text match would pass
+      // on a file whose only mention is a comment.
+      //
+      // Accepts every shape pnpm 9 itself accepts, which is wider than the
+      // block sequence this repo happens to use: a flow sequence
+      // (`packages: ['.']`), a trailing comment after the key, and a quoted
+      // key. An earlier version of this parser rejected all three — it would
+      // have failed a legitimate file, which is worse than not guarding.
+      const lines = ws.split('\n').map((l) => l.replace(/\r$/, ''));
+      const strip = (s: string) => s.replace(/\s+#.*$/, '').trim();
+      const KEY = /^["']?packages["']?:(.*)$/;
+
+      let entries: string[] = [];
+      for (let i = 0; i < lines.length; i += 1) {
+        if (/^\s*#/.test(lines[i])) continue;
+        const key = KEY.exec(lines[i]);
+        if (!key) continue;
+
+        const inline = strip(key[1]);
+        if (inline.startsWith('[')) {
+          // Flow sequence on the key's own line.
+          entries = inline
+            .replace(/^\[|\]$/g, '')
+            .split(',')
+            .map((s) => s.replace(/^["']|["']$/g, '').trim())
+            .filter((s) => s !== '');
+        } else if (inline === '') {
+          // Block sequence on the following indented lines.
+          for (let j = i + 1; j < lines.length; j += 1) {
+            if (/^\s*#/.test(lines[j]) || lines[j].trim() === '') continue;
+            const item = /^[ \t]+-\s*(.+?)\s*$/.exec(lines[j]);
+            if (!item) break;
+            entries.push(strip(item[1]).replace(/^["']|["']$/g, ''));
+          }
+        }
+        break;
+      }
+
+      expect(
+        entries,
+        'pnpm-workspace.yaml exists but declares no non-empty top-level `packages` ' +
+          'sequence. pnpm 9 rejects such a file with `packages field missing or empty` ' +
+          '(pnpm 10, 11 and 12 accept it). A bare `pnpm install` writes this file WITHOUT ' +
+          "the key, so this is most likely an auto-written file that was committed as-is. " +
+          "Add a `packages` entry — block or flow style — or delete the file entirely.",
+      ).not.toHaveLength(0);
+    }
   });
 
   it('🔴 describes the extractors — they can FAIL, and they do match this repo', () => {

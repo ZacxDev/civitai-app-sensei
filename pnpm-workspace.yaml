@@ -1,0 +1,93 @@
+# 🔴 THIS FILE IS TEMPORARY AND SHOULD BE DELETED. Its only load-bearing content
+# is the age exclusion below, which stops mattering once both versions are older
+# than pnpm's ~24h `minimumReleaseAge` cutoff:
+#
+#   @civitai/app-sdk@0.45.0      published 2026-09-19T19:03:44Z  → free 2026-09-20T19:03Z
+#   @civitai/blocks-react@0.53.1 published 2026-09-20T02:20:25Z  → free 2026-09-21T02:20Z
+#
+# After 2026-09-21T02:20Z this whole file can be removed and `pnpm install
+# --frozen-lockfile` still passes. Delete it then rather than letting it accrete
+# a line per bump.
+
+# Required while the file exists at all — but 🔴 ON NO ESTABLISHED RATIONALE.
+# Two were written for this key and BOTH were refuted by measurement. They are
+# recorded here so nobody reaches for a third; the reaching is what produced
+# the first two.
+#
+#   DEAD DRAFT 1: "actions/setup-node's `cache: pnpm` errors without it."
+#   FALSE — that step runs `pnpm store path --silent`, rc=0 on pnpm 10 and 11.
+#
+#   DEAD DRAFT 2: "the platform builder runs `corepack enable` UNPINNED on
+#   node:22-alpine, so pnpm 9 is in reach." FALSE — measured in that image
+#   with a paired control: unpinned corepack resolves FORWARD to pnpm 12.5.1,
+#   not back to 9, and pnpm 12 does NOT error. (`corepack prepare pnpm@9.15.9`
+#   in the same container on the same fixture DOES error, so the fixture is
+#   sound — the builder simply never reaches the major that fails.)
+#
+# What is measured: pnpm 9.15.9 rejects a `packages`-less file; 10.34.5,
+# 11.27.0 and 12.5.1 accept it. CI pins pnpm 11. So no environment this repo is
+# known to ship through resolves the only major that cares. The key is kept
+# because it is one line and harmless, NOT because a reachable hazard was
+# demonstrated — and this file is scheduled for deletion regardless.
+#
+# ⚠️ `civitai-app-gen-matrix` and `civitai-app-playable-collections` both name
+# pnpm ITSELF alongside setup-node, which is the correct axis — do not "correct"
+# them on THAT point. (An earlier version of this comment claimed they blamed
+# setup-node alone; that was a misreading.) Their own unqualified "pnpm errors"
+# is still major-dependent, and both pin pnpm 11 in their CI, so the
+# major discriminator above is worth propagating to them.
+#
+# Guarded by `src/toolchain-lockstep.test.ts`, which fails if this file exists
+# without a non-empty `packages`. Read that guard's own comment before trusting
+# this one — it carries the same two dead drafts.
+packages:
+  - '.'
+
+# pnpm's `minimumReleaseAge` policy (~24h) rejects very fresh versions.
+# 🔴 The two install paths behave DIFFERENTLY and only one of them is CI's:
+#   - bare `pnpm install`        → succeeds, and silently WRITES this file's
+#                                  exclusion block for you (without `packages`).
+#   - `pnpm install --frozen-lockfile` → FAILS with
+#     ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION until the exclusion is committed.
+# `.github/workflows/ci.yml` uses `--frozen-lockfile`, so the exclusion has to
+# be in the tree. (CLAUDE.md's "the install fails" is correct for that path.)
+#
+# Both entries are Civitai first-party packages already pinned in package.json,
+# at exactly the versions the lockfile resolved to — nothing here loosens what
+# the app builds against:
+#   - @civitai/app-sdk@0.45.0      — the block message/type contract. This is the
+#     FIRST version carrying `BLOCK_MESSAGE_REJECTED`, the block→host report that
+#     makes a dropped reply visible to the host instead of silent. 0.42.0/0.43.0/
+#     0.44.0 each contain zero occurrences of it. 🔴 Deliberately NOT 0.46.0:
+#     nothing requires it, it is a breaking release (a type-only rename on the
+#     ORCHESTRATOR surface, which this app does not import), and it also carries
+#     a runtime change in `dist/cookies/` this app cannot reach. Taking the
+#     minimum version that satisfies the requirement is the point.
+#   - @civitai/blocks-react@0.53.1 — the hooks + `IframeTransport`. **0.53.0 is
+#     the version that matters**: it adds the emit at the validator drop site.
+#     0.53.1 is a single-hook patch (`useBlockResize` only, plus package.json
+#     and README) fixing that hook to observe a root mounting on a LATER render.
+#     🔴 That fix is INERT for this app. An earlier version of this comment
+#     claimed it was "this app's shape"; it is not. `src/App.tsx`'s three
+#     top-level returns (~2798/2809/2820) ALL render `<div ref={rootRef}>`, so
+#     the root exists on the first commit and 0.53.0's effect already observed
+#     it. The app is ALREADY applying the workaround the fix makes unnecessary.
+#     🔴 A SECOND version of this comment then told the reader NOT to drop that
+#     ref, "or you re-introduce the bug". That is INVERTED and is also gone:
+#     0.53.1's own JSDoc says the per-branch ref "was load-bearing before this
+#     fix and is not any more", and under `^0.53.1` the re-checking observer is
+#     always present — so simplifying `App.tsx` to attach the ref once is SAFE,
+#     not dangerous. No instruction is given here either way; that is a call for
+#     whoever edits `App.tsx`, on the evidence above.
+#     We take `.1` because it is strictly newer and free, not because we need
+#     it. Its peer floor is `@civitai/app-sdk >=0.45.0 <1.0.0`, which `^0.45.0`
+#     satisfies.
+#
+# @civitai/components-react and @civitai/theme are NOT listed and did NOT move:
+# blocks-react@0.53.1 exact-pins theme 0.3.1 + components 0.4.1, and
+# components-react@0.4.1 pins the same two, so the four are already the
+# canonical pairing. `src/civitai-dependency-lockstep.test.ts` is what proves
+# that mechanically; this comment does not.
+minimumReleaseAgeExclude:
+  - '@civitai/app-sdk@0.45.0'
+  - '@civitai/blocks-react@0.53.1'
