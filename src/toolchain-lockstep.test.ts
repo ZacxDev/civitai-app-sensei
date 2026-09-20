@@ -393,6 +393,56 @@ describe('toolchain lockstep', () => {
     expect(rootFiles).toContain('pnpm-lock.yaml');
     expect(rootFiles).not.toContain('package-lock.json');
     expect(rootFiles).not.toContain('yarn.lock');
+
+    // A `pnpm-workspace.yaml` is OPTIONAL here — but if one exists it MUST
+    // declare a non-empty `packages`, and this is the one assertion in the file
+    // whose absence is invisible to every other signal the repo produces.
+    //
+    // The trap is that pnpm WRITES this file for you. Bumping any `@civitai/*`
+    // pin to a version younger than pnpm's ~24h `minimumReleaseAge` cutoff
+    // makes a bare `pnpm install` auto-create it carrying ONLY a
+    // `minimumReleaseAgeExclude` block — no `packages` key. Commit that and:
+    // CI stays GREEN, because it pins pnpm 11 and pnpm 10/11 tolerate the
+    // missing key; the PLATFORM BUILDER does not, because it runs
+    // `corepack enable` UNPINNED on node:22-alpine and pnpm 9 fails
+    // `packages field missing or empty` on install. `civitai app submit`
+    // bundles the working tree, so the file ships. Measured across three pnpm
+    // majors: 9.15.9 errors, 10.34.5 and 11.27.0 do not.
+    //
+    // Not hypothetical — `civitai-app-gen-matrix`'s own workspace file records
+    // it firing: "The deployed 0.8.x bundle dropped this line; CI only exists
+    // in this repo (.github/ is not part of the submitted bundle), so nothing
+    // upstream could have caught it."
+    if (rootFiles.includes('pnpm-workspace.yaml')) {
+      const ws = repoFile('../pnpm-workspace.yaml');
+
+      // Deliberately a STRUCTURAL read, not a substring search for the word
+      // `packages` — that word appears in this file's own prose, so a text
+      // match would pass on a file whose only mention is a comment.
+      const packagesEntries = ws
+        .split('\n')
+        .filter((line) => !/^\s*#/.test(line))
+        .reduce<{ inBlock: boolean; entries: string[] }>(
+          (acc, line) => {
+            if (/^packages:\s*$/.test(line)) return { inBlock: true, entries: acc.entries };
+            if (acc.inBlock) {
+              const item = /^\s+-\s*(.+?)\s*$/.exec(line);
+              if (item) return { inBlock: true, entries: [...acc.entries, item[1]] };
+              if (line.trim() !== '') return { inBlock: false, entries: acc.entries };
+            }
+            return acc;
+          },
+          { inBlock: false, entries: [] },
+        ).entries;
+
+      expect(
+        packagesEntries,
+        'pnpm-workspace.yaml exists but declares no `packages` entries — pnpm 9 (which the ' +
+          'unpinned platform builder can resolve) fails `packages field missing or empty`, ' +
+          'while CI on pnpm 11 stays green. A bare `pnpm install` writes this file WITHOUT ' +
+          'the key; add `packages:\n  - \'.\'` by hand, or delete the file entirely.',
+      ).not.toHaveLength(0);
+    }
   });
 
   it('🔴 describes the extractors — they can FAIL, and they do match this repo', () => {

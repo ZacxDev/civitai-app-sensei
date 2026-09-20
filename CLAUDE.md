@@ -244,6 +244,21 @@ something that looks unfinished.
   `src/toolchain-lockstep.test.ts` mirrors that regex, pins the exact string,
   checks the named script exists in `package.json`, and requires exactly one
   lockfile. Still the highest-blast-radius line in the repo.
+- 🔴 **This repo deliberately sits ONE MINOR BELOW the starter's canonical
+  `@civitai/app-sdk`, and that is not drift.** `civitai-app-starters`'
+  `starters/civitai-block-starter/package.json` pins `^0.46.0`; this repo pins
+  **`^0.45.0`**, which on a `0.x` caret hard-caps below `0.46.0`. The reason:
+  `0.45.0` is the FIRST version carrying `BLOCK_MESSAGE_REJECTED` — the report
+  that makes a validator-dropped bridge reply visible instead of silent — and
+  it is the floor `@civitai/blocks-react@0.53.x` peers on. `0.46.0` adds nothing
+  this app can use: a type-only rename on the ORCHESTRATOR surface (this app
+  imports only `@civitai/app-sdk/blocks`, whose same-named union is untouched,
+  and references the name zero times) plus a runtime change in `dist/cookies/`
+  it never imports. **Measured: the built bundle is byte-identical between
+  `0.45.0` and `0.46.0`** — same content hash on every `dist/assets/*`. So the
+  cap costs nothing and avoids taking a breaking release for no benefit.
+  Re-derive this before raising the pin; do not "sync to the starter" on the
+  strength of the version numbers differing.
 - Bumping `@civitai/*` is a **paired** change — and the pair is **four packages,
   not two**. `app-sdk` + `blocks-react` have been mismatched before:
   `blocks-react@0.37.0` peered on `^0.28.0` against an exact `app-sdk@0.30.0`

@@ -10,16 +10,27 @@
 # a line per bump.
 
 # Required while the file exists at all. 🔴 The reason is the PLATFORM BUILDER,
-# not CI — an earlier version of this comment said CI and that was measured
-# FALSE. `actions/setup-node`'s `cache: pnpm` runs exactly one pnpm command,
-# `pnpm store path --silent`, and on pnpm 10 and 11 that returns rc=0 against a
-# `packages`-less workspace file. It errors `packages field missing or empty`
-# only on **pnpm 9**. CI pins pnpm 11 (`pnpm/action-setup`), so CI is fine
-# either way. The platform builder is not: per CLAUDE.md's third-environment
-# table it runs `corepack enable` UNPINNED on `node:22-alpine`, so pnpm 9 is in
-# reach there, and `civitai app submit` bundles this file with the tree. Under
-# pnpm 9 its absence would break the build of the LIVE app while every signal
-# this repo produces stays green.
+# not CI. The discriminator is the pnpm MAJOR, not the command: pnpm 9 fails
+# `packages field missing or empty` on `pnpm install` against a `packages`-less
+# workspace file, while pnpm 10 and 11 accept it. Measured across three majors
+# (9.15.9 errors; 10.34.5 and 11.27.0 do not), with a control: the same pnpm 9
+# with NO workspace file at all is rc=0, which is why deleting this file later
+# is safe. CI pins pnpm 11 via `pnpm/action-setup`, so CI is fine either way.
+# The platform builder is not — per CLAUDE.md's third-environment table it runs
+# `corepack enable` UNPINNED on `node:22-alpine`, so pnpm 9 is in reach, and
+# `civitai app submit` bundles this file with the tree. Under pnpm 9 its
+# absence breaks the build of the LIVE app while every signal this repo
+# produces stays green.
+#
+# ⚠️ `civitai-app-gen-matrix` and `civitai-app-playable-collections` already
+# state this correctly — both name pnpm ITSELF alongside setup-node. Do not
+# "correct" them. An earlier version of this comment claimed they blamed
+# setup-node alone and told the reader to fix them; that was a misreading of
+# both files.
+#
+# Guarded: `src/toolchain-lockstep.test.ts` fails if this file exists without a
+# non-empty `packages`. That guard is the point — the NEXT pin bump's bare
+# `pnpm install` auto-writes this file WITHOUT the key.
 packages:
   - '.'
 
@@ -43,12 +54,21 @@ packages:
 #     ORCHESTRATOR surface, which this app does not import), and it also carries
 #     a runtime change in `dist/cookies/` this app cannot reach. Taking the
 #     minimum version that satisfies the requirement is the point.
-#   - @civitai/blocks-react@0.53.1 — the hooks + `IframeTransport`. 0.53.0 adds
-#     the emit at the validator drop site; 0.53.1 is a single-hook patch
-#     (`useBlockResize` only — the 0.53.0→0.53.1 tarball diff touches nothing
-#     else) fixing it to observe a root that mounts on a LATER render, which is
-#     this app's shape: it renders a skeleton until `BLOCK_INIT`. Its peer floor
-#     is `@civitai/app-sdk >=0.45.0 <1.0.0`, which `^0.45.0` satisfies.
+#   - @civitai/blocks-react@0.53.1 — the hooks + `IframeTransport`. **0.53.0 is
+#     the version that matters**: it adds the emit at the validator drop site.
+#     0.53.1 is a single-hook patch (`useBlockResize` only, plus package.json
+#     and README) fixing that hook to observe a root mounting on a LATER render.
+#     🔴 That fix is INERT for this app, and an earlier version of this comment
+#     wrongly claimed it was "this app's shape". It is not: `src/App.tsx` has
+#     three top-level returns (lines 2798, 2809, 2820) and ALL THREE render
+#     `<div ref={rootRef}>`, so the root exists on the first commit and 0.53.0's
+#     effect already observed it. The app is ALREADY applying the workaround
+#     0.53.1's release note says is no longer needed. Do not read this pin as a
+#     licence to drop the ref from any branch of that conditional — that would
+#     re-introduce the very bug 0.53.1 fixes for blocks that do drop it.
+#     We take `.1` because it is strictly newer and free, not because we need
+#     it. Its peer floor is `@civitai/app-sdk >=0.45.0 <1.0.0`, which `^0.45.0`
+#     satisfies.
 #
 # @civitai/components-react and @civitai/theme are NOT listed and did NOT move:
 # blocks-react@0.53.1 exact-pins theme 0.3.1 + components 0.4.1, and
