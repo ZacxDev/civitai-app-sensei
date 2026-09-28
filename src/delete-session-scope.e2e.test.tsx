@@ -64,7 +64,7 @@ const pollFn = vi.fn(async () => {
   );
 });
 
-vi.mock('@civitai/blocks-react', () => ({
+vi.mock('./lib/sdk-runtime.js', () => ({
   // One instance, resolved at call time — a factory call here would hand every
   // render a fresh empty store and the switch/delete cases would be measuring
   // the fake rather than the app.

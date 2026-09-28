@@ -125,3 +125,35 @@ describe('consent copy', () => {
     ).toBe('7');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 🔴 THE ASSUMPTION `lib/sdk-transport.ts` HARDCODES, PINNED WHERE IT IS MADE.
+//
+// That adapter supplies `kind: 'block'` on the token it composes into the SDK's
+// snapshot, because the bridge drops the host's `kind` and without it the SDK's
+// `holdsBlockToken()` — the gate on its eager `app.orchestration` refusal — is
+// permanently false. `'block'` is only the truth while this manifest declares no
+// `auth: "oauth"`: with that key the host mints an OAuth access token for a
+// signed-in viewer, and the adapter's default would then refuse orchestrator
+// calls that are in fact legitimate.
+//
+// The direction of the failure is fail-CLOSED (work refused, not policy dropped),
+// which is why this is a tripwire rather than a blocker — but it must be a LOUD
+// tripwire, because the person adding `auth: "oauth"` has no reason to look in a
+// transport adapter.
+// ---------------------------------------------------------------------------
+describe('the token kind lib/sdk-transport.ts assumes', () => {
+  it('🔴 declares no `auth: "oauth"`, which is what makes `kind: \'block\'` true', () => {
+    const raw = readFileSync(new URL('../block.manifest.json', import.meta.url), 'utf8');
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+
+    // `not.toBe('oauth')` rather than `toBeUndefined()`: the manifest may gain
+    // other `auth` values, and only the OAuth one changes what the host mints.
+    expect(
+      parsed.auth,
+      'block.manifest.json now declares `auth` — if it is "oauth" the host mints an ' +
+        'OAuth access token and `ASSUMED_TOKEN_KIND` in src/lib/sdk-transport.ts is no ' +
+        'longer true. Read that constant before changing this assertion.',
+    ).not.toBe('oauth');
+  });
+});

@@ -76,7 +76,7 @@ const pollFn = vi.fn(async () => {
   return next ?? { workflowId: 'wf-x', status: 'succeeded', cost: { total: 1 }, textOutputs: ['done'] };
 });
 
-vi.mock('@civitai/blocks-react', () => ({
+vi.mock('./lib/sdk-runtime.js', () => ({
   // 🔴 ONE instance, resolved at call time. A `fakeAppStorage()` factory call
   // here would hand every render a brand-new empty store, and the
   // session-switch and reload cases below would then be measuring the fake.

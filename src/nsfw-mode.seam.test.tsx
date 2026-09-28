@@ -91,7 +91,7 @@ const pollFn = vi.fn(async () => ({
   textOutputs: ['A reply.'],
 }));
 
-vi.mock('@civitai/blocks-react', () => ({
+vi.mock('./lib/sdk-runtime.js', () => ({
   useAppStorage: () => storage.appStorage,
   useBlockAnalytics: () => ({ track: trackFn }),
   useBlockContext: () => ({ ready: true, viewer: VIEWER, theme: 'dark' }),

@@ -1,4 +1,4 @@
-import type { UseAppStorage } from '@civitai/blocks-react';
+import type { AppStorage } from './sdk-runtime.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 🔴 ONE DURABLE RECORD PER TURN, WRITTEN AT SUBMIT — THE ONLY ARTEFACT A LOST
@@ -227,7 +227,7 @@ export interface TurnRecorder {
  * independently, so two updates cannot land out of order and leave the store
  * holding an older snapshot than the one already written.
  */
-export function startTurnRecord(appStorage: UseAppStorage, seed: TurnRecordSeed): TurnRecorder {
+export function startTurnRecord(appStorage: AppStorage, seed: TurnRecordSeed): TurnRecorder {
   const key = turnRecordKey(seed);
   const record: TurnRecord = {
     sessionId: seed.sessionId,
@@ -271,7 +271,7 @@ export function startTurnRecord(appStorage: UseAppStorage, seed: TurnRecordSeed)
 }
 
 /** Walk `list()` pages for a prefix, bounded so a huge store still terminates. */
-async function listKeys(appStorage: UseAppStorage, prefix: string): Promise<string[]> {
+async function listKeys(appStorage: AppStorage, prefix: string): Promise<string[]> {
   const out: string[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
@@ -296,7 +296,7 @@ async function listKeys(appStorage: UseAppStorage, prefix: string): Promise<stri
  * successive mounts instead.
  */
 export async function pruneTurnRecords(
-  appStorage: UseAppStorage,
+  appStorage: AppStorage,
   max: number = MAX_TURN_RECORDS,
 ): Promise<number> {
   const keys = await listKeys(appStorage, TURNS_PREFIX);
@@ -337,7 +337,7 @@ export async function pruneTurnRecords(
  * Returns how many keys it deleted.
  */
 export async function purgeSessionTurnRecords(
-  appStorage: UseAppStorage,
+  appStorage: AppStorage,
   sessionId: string,
 ): Promise<number> {
   const keys = await listKeys(appStorage, sessionTurnsPrefix(sessionId));

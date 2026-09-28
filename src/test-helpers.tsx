@@ -1,4 +1,4 @@
-import type { UseAppStorage } from '@civitai/blocks-react';
+import type { AppStorage } from './lib/sdk-runtime.js';
 
 /**
  * A READ-YOUR-WRITES KV fake.
@@ -26,7 +26,7 @@ export function fakeAppStorage(seed: Record<string, unknown> = {}) {
    * `setFailSet`.
    */
   let failSet: (key: string, value: unknown) => boolean = () => false;
-  const appStorage: UseAppStorage = {
+  const appStorage: AppStorage = {
     async get<T = unknown>(key: string) {
       return (store.has(key) ? (store.get(key) as T) : null) as T | null;
     },
@@ -92,7 +92,7 @@ export function staleReadAppStorage(seed: Record<string, unknown> = {}) {
   const readCache = new Map<string, unknown>();
   const sets: Array<{ key: string; value: unknown }> = [];
 
-  const appStorage: UseAppStorage = {
+  const appStorage: AppStorage = {
     async get<T = unknown>(key: string) {
       if (!readCache.has(key)) {
         readCache.set(key, store.has(key) ? store.get(key) : null);

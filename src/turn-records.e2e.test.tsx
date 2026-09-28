@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import type { UseAppStorage } from '@civitai/blocks-react';
+import type { AppStorage } from './lib/sdk-runtime.js';
 import { App } from './App.js';
 import { MAX_TURN_RECORDS, TURNS_PREFIX, turnRecordKey } from './lib/turn-records.js';
 import { claimMessageWrite } from './lib/write-ownership.js';
@@ -56,7 +56,7 @@ function makeStorage() {
   const attempts: string[] = [];
   let failSet: (key: string, value: unknown) => boolean = () => false;
 
-  const appStorage: UseAppStorage = {
+  const appStorage: AppStorage = {
     async get<T = unknown>(key: string) {
       return (store.has(key) ? (store.get(key) as T) : null) as T | null;
     },
@@ -170,7 +170,7 @@ const estimateFn = vi
   .mockResolvedValue({ workflowId: 'e', status: 'succeeded', cost: { total: 1 } });
 const cancelFn = vi.fn(async () => undefined);
 
-vi.mock('@civitai/blocks-react', () => ({
+vi.mock('./lib/sdk-runtime.js', () => ({
   useAppStorage: () => h.storage!.appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),

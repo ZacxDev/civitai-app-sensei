@@ -35,7 +35,7 @@ const h = vi.hoisted(() => ({
   poll: null as (() => unknown) | null,
 }));
 
-vi.mock('@civitai/blocks-react', () => ({
+vi.mock('./lib/sdk-runtime.js', () => ({
   // 🔴 ONE instance, resolved at call time — not a fresh store per render.
   useAppStorage: () => h.storage!.appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
