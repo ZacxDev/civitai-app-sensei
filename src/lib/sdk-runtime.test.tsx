@@ -18,6 +18,12 @@ import { useRef } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BrowsingLevel } from '@civitai/app-sdk/blocks';
+// 🔴 FROM THE BRIDGE PACKAGE ON PURPOSE, NOT FROM `./sdk-runtime.js` — this is the
+// STRONGER assertion. `sdk-runtime.ts` re-exports these two, so importing them from
+// there would make every `instanceof` below trivially true whatever it re-exported.
+// Reaching for the bridge's own classes is what pins that the app throws THOSE, so
+// `orchestrator-bridge.ts`'s branches (which resolve through the re-export) cannot
+// be satisfied by a look-alike.
 import { WorkflowEstimateError, WorkflowSubmitError } from '@civitai/blocks-react';
 import { createFakeTransport, type FakeTransport } from '@civitai/sdk/testing';
 
