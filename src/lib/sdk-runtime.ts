@@ -167,13 +167,44 @@ function transport(): BlockTransport {
   return transportSingleton;
 }
 
-/** The one AppClient promise, created on first use. */
+/**
+ * The one AppClient promise, created on first use.
+ *
+ * 🔴 NOT `appPromise ??= initialize(…)`, AND THE DIFFERENCE IS A PERMANENTLY DEAD
+ * APP. `initialize()` awaits `ready(transport, 10_000)` and REJECTS with
+ * `BridgeError('unavailable', 'BLOCK_INIT')` when no host answers in time.
+ * `??=` never reassigns a SETTLED promise — rejected included — so ONE slow host
+ * boot would make that rejection the answer to every later `app()` call for the
+ * life of the page: app storage, all four workflow operations and the token
+ * refresh, out together and silently. Nothing in production could clear it
+ * either: `configureSdkRuntime`/`resetSdkRuntime` are test seams, and the
+ * bridge-identity swap in `transport()` above cannot fire, because the bridge's
+ * `getTransport()` caches its singleton forever. So the rejection self-heals: the
+ * failed attempt is dropped and the next call re-tries.
+ *
+ * 🔴 THE `appPromise === pending` IDENTITY CHECK IS WHAT KEEPS A CONCURRENT
+ * `configureSdkRuntime` FROM BEING CLOBBERED. That function installs a fresh
+ * `appPromise` while an earlier boot may still be in flight; a blind
+ * `appPromise = null` in the loser's `catch` would then discard the client the
+ * reconfigure had already built, and go on doing it. The `catch` clears only its
+ * OWN entry.
+ *
+ * ⚠ It re-throws rather than swallowing: the caller's rejection is the contract
+ * (the app's own load effect reports a failed read), and a resolved-with-nothing
+ * client would be worse than a rejection.
+ */
 function app(): Promise<AppClient> {
-  appPromise ??= initialize({
-    transport: transport(),
-    fetch: options.fetch,
-    ...(options.siteUrl === undefined ? {} : { siteUrl: options.siteUrl }),
-  });
+  if (appPromise === null) {
+    const pending: Promise<AppClient> = initialize({
+      transport: transport(),
+      fetch: options.fetch,
+      ...(options.siteUrl === undefined ? {} : { siteUrl: options.siteUrl }),
+    }).catch((err: unknown) => {
+      if (appPromise === pending) appPromise = null;
+      throw err;
+    });
+    appPromise = pending;
+  }
   return appPromise;
 }
 
@@ -235,10 +266,24 @@ export interface BlockTokenValue {
  *
  * ⚠ NO `refresh()`, AND THAT IS NOT A NARROWING OF ANYTHING THIS APP USED. The
  * bridge hook exposed one; `git grep 'token_\.' src` finds `raw` and `scopes`
- * only, and `App.tsx` memoises its client on the `raw` STRING. The SDK refreshes
- * the token itself — `createHttp` retries once on a 401 with `getToken({ fresh:
- * true })`, which goes out as `REQUEST_TOKEN` over the adapter — so the 401 path
- * the bridge made the app's business is now the client's.
+ * only, and `App.tsx` memoises its client on the `raw` STRING.
+ *
+ * 🔴 WHY DROPPING IT IS SAFE — AND THE REASON IS THE HOST'S ROTATION, NOT THE
+ * SDK's 401 RETRY. An earlier version of this note said `createHttp`'s
+ * retry-once-on-401 with `getToken({ fresh: true })` covered it. That retry is
+ * real, but it covers only calls the SDK ITSELF issues; `token_.raw` also feeds
+ * this app's OWN direct `fetch`es (`App.tsx`'s three catalog/tool call sites →
+ * `mentionsLib.resolveMentions`), which have no 401-refresh of any kind. So the
+ * SDK's belt does not reach half the calls, and citing it as the reason invites
+ * someone to remove the braces too.
+ *
+ * The braces are the HOST's. civitai's `useBlockToken.ts` schedules its own
+ * re-mint at `REFRESH_LEAD_MS = 2 * 60 * 1000` before expiry and
+ * `PageBlockHost.tsx` pushes the new token to the iframe as `TOKEN_REFRESH`, which
+ * the bridge transport folds into the snapshot — so `token.raw` read through this
+ * hook is already rotated ahead of expiry without the block asking. A block-side
+ * proactive refresh was therefore a second copy of the host's schedule. The SDK's
+ * 401 retry remains as a backstop for SDK-issued calls; it is not the argument.
  *
  * ⚠ ONE DELIBERATE IMPROVEMENT, and `App.tsx`'s comment about it is now stale
  * rather than wrong: the bridge returned `{...token, refresh}`, a FRESH object
@@ -316,16 +361,24 @@ export function useDomainMaturity(): DomainMaturityValue {
  * had already run with `ref.current === null` and a ref carries no subscription.
  * `App.tsx`'s three top-level returns all render `<div ref={rootRef}>`, so the
  * element is there on the first commit today; the guard is here so the app does
- * not depend on that staying true. It re-runs on every commit (no dependency
- * array) and no-ops while the element is unchanged, because `autoResize`'s own
- * teardown/rebuild is a `ResizeObserver` pair and nothing more.
+ * not depend on that staying true.
+ *
+ * 🔴 SO: NO DEPENDENCY ARRAY, AND THE READ IS INSIDE THE EFFECT. Both halves are
+ * required and an earlier version of this hook had neither — it read `ref.current`
+ * during RENDER and passed `[element]`, which reproduces the exact bug 0.53.1
+ * fixed. React attaches refs during COMMIT, after render returns, so on the render
+ * that introduces the element `ref.current` is still `null`: the dep array does not
+ * change, the effect never re-runs, and the observer stays attached to nothing.
+ * Reading a ref during render is also a documented React impurity. Re-running on
+ * every commit is affordable because `autoResize`'s teardown/rebuild is a
+ * `ResizeObserver` pair and nothing more.
  */
 export function useBlockResize(ref: RefObject<HTMLElement | null>): void {
-  const element = ref.current;
   useEffect(() => {
+    const element = ref.current;
     if (!element) return;
     return host().autoResize(element);
-  }, [element]);
+  });
 }
 
 /** `{ requestSignIn }` — asks the host to open its sign-in flow. */
@@ -490,12 +543,26 @@ export interface AppStorage {
  *   - a `null` would make every call site grow a branch for a state that lasts
  *     milliseconds and that the app already gates on `ready`.
  *
- * ⚠ ONE MIGRATION DELTA THE PORT INHERITS, from `@civitai/sdk`'s `BREAKING.md`:
- * an ANONYMOUS viewer gets 403 where the bridge resolved an anonymous read to
- * `null`. This app already gates its whole storage surface on a signed-in viewer
- * (`App.tsx` renders the sign-in prompt instead of the chat when `viewer` is
- * null, and `loadSessions` runs off that branch), so nothing here reads an empty
- * result as "nothing stored" — but a new call site must not start doing so.
+ * 🔴 ONE MIGRATION DELTA THE PORT INHERITS, AND IT IS A BEHAVIOUR CHANGE THE
+ * CALLER HAS TO GATE ON. An ANONYMOUS viewer gets 403 here — `forbidden(
+ * 'apps:storage:read requires authenticated subject')` from civitai's
+ * `enforceContextBinding` — where the bridge hook resolved an anonymous read to
+ * `null` and an anonymous `list` to an empty page. The route says so itself
+ * (`src/pages/api/v1/blocks/app-storage/get.ts`): "🔴 AN ANONYMOUS VIEWER GETS
+ * 403 HERE, NOT THE BRIDGE'S CLEAN `{ value: null }`, AND THAT DIVERGENCE IS
+ * DELIBERATE."
+ *
+ * ⚠ SO A CALLER MUST CHECK `viewer` ITSELF. There is no screen-level gate in this
+ * app to inherit: `App.tsx`'s three top-level returns are the boot skeleton, the
+ * session-loading skeleton and the chat, and an anonymous viewer reaches the
+ * third — `sendGate` renders an inline sign-in notice on the COMPOSER, never a
+ * replacement screen. What does the gating is the boot load effect's own
+ * `if (!signedIn)` early return (and the matching one in
+ * `handleSettingsChange`); `src/anon-boot-storage.e2e.test.tsx` is what pins it,
+ * including that a signed-in viewer's real failure is still reported. Any NEW
+ * call site is unguarded until it adds that check — and a 403 here surfaces as a
+ * rejection, not as an empty result, so it cannot be mistaken for
+ * "nothing stored".
  */
 export function useAppStorage(): AppStorage {
   return useMemo<AppStorage>(
@@ -566,10 +633,26 @@ interface WorkflowReply {
  *
  * Charset is the route's `BLOCK_IDEMPOTENCY_KEY_REGEX` (`/^[A-Za-z0-9_-]{1,64}$/`),
  * so no separator can leak into the orchestrator `externalId` derived from it.
- * `crypto.randomUUID()` is hex-and-hyphens, which that regex admits.
+ * `crypto.randomUUID()` is hex-and-hyphens, which that regex admits; so is the
+ * base-36 fallback below.
+ *
+ * 🔴 THE `randomUUID` GUARD IS THE BRIDGE'S AND IT IS NOT DEFENSIVE POLISH.
+ * `randomUUID` is `[SecureContext]`: where it is absent, an unguarded call throws
+ * `TypeError: globalThis.crypto.randomUUID is not a function`,
+ * `orchestrator-bridge.ts` re-throws anything that is not a `WorkflowSubmitError`
+ * with the thrown message, and `failureBody` renders that string to the viewer. So
+ * the whole generate path dies, fail-closed (nothing charged) but total, showing
+ * an internal type error. The bridge's `generateIdempotencyKey()`
+ * (`@civitai/blocks-react/dist/internal/transport.js`) guards and falls back to
+ * `Date.now()` + `Math.random()`; this claims to match that default, so it has to
+ * carry that arm too. Two `Math.random()` draws, like the bridge's, so the
+ * fallback's collision surface does not rest on a single 52-bit sample.
  */
 function mintIdempotencyKey(): string {
-  return `bls-${globalThis.crypto.randomUUID()}`;
+  const c: { randomUUID?: () => string } | undefined = globalThis.crypto;
+  if (typeof c?.randomUUID === 'function') return `bls-${c.randomUUID()}`;
+  const rand = () => Math.random().toString(36).slice(2, 12);
+  return `bls-${Date.now().toString(36)}-${rand()}-${rand()}`;
 }
 
 export interface BuzzWorkflow {

@@ -72,10 +72,51 @@ const BRIDGE_REQUESTS: Readonly<Record<string, BridgeRequestBinding>> = Object.f
 });
 
 /**
+ * The token `kind` this app's block holds.
+ *
+ * 🔴 SUPPLIED HERE BECAUSE NOTHING UPSTREAM CARRIES IT, AND WITHOUT IT THE SDK's
+ * ONLY ALARM AGAINST THE `app.orchestration` SUBSTITUTION IS DEAD.
+ * `@civitai/sdk` gates two behaviours on
+ * `holdsBlockToken = () => viewer !== null && token.kind === 'block'`
+ * (`dist/app/index.js`): `refuseBlockToken`, the EAGER pre-request refusal of
+ * every `app.orchestration.*` call, and `explainApiRefusal`, which annotates a
+ * 401/403 outside `blocks/*`. The bridge's `tokenFromWrapped` builds
+ * `{ raw, scopes, expiresAt, buzzBudget }` and DROPS `kind`
+ * (`@civitai/blocks-react/dist/internal/transport.js`) — its own `BlockToken`
+ * type does not declare it, and neither does `@civitai/app-sdk@0.45.0`'s
+ * `WrappedToken`, even though civitai's host puts it on the wire
+ * (`PageBlockHost.tsx` spreads `...(tokenKind ? { kind: tokenKind } : {})` into
+ * all three token pushes). So `kind` arrives `undefined` through this adapter,
+ * `holdsBlockToken()` is permanently `false`, and both consumers never run.
+ *
+ * 🔴 `'block'` IS THE TRUTH FOR THIS APP, not a convenient default:
+ * `block.manifest.json` declares no `auth: "oauth"` — deliberately, see
+ * `WORKFLOW_ROUTES` in `./sdk-runtime.ts` — so the host mints a block-scoped JWT
+ * and nothing else. `src/manifest.test.ts` fails if that ever stops being true,
+ * because at that point this constant becomes a lie in the fail-CLOSED direction
+ * (a legitimate orchestrator call refused) and has to be revisited rather than
+ * quietly inherited.
+ *
+ * It is a DEFAULT, not an override: a bridge that starts forwarding the host's
+ * own `kind` wins, so this cannot outlive the gap it fills.
+ */
+const ASSUMED_TOKEN_KIND = 'block';
+
+/**
  * The SDK's snapshot is the bridge's plus `hostOrigin`, which the bridge exposes
- * as a separate accessor. Everything else is field-for-field identical (the only
- * field in the SDK's `BlockSnapshot` absent from the bridge's is `hostOrigin`;
- * the bridge's extra `appId`/`blockId` are simply ignored).
+ * as a separate accessor, plus the token's `kind` (above).
+ *
+ * ⚠ WHAT WAS ACTUALLY MEASURED, stated at that scope rather than one step wider.
+ * Comparing the two `BlockSnapshot` interfaces' OWN fields, the only one the SDK
+ * declares and the bridge does not is `hostOrigin` (the bridge's extra
+ * `appId`/`blockId` are simply ignored). That measurement says NOTHING about the
+ * NESTED `BlockToken`, and the nested type is where they differ: the SDK declares
+ * `kind?: TokenKind`, the bridge declares no such field and drops it at runtime.
+ * An earlier version of this comment read "everything else is field-for-field
+ * identical", which generalised a top-level field comparison into a claim about
+ * the whole tree — and that wording is what hid the dead `holdsBlockToken`
+ * through several review passes. If you widen this sentence again, measure the
+ * nested types too.
  *
  * 🔴 IDENTITY IS LOAD-BEARING, NOT AN OPTIMISATION. `snapshot.get()` feeds
  * `useSyncExternalStore`, which bails out on `Object.is`. Composing `{...snap,
@@ -104,7 +145,16 @@ function composeSnapshot(bridge: BridgeTransport) {
     }
     lastBase = base;
     lastHostOrigin = hostOrigin;
-    lastComposed = { ...base, hostOrigin };
+    // The `typeof` guard is not defensive polish: the bridge's pre-`BLOCK_INIT`
+    // snapshot is the only shape this runs against before the handshake, and a
+    // spread of a non-object would manufacture a token-shaped object out of
+    // nothing (`{...'x'}` is `{0:'x'}`). Only an object gets the default.
+    const bridgeToken = base.token as unknown as ({ kind?: string } & object) | null | undefined;
+    const token: unknown =
+      bridgeToken !== null && bridgeToken !== undefined && typeof bridgeToken === 'object'
+        ? { ...bridgeToken, kind: bridgeToken.kind ?? ASSUMED_TOKEN_KIND }
+        : bridgeToken;
+    lastComposed = { ...base, token, hostOrigin };
     return lastComposed;
   };
 }

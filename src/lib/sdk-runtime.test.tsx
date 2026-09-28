@@ -13,7 +13,7 @@
 //   - the data half (app storage, the four workflow ops) through a `fetch` fake,
 //     `../dev-rest.ts`, because after the port those are HTTP and a transport-level
 //     fake would answer a conversation nobody is having.
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { useRef } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -288,20 +288,30 @@ describe('host-mediated bindings', () => {
     );
 
     const t = install();
-    let attach = false;
-    const { rerender } = renderHook(() => {
-      const ref = useRef<HTMLDivElement | null>(null);
-      if (attach && ref.current === null) {
-        ref.current = document.createElement('div');
-      }
-      useBlockResize(ref);
-      return null;
-    });
 
+    // 🔴 THE ELEMENT IS MOUNTED THROUGH A REAL COMMIT, AND THE PREVIOUS FIXTURE
+    // WAS NOT. It assigned `ref.current` INSIDE the render function, which React
+    // never does: React attaches refs during COMMIT, after render returns. So the
+    // old fixture handed the hook a ref that was already populated at render
+    // time — which is exactly the thing the hook must not rely on — and the case
+    // passed against a hook that reads `ref.current` during render and puts
+    // `[element]` in its dependency array. Against React's real timing that hook
+    // is one render behind: on the render that introduces the element,
+    // `ref.current` is still `null`, the dep array does not change, and the
+    // effect never re-runs. That is the `blocks-react@0.53.1` bug verbatim.
+    //
+    // This fixture renders the element conditionally, so React does the
+    // attaching, in the commit, at the moment it really happens.
+    function Probe({ attach }: { attach: boolean }) {
+      const ref = useRef<HTMLDivElement | null>(null);
+      useBlockResize(ref);
+      return attach ? <div ref={ref} data-testid="probe-root" /> : null;
+    }
+
+    const { rerender } = render(<Probe attach={false} />);
     expect(t.sent).toEqual([]);
 
-    attach = true;
-    rerender();
+    rerender(<Probe attach />);
     await waitFor(() => expect(t.sent.map((s) => s.type)).toContain('RESIZE_IFRAME'));
     // The positive control for the stub itself: the observer really was pointed at
     // the element, so a green above is not "the stub fired unconditionally".
@@ -455,6 +465,47 @@ describe('useBuzzWorkflow over /api/v1/blocks/workflows', () => {
     expect(calls[0]!.body.idempotencyKey).not.toBe(calls[1]!.body.idempotencyKey);
   });
 
+  // 🔴 `randomUUID` IS `[SecureContext]`, AND WITHOUT A FALLBACK ITS ABSENCE TAKES
+  // OUT THE WHOLE GENERATE PATH WITH A GIBBERISH MESSAGE. An unguarded
+  // `globalThis.crypto.randomUUID()` throws
+  // `TypeError: globalThis.crypto.randomUUID is not a function` where the API is
+  // missing; `orchestrator-bridge.ts` re-throws anything that is not a
+  // `WorkflowSubmitError` with its own message, and `failureBody` renders that
+  // string to the viewer. Fail-closed (nothing is charged) but total, and the
+  // viewer is shown an internal type error. The bridge's
+  // `generateIdempotencyKey()` — which this function's docblock claims to match —
+  // guards and falls back to `Date.now()` + `Math.random()`.
+  //
+  // The key must still satisfy the route's `BLOCK_IDEMPOTENCY_KEY_REGEX`
+  // (`/^[A-Za-z0-9_-]{1,64}$/`), so the fallback is asserted against that regex
+  // and not merely against "is a string" — a separator leaking in would reach the
+  // orchestrator `externalId` derived from it.
+  it('submit still mints a valid key where crypto.randomUUID is unavailable', async () => {
+    install();
+    const { result } = renderHook(() => useBuzzWorkflow());
+
+    const realCrypto = globalThis.crypto;
+    // A SecureContext-less realm, modelled the way one actually presents: the
+    // `crypto` object exists (`getRandomValues` and the rest are not
+    // secure-context-gated) and `randomUUID` simply is not on it.
+    vi.stubGlobal('crypto', { getRandomValues: realCrypto.getRandomValues.bind(realCrypto) });
+    try {
+      await result.current.submit({} as never);
+      await result.current.submit({} as never);
+    } finally {
+      vi.stubGlobal('crypto', realCrypto);
+    }
+
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.body.idempotencyKey as string).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    }
+    // Still FRESH per call — the whole point of the key. A fallback that returned
+    // a constant would satisfy the regex and collapse two deliberate generations
+    // into one.
+    expect(calls[0]!.body.idempotencyKey).not.toBe(calls[1]!.body.idempotencyKey);
+  });
+
   // 🔴 A BUDGET REFUSAL RESOLVES. The server answers a spend-cap rejection by
   // RESOLVING with a failure-shaped snapshot that QUOTES the price it declined to
   // charge, expressly so the block can open a top-up flow. Turning this arm into a
@@ -575,6 +626,117 @@ describe('configureSdkRuntime / resetSdkRuntime', () => {
     install({}, { storage: { seed: { k: 'second' } } });
     const second = renderHook(() => useAppStorage());
     await expect(second.result.current.get('k')).resolves.toBe('second');
+  });
+
+  // 🔴 A REJECTED `initialize()` MUST NOT BECOME THE PERMANENT ANSWER.
+  //
+  // `initialize()` awaits `ready(transport, 10_000)` and REJECTS with
+  // `BridgeError('unavailable', 'BLOCK_INIT')` when no host answers in time.
+  // `appPromise ??= initialize(…)` never reassigns a SETTLED promise, rejected
+  // included — so ONE slow host boot made that rejection the answer to every
+  // later `app()` call for the life of the page: app storage, all four workflow
+  // operations and token refresh, out together and silently. Nothing in
+  // production could clear it. `configureSdkRuntime`/`resetSdkRuntime` are test
+  // seams, and the bridge-identity swap in `transport()` cannot fire because the
+  // bridge's `getTransport()` caches its singleton forever.
+  //
+  // The fixture fails `initialize` the CHEAP way — `snapshot.get()` throws, which
+  // `ready()` reads first — rather than waiting out a 10-second deadline. What is
+  // pinned is the CACHING of a settled rejection, not the deadline that produces
+  // it in production.
+  it('does not cache a REJECTED initialize forever — a later call re-tries', async () => {
+    const fake = createFakeTransport({ ready: true, viewer: { id: 1, username: 'zed' } });
+    let boom: Error | null = new Error('host never answered BLOCK_INIT');
+    const flaky = {
+      ...fake,
+      snapshot: {
+        get: () => {
+          if (boom) throw boom;
+          return fake.snapshot.get();
+        },
+        subscribe: (listener: () => void) => fake.snapshot.subscribe(listener),
+      },
+    };
+
+    calls = [];
+    configureSdkRuntime({
+      transport: flaky as never,
+      fetch: createRestFake({
+        storage: { seed: { k: 'after-recovery' } },
+        onRequest: (c) => calls.push(c),
+      }),
+    });
+
+    const { result } = renderHook(() => useAppStorage());
+
+    await expect(result.current.get('k')).rejects.toThrow(/host never answered BLOCK_INIT/);
+    // The boot failed, so nothing reached the wire — without this, a green second
+    // read could not be told apart from a first read that had quietly succeeded.
+    expect(calls).toEqual([]);
+
+    // The host answers on the next attempt: the ordinary transient this defect
+    // turned permanent. Under `??=` this rejects again with the FIRST call's own
+    // error, which is the defect's signature.
+    boom = null;
+    await expect(result.current.get('k')).resolves.toBe('after-recovery');
+    expect(calls.map((c) => c.path)).toEqual(['blocks/app-storage/get']);
+  });
+
+  // 🔴 THE OTHER DIRECTION, because the obvious over-correction is to drop the
+  // memo entirely and stand up a fresh AppClient — and a fresh token session —
+  // per call.
+  //
+  // ⚠ WHY THIS IS A RELATIONSHIP AND NOT A COUNT OF `initialize` CALLS, said
+  // plainly because the count is what a reader will reach for first: `initialize`
+  // cannot be observed from here. `vi.mock('@civitai/sdk', …)` does NOT reach
+  // `sdk-runtime.ts`'s own import of it — measured, the spy stays at 0 while the
+  // real function runs — and a per-client side effect does not exist either
+  // (`createHostSession` registers no listeners and `initialize` issues no
+  // request). What IS observable is that `initialize` calls `transport.snapshot
+  // .get()` once, via `ready()`, on top of whatever a request costs. So the FIRST
+  // read pays init + request and the second pays request only:
+  //
+  //   memoised      → delta(read 2) <  delta(read 1)
+  //   re-initialised → delta(read 2) == delta(read 1)
+  //
+  // Asserted as that inequality rather than as a literal, so an SDK patch that
+  // legitimately changes how many times it reads the snapshot cannot redden this
+  // gate for nothing.
+  it('still builds the AppClient ONCE when initialize succeeds, not per call', async () => {
+    const fake = createFakeTransport({ ready: true, viewer: { id: 1, username: 'zed' } });
+    let gets = 0;
+    const counting = {
+      ...fake,
+      snapshot: {
+        get: () => {
+          gets += 1;
+          return fake.snapshot.get();
+        },
+        subscribe: (listener: () => void) => fake.snapshot.subscribe(listener),
+      },
+    };
+
+    calls = [];
+    configureSdkRuntime({
+      transport: counting as never,
+      fetch: createRestFake({ storage: { seed: { k: 1 } }, onRequest: (c) => calls.push(c) }),
+    });
+
+    const { result, rerender } = renderHook(() => useAppStorage());
+
+    const before1 = gets;
+    await result.current.get('k');
+    const firstReadGets = gets - before1;
+
+    rerender();
+    const before2 = gets;
+    await result.current.get('k');
+    const secondReadGets = gets - before2;
+
+    // Both reads happened, so the comparison is between two real reads.
+    expect(calls).toHaveLength(2);
+    expect(firstReadGets).toBeGreaterThan(0);
+    expect(secondReadGets).toBeLessThan(firstReadGets);
   });
 
   it('resetSdkRuntime clears the injected transport', () => {

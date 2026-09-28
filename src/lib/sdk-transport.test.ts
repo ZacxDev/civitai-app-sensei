@@ -12,6 +12,7 @@ vi.mock('@civitai/blocks-react', () => ({
 const { createSdkTransportAdapter, HUMAN_INTERACTION_TIMEOUT_MS } = await import(
   './sdk-transport.js'
 );
+const { initialize } = await import('@civitai/sdk');
 
 /**
  * A stand-in for the bridge transport. Only the five members the adapter touches
@@ -230,6 +231,131 @@ describe('sdk-transport adapter — request', () => {
     const t = createSdkTransportAdapter(bridge as never);
 
     await expect(t.request('REQUEST_TOKEN', {})).resolves.toBe('ok');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 🔴 THE TOKEN `kind`, WHICH IS THE INPUT TO THE SDK's ONLY ALARM AGAINST THE
+// SUBSTITUTION `sdk-runtime.ts`'s own banner WARNS ABOUT.
+//
+// `@civitai/sdk` gates two behaviours on one predicate:
+//   `holdsBlockToken = () => snapshot().viewer !== null && snapshot().token.kind === 'block'`
+// (`dist/app/index.js`). Its consumers are `refuseBlockToken` — the EAGER,
+// pre-request refusal of every `app.orchestration.*` call — and
+// `explainApiRefusal`, which annotates a 401/403 outside `blocks/*`.
+//
+// `@civitai/blocks-react`'s `tokenFromWrapped` builds
+// `{ raw, scopes, expiresAt, buzzBudget }` and DROPS `kind`
+// (`dist/internal/transport.js`); its own `BlockToken` type does not declare it,
+// and neither does `@civitai/app-sdk@0.45.0`'s `WrappedToken`, even though the
+// host DOES put it on the wire (civitai `PageBlockHost.tsx` spreads
+// `...(tokenKind ? { kind: tokenKind } : {})` into all three token pushes). So
+// through this adapter `kind` arrives `undefined`, `holdsBlockToken()` is
+// permanently `false`, and BOTH consumers are dead code.
+//
+// WHY THAT MATTERS EVEN THOUGH THIS APP CALLS `app.orchestration` NOWHERE TODAY:
+// the next porter substitutes `app.orchestration.submitWorkflow(...)` for the
+// `blocks/workflows/*` routes. It compiles. The SDK's explicit refusal never
+// fires, the call reaches `orchestration.civitai.com`, comes back a bare 401, and
+// the author debugs a token problem — while the change has silently dropped the
+// per-call `buzzBudget`, the per-viewer and per-app daily caps, the browsing-level
+// clamp and the `app-block:<appId>` attribution. `WORKFLOW_ROUTES`' banner in
+// `sdk-runtime.ts` exists for exactly that reader; this is the machine-checkable
+// half of it.
+//
+// ⚠ BEHAVIOURAL, NOT STRUCTURAL. Asserting `snapshot.token.kind === 'block'`
+// would pass while the SDK read some other field; what is pinned here is that the
+// refusal actually fires and that NOTHING reached `fetch`.
+// ---------------------------------------------------------------------------
+describe('sdk-transport adapter — token kind', () => {
+  /** A bridge snapshot shaped like the real post-`BLOCK_INIT` one. */
+  const liveSnapshot = () => ({
+    ready: true,
+    token: { raw: 'block-jwt', scopes: ['ai:write:budgeted'], expiresAt: new Date(0) },
+    viewer: { id: 1, username: 'zed' },
+    context: { slotId: 'app.page' },
+    settings: { publisherSettings: {}, userSettings: {} },
+    theme: 'dark' as const,
+    blockInstanceId: 'bi-1',
+  });
+
+  it('🔴 lets the SDK refuse an app.orchestration call EAGERLY, before any fetch', async () => {
+    const snapshot = liveSnapshot();
+    const fetchSpy = vi.fn(
+      async () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    const { bridge } = fakeBridge({ getSnapshot: () => snapshot });
+
+    const client = await initialize({
+      transport: createSdkTransportAdapter(bridge as never) as never,
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+
+    await expect(client.orchestration.getWorkflow('wf-1')).rejects.toThrow(
+      /does not accept a block-scoped token/i,
+    );
+    // The half that makes it "eagerly": a refusal raised AFTER the request would
+    // satisfy the assertion above while the money path had already been reached.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // The POSITIVE CONTROL for the case above, and it is not optional: the
+  // rejection could come from a broken transport, a missing session or any other
+  // failure inside `initialize`. This proves the SAME client happily reaches
+  // `fetch` on the surface the block token IS minted for — so the refusal above
+  // is about the destination, not about the fixture.
+  it('…while a blocks/* site call on the same client DOES reach fetch', async () => {
+    const snapshot = liveSnapshot();
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ snapshot: { status: 'pending' } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    const { bridge } = fakeBridge({ getSnapshot: () => snapshot });
+
+    const client = await initialize({
+      transport: createSdkTransportAdapter(bridge as never) as never,
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+
+    await expect(client.site.post('blocks/workflows/poll', { workflowId: 'wf-1' })).resolves.toEqual(
+      { snapshot: { status: 'pending' } },
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // 🔴 AND AN ANONYMOUS VIEWER MUST NOT BE REFUSED, because the predicate's other
+  // half is `viewer !== null` and its scope is deliberate: an anonymous viewer has
+  // no OAuth token whatever the manifest says, so the manifest advice would send
+  // them at the wrong fix (theirs is `host.requestSignIn()`). Supplying `kind`
+  // unconditionally must not widen that.
+  it('does not fire the refusal for an anonymous viewer', async () => {
+    const snapshot = { ...liveSnapshot(), viewer: null };
+    const fetchSpy = vi.fn(
+      async () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    const { bridge } = fakeBridge({ getSnapshot: () => snapshot });
+
+    const client = await initialize({
+      transport: createSdkTransportAdapter(bridge as never) as never,
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+
+    await client.orchestration.getWorkflow('wf-1').catch(() => {});
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // The adapter SUPPLIES `kind` rather than forwarding it, so the day the bridge
+  // starts carrying the host's own value it must win — otherwise a block that
+  // gains `auth: "oauth"` would be told the orchestrator refuses a token it in
+  // fact accepts, which is a refusal of legitimate work.
+  it('defers to a kind the bridge does carry, rather than overwriting it', () => {
+    const snapshot = { ...liveSnapshot(), token: { ...liveSnapshot().token, kind: 'oauth' } };
+    const { bridge } = fakeBridge({ getSnapshot: () => snapshot });
+    const t = createSdkTransportAdapter(bridge as never);
+    expect((t.snapshot.get() as { token: { kind: string } }).token.kind).toBe('oauth');
   });
 });
 
