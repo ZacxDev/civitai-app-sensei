@@ -48,7 +48,7 @@ describe('the description is actually loaded', () => {
   });
 });
 
-vi.mock('@civitai/blocks-react', () => ({
+vi.mock('./lib/sdk-runtime.js', () => ({
   useAppStorage: () => storage.appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),

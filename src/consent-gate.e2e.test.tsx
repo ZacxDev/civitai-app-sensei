@@ -51,7 +51,7 @@ const submitSpy = vi.fn();
 /** What the host's picker hands back. `null` = the viewer dismissed it. */
 let pickerResult: { versionId: number } | null = { versionId: 5678 };
 
-vi.mock('@civitai/blocks-react', () => ({
+vi.mock('./lib/sdk-runtime.js', () => ({
   useAppStorage: () => storage.appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: currentViewer, theme: 'dark' }),

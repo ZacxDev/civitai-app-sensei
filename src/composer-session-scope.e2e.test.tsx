@@ -95,7 +95,7 @@ const pollFn = vi.fn(async () => {
 });
 const cancelFn = vi.fn().mockResolvedValue(undefined);
 
-vi.mock('@civitai/blocks-react', async () => {
+vi.mock('./lib/sdk-runtime.js', async () => {
   const { useState } = await import('react');
   return {
     useAppStorage: () => storage.appStorage,

@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.24",
   "type": "module",
-  "description": "Civitai Sensei \u2014 an AI research assistant App Block with chat and catalog-grounded answers.",
+  "description": "Civitai Sensei — an AI research assistant App Block with chat and catalog-grounded answers.",
   "license": "Apache-2.0",
   "scripts": {
     "dev": "vite",
@@ -19,6 +19,7 @@
     "@civitai/app-sdk": "^0.45.0",
     "@civitai/blocks-react": "^0.53.1",
     "@civitai/components-react": "^0.4.1",
+    "@civitai/sdk": "0.8.0",
     "@civitai/theme": "^0.3.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

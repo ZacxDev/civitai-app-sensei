@@ -1,4 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// 🔴 THE TEN RUNTIME HOOKS NOW COME FROM `./lib/sdk-runtime.js`, NOT FROM
+// `@civitai/blocks-react`. Same names, same shapes, different transport underneath:
+// the snapshot-derived three still read the bridge transport (so nothing about
+// `BLOCK_INIT` changes), the host-mediated four are still postMessage — through
+// `@civitai/sdk`'s `createHost` — and app storage plus the four workflow
+// operations are HTTP against `/api/v1/blocks/*` through
+// `initialize({ transport })`. The `/ui` import BELOW deliberately stays on the
+// bridge package until starters#328; `lib/sdk-transport.ts` explains why ONE
+// transport has to serve both packages rather than two being stood up.
 import {
   useAppStorage,
   useBlockAnalytics,
@@ -10,8 +19,8 @@ import {
   useRequestConsent,
   useRequestSignIn,
   useResourcePicker,
-} from '@civitai/blocks-react';
-import type { UseAppStorage } from '@civitai/blocks-react';
+} from './lib/sdk-runtime.js';
+import type { AppStorage } from './lib/sdk-runtime.js';
 import { Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
 
 import { palette, pageStyle, token, brand, radius, mutedText } from './theme.js';
@@ -44,7 +53,7 @@ import { SettingsBar } from './components/SettingsBar.js';
 import { SettingsModal } from './components/SettingsModal.js';
 
 export interface AppDeps {
-  appStorage: UseAppStorage;
+  appStorage: AppStorage;
   track: (eventName: string, properties?: Record<string, unknown>) => void;
 }
 

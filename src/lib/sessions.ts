@@ -1,4 +1,4 @@
-import type { UseAppStorage } from '@civitai/blocks-react';
+import type { AppStorage } from './sdk-runtime.js';
 import type { Message, Session } from '../types.js';
 import { serializeMessages, deserializeMessages } from './chat.js';
 import { serializeMessageWrite } from './write-ownership.js';
@@ -58,14 +58,14 @@ export function sortSessions(sessions: Session[]): Session[] {
  * A read is legitimate here because there is no preceding write to be stale
  * against — this is what seeds the authoritative in-memory copy.
  */
-export async function listSessions(appStorage: UseAppStorage): Promise<Session[]> {
+export async function listSessions(appStorage: AppStorage): Promise<Session[]> {
   const data = await appStorage.get<SessionsData>(SESSIONS_KEY);
   return sortSessions(data?.sessions ?? []);
 }
 
 /** WRITE. Persists the caller's authoritative list verbatim. Never reads. */
 export async function saveSessions(
-  appStorage: UseAppStorage,
+  appStorage: AppStorage,
   sessions: Session[],
 ): Promise<void> {
   await appStorage.set(SESSIONS_KEY, { sessions });
@@ -112,7 +112,7 @@ export function without(sessions: Session[], sessionId: string): Session[] {
 
 /** LOAD. The only read of a message array — run when a session is opened. */
 export async function getMessages(
-  appStorage: UseAppStorage,
+  appStorage: AppStorage,
   sessionId: string,
 ): Promise<Message[]> {
   const stored = await appStorage.get<import('./chat.js').StoredMessage[]>(
@@ -167,7 +167,7 @@ export function groundedIdsFromMessages(
  * queued write stores what its issuer decided — never a later snapshot.
  */
 export async function saveMessages(
-  appStorage: UseAppStorage,
+  appStorage: AppStorage,
   sessionId: string,
   messages: Message[],
 ): Promise<void> {
@@ -186,7 +186,7 @@ export async function saveMessages(
  * deleted. Ordering is only a guarantee if every writer of the key is in it.
  */
 export async function deleteMessages(
-  appStorage: UseAppStorage,
+  appStorage: AppStorage,
   sessionId: string,
 ): Promise<void> {
   await serializeMessageWrite(sessionId, () =>

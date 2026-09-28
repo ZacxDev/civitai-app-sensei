@@ -26,7 +26,18 @@ import type { WorkflowBody, WorkflowBodyStep, BlockWorkflowSnapshot } from '@civ
 // The skew is still worth refusing, for a different and smaller reason, and
 // `src/civitai-dependency-lockstep.test.ts` is the guard that refuses it — see its
 // header, and the `sdk-pair-bump` entry in `taste.json`.
-import { WorkflowEstimateError, WorkflowSubmitError } from '@civitai/blocks-react';
+//
+// 🔴 TAKEN FROM `./sdk-runtime.js`, NOT FROM `@civitai/blocks-react` DIRECTLY, AND
+// THAT IS THE SDK PORT'S ONE CHANGE TO THIS FILE. The classes are the same two —
+// `sdk-runtime.ts` re-exports them — and the reason for the indirection is that
+// `sdk-runtime.ts` is now what THROWS them: it reaches the block workflow REST
+// routes and applies the bridge hook's resolve-vs-reject contract, which the routes
+// were written to preserve ("`@civitai/blocks-react`'s `useBuzzWorkflow` reads
+// exactly that", per their own docblocks). Importing from the thrower makes the one
+// class identity the `instanceof` branches below need a structural property rather
+// than an argument about the dependency tree — and it keeps the bare bridge import
+// confined to the two modules `lib/sdk-runtime.test.tsx`'s importer ledger names.
+import { WorkflowEstimateError, WorkflowSubmitError } from './sdk-runtime.js';
 
 export type {
   ChatCompletionRequest,

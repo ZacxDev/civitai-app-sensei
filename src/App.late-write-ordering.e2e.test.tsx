@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import type { UseAppStorage } from '@civitai/blocks-react';
+import type { AppStorage } from './lib/sdk-runtime.js';
 import { App } from './App.js';
 import { fakeAppStorage } from './test-helpers.js';
 import { POLL_INTERVAL_MS } from './lib/orchestrator-bridge.js';
@@ -64,7 +64,7 @@ let heldCount = 0;
  */
 let heldCommitted = false;
 
-const appStorage: UseAppStorage = {
+const appStorage: AppStorage = {
   ...base.appStorage,
   async set<T = unknown>(key: string, value: T) {
     if (holdWhen(key, value)) {
@@ -105,7 +105,7 @@ const estimateFn = vi
   .mockResolvedValue({ workflowId: 'e', status: 'succeeded', cost: { total: 1 } });
 const cancelFn = vi.fn(async () => undefined);
 
-vi.mock('@civitai/blocks-react', () => ({
+vi.mock('./lib/sdk-runtime.js', () => ({
   useAppStorage: () => appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),

@@ -1,13 +1,30 @@
 # 🔴 THIS FILE IS TEMPORARY AND SHOULD BE DELETED. Its only load-bearing content
-# is the age exclusion below, which stops mattering once both versions are older
-# than pnpm's ~24h `minimumReleaseAge` cutoff:
+# is the age exclusion below, which stops mattering once every version listed is
+# older than pnpm's ~24h `minimumReleaseAge` cutoff:
 #
 #   @civitai/app-sdk@0.45.0      published 2026-09-19T19:03:44Z  → free 2026-09-20T19:03Z
 #   @civitai/blocks-react@0.53.1 published 2026-09-20T02:20:25Z  → free 2026-09-21T02:20Z
+#   @civitai/sdk@0.8.0           published 2026-09-27T02:04:53Z  → free 2026-09-28T02:04:53Z
 #
-# After 2026-09-21T02:20Z this whole file can be removed and `pnpm install
+# After 2026-09-28T02:04:53Z this whole file can be removed and `pnpm install
 # --frozen-lockfile` still passes. Delete it then rather than letting it accrete
 # a line per bump.
+#
+# 🔴 THE `@civitai/sdk` TIMESTAMP IS READ, NOT GUESSED: `npm view @civitai/sdk
+# time --json` is the only authority on it and reports `0.8.0` at
+# `2026-09-27T02:04:53.050Z`. Re-measure with that command rather than trusting
+# this line; the reference port in `civitai-app-playable-collections` had to
+# correct its own copy of this comment after guessing 58 seconds early, and the
+# direction that matters is EARLY — an early deadline invites deleting the entry
+# while pnpm 11 still refuses the install outright.
+#
+# ⚠ THIS ENTRY WAS ALREADY MINUTES FROM INERT WHEN IT WAS WRITTEN (added
+# 2026-09-28T01:4x UTC, ~20 minutes before the cutoff above). It is here because
+# the rule is that a pin and its exclusion land in ONE commit — a reviewer who
+# checks out this commit at a clock that has not yet passed the cutoff must get a
+# working `pnpm install --frozen-lockfile`, and the entry is what guarantees that
+# regardless of when the checkout happens. It is inert from the cutoff onward and
+# should simply be deleted then.
 
 # Required while the file exists at all — but 🔴 ON NO ESTABLISHED RATIONALE.
 # Two were written for this key and BOTH were refuted by measurement. They are
@@ -83,11 +100,29 @@ packages:
 #     it. Its peer floor is `@civitai/app-sdk >=0.45.0 <1.0.0`, which `^0.45.0`
 #     satisfies.
 #
+#   - @civitai/sdk@0.8.0           — NEW, and the reason this entry exists at all:
+#     the REST clients this app's runtime bindings are now expressed on
+#     (`src/lib/sdk-runtime.ts`, `src/lib/sdk-transport.ts`). 0.8.0 is the latest
+#     published version; `package.json` pins it EXACTLY rather than with a caret,
+#     because an unreviewed minor of a package that carries the money path is not
+#     something a lockfile refresh should pick up.
+#     🔴 AN EXACT VERSION HERE ON PURPOSE — a bare `@civitai/sdk` would exempt
+#     every future release from the age policy, including one cut by a compromised
+#     token. The clock is at the top of this file.
+#
 # @civitai/components-react and @civitai/theme are NOT listed and did NOT move:
 # blocks-react@0.53.1 exact-pins theme 0.3.1 + components 0.4.1, and
 # components-react@0.4.1 pins the same two, so the four are already the
 # canonical pairing. `src/civitai-dependency-lockstep.test.ts` is what proves
 # that mechanically; this comment does not.
+#
+# ⚠ @civitai/sdk IS NOT PART OF THAT PAIRING AND THE LOCKSTEP GUARD DOES NOT COVER
+# IT. It is a separate codebase from `@civitai/app-sdk` 0.x — the starters repo's
+# own AGENTS.md says so outright and forbids moving code between them — and it
+# declares no dependency on `blocks-react`, `theme` or `components`. So there is no
+# pairing for a lockstep test to check, and adding it to that guard would assert a
+# coupling that does not exist.
 minimumReleaseAgeExclude:
   - '@civitai/app-sdk@0.45.0'
   - '@civitai/blocks-react@0.53.1'
+  - '@civitai/sdk@0.8.0'

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
-import type { UseAppStorage } from '@civitai/blocks-react';
+import type { AppStorage } from './lib/sdk-runtime.js';
 import { App } from './App.js';
 import { fakeAppStorage, fakeBlockCatalogApi } from './test-helpers.js';
 import { clearCache } from './lib/research.js';
@@ -44,9 +44,9 @@ let readMode: Record<string, ReadMode> = {};
 /** Resolvers for reads currently parked, so a test can release them. */
 let parked: Array<() => void> = [];
 /** The ONE storage object the app sees for a whole test. */
-let appStorage: UseAppStorage;
+let appStorage: AppStorage;
 
-function makeControlledStorage(): UseAppStorage {
+function makeControlledStorage(): AppStorage {
   const inner = storage.appStorage;
   return {
     ...inner,
@@ -78,7 +78,7 @@ const pollFn = vi.fn(async () => ({
   textOutputs: ['an answer'],
 }));
 
-vi.mock('@civitai/blocks-react', () => ({
+vi.mock('./lib/sdk-runtime.js', () => ({
   // Resolved at CALL time, so the object identity is stable for a whole test —
   // a fake handing back a fresh identity per render silently repairs a missing
   // dependency-array entry (see `mention-grounding.e2e.test.tsx`).
