@@ -34,13 +34,19 @@ export function deleteSessionRow(sessionId: string): void {
 }
 
 /*
- * 🔴 THERE IS NO `renameSessionRow`, AND THAT IS DELIBERATE. One was written
- * alongside `deleteSessionRow` and had ZERO call sites — a helper added for
- * symmetry rather than for a caller, which is the same "reads as used and is
- * not" shape as an unpassed prop. Add it back WITH the test that needs it; the
- * two lines it saves are `openSessionRowMenu(id)` then a click on
- * `rename-session-<id>`.
+ * 🔴 `renameSessionRow` IS BACK — ADDED WITH THE TESTS THAT NEED IT. The note
+ * below was written when it had ZERO call sites. Since the inline rename
+ * editor replaced `window.prompt` (which a sandboxed iframe ignores silently),
+ * the rename flow is "open the ⋮ menu, press Rename, type, press Enter" — and
+ * EIGHT sites across `SessionList.test.tsx` open-coded the first two of those
+ * steps. This helper is the reach for all of them; it deliberately stops at
+ * the editor, because what happens INSIDE the edit (type, Enter, Escape, blur)
+ * is exactly what each case varies.
  */
+export function renameSessionRow(sessionId: string): void {
+  openSessionRowMenu(sessionId);
+  fireEvent.click(screen.getByTestId(`rename-session-${sessionId}`));
+}
 
 /**
  * Delete the FIRST session row on screen, whatever its id.

@@ -44,7 +44,38 @@ import { token, brand, mutedText, metaText } from '../theme.js';
  */
 export const BUBBLE_MAX_WIDTH = 'min(68ch, 92%)';
 
+/**
+ * A send the consent gate refused, kept until the scope arrives.
+ *
+ * 🔴 THE SESSION ID IS THE WHOLE POINT OF THIS SHAPE. The first draft of the
+ * auto-retry stashed bare text in App state and was rejected for exactly this:
+ * with no session id, a grant landing after the viewer moved to another
+ * conversation spent their Buzz in the WRONG one. Everything holding a pending
+ * send holds it WITH the session it belongs to, and every consumer checks it.
+ */
+export interface PendingSend {
+  sessionId: string;
+  content: string;
+}
+
 export interface ChatAreaProps {
+  /**
+   * The conversation this composer belongs to.
+   *
+   * 🔴 REQUIRED. This component is mounted with `key={activeSessionId}`, so the
+   * prop is redundant with the remount in the steady state — but it is what the
+   * consent auto-retry stamps its stash WITH (see `PendingSend`), and a
+   * component that sends into "the conversation it belongs to" should be able
+   * to NAME it.
+   */
+  sessionId: string;
+  /**
+   * The app-owned cell a gated send is stashed in, for the auto-retry.
+   * App writes it in `raiseGate(content)`, clears it synchronously on every
+   * route that moves the conversation, and this component consumes it when the
+   * gate clears. See the retry effect below for the full mechanism.
+   */
+  pendingSendRef: { current: PendingSend | null };
   messages: Message[];
   isStreaming: boolean;
   onSend: (content: string) => void;
@@ -84,8 +115,18 @@ export interface ChatAreaProps {
    * error instead of a production regression nobody can see.
    */
   sendGate: 'signin' | 'consent' | null;
-  /** Ask the host for whatever `sendGate` says is missing. Required for the same reason. */
-  onGatedSend: () => void;
+  /**
+   * Ask the host for whatever `sendGate` says is missing. Required for the same
+   * reason.
+   *
+   * `content` is the text the gated send was about to carry. It is OPTIONAL
+   * because this is ALSO the gate route for the mention picker (`onOpenChange`
+   * / `onPick` below), where there is no text — those asks are NOT stashed and
+   * NOT auto-retried: opening a picker is a browsing action, and re-firing
+   * host chrome at a viewer after a consent dialog would be a second modal
+   * they did not ask for. Only a send is retried.
+   */
+  onGatedSend: (content?: string) => void;
   /**
    * Non-null when the parent will REFUSE a send because the transcript on screen
    * is not the selected conversation's — `'loading'` while that read is in
@@ -122,6 +163,8 @@ export interface ChatAreaProps {
 }
 
 export function ChatArea({
+  sessionId,
+  pendingSendRef,
   messages,
   isStreaming,
   onSend,
@@ -151,6 +194,42 @@ export function ChatArea({
     }
   }, [messages, isStreaming, motion.reduced]);
 
+  // 🔴 THE COMPOSER TAKES FOCUS WHEN A CONVERSATION OPENS — a new one or a
+  // reopened one. This component is mounted with `key={activeSessionId}` in
+  // `App`, so it remounts on EVERY conversation change, and this mount effect
+  // is the whole feature: there is no separate "switch" signal to also catch.
+  // The feedback that asked for it is the ordinary first-use flow — open the
+  // app, press New Chat, and the first keystroke should land in the composer
+  // without a click first.
+  //
+  // `Textarea` ref-forwards to the native `<textarea>` (checked against the
+  // installed `dist/ui/Textarea.d.ts`), so this is a real focus, not a wrapper
+  // that would silently drop it.
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, []);
+
+  /**
+   * The part of a send that actually sends: dedup, the submit, the clear.
+   *
+   * Split out of `handleSend` so the consent auto-retry below can run the SAME
+   * body with the stashed content — one send path, not two that drift.
+   */
+  const doSend = useCallback(
+    (trimmed: string) => {
+      const lastMsg = messages[messages.length - 1];
+      if (lastMsg?.role === 'user' && lastMsg.content === trimmed) return;
+
+      sendingRef.current = true;
+      onSend(trimmed);
+      setInput('');
+      // Reset after a tick so the next event-loop turn sees the guard cleared
+      // (isStreaming will take over as the primary guard once the request starts)
+      setTimeout(() => { sendingRef.current = false; }, 0);
+    },
+    [messages, onSend],
+  );
+
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
     if (!trimmed || isStreaming || sendingRef.current) return;
@@ -169,8 +248,13 @@ export function ChatArea({
     // text hit the dedup FIRST and the viewer got no consent prompt, no
     // banner, and no feedback of any kind. That is this bug reappearing behind
     // a different guard, so the ordering here is load-bearing, not cosmetic.
+    //
+    // 🔴 AND THE ATTEMPT IS STASHED FOR AUTO-RETRY — made on operator feedback.
+    // The text ALSO stays in the box (unchanged), so the viewer can still see
+    // exactly what will send. The stash carries the session id (`PendingSend`);
+    // the write itself happens in `App.raiseGate`, which owns the cell.
     if (sendGate) {
-      onGatedSend();
+      onGatedSend(trimmed);
       return;
     }
 
@@ -182,16 +266,57 @@ export function ChatArea({
     // text and the notice above the composer says why nothing happened.
     if (sendPaused) return;
 
-    const lastMsg = messages[messages.length - 1];
-    if (lastMsg?.role === 'user' && lastMsg.content === trimmed) return;
+    doSend(trimmed);
+  }, [input, isStreaming, sendGate, onGatedSend, sendPaused, doSend]);
 
-    sendingRef.current = true;
-    onSend(trimmed);
-    setInput('');
-    // Reset after a tick so the next event-loop turn sees the guard cleared
-    // (isStreaming will take over as the primary guard once the request starts)
-    setTimeout(() => { sendingRef.current = false; }, 0);
-  }, [input, isStreaming, messages, onSend, sendGate, onGatedSend, sendPaused]);
+  /**
+   * 🔴 AUTO-RETRY: A GATED SEND FIRES ITSELF ONCE THE SCOPE ARRIVES.
+   *
+   * The flow this serves: first use — the viewer types, presses Send, the host
+   * opens the consent dialog; they grant it; the host re-mints the token, the
+   * gate clears… and the old build just sat there with the text still in the
+   * box waiting for a second press. The SDK's own contract anticipates the
+   * retry (`useRequestConsent`'s doc: "Fire-and-forget … observe
+   * `useBlockToken().scopes` and retry the action once the scope appears") —
+   * `requestConsent` does not even resolve, so the re-mint push is the ONLY
+   * signal there is, and the derived `sendGate` prop going `null` is this
+   * component's view of it.
+   *
+   * 🔴 THE STASH'S OWNERSHIP AND THE MEASURED RACE THAT PUT IT IN `App`. The
+   * history: an early draft stashed bare text in App and auto-sent on grant —
+   * rejected because the stash carried no session id and could spend Buzz in a
+   * conversation the viewer had since SWITCHED to. The first version of THIS
+   * change went the other way — stash in a local ref, safe because App keys
+   * this component by `activeSessionId`, so a switch remounts and the stash
+   * dies — and `consent-gate.e2e.test.tsx` went RED on it with the real
+   * mechanism: a session switch is ASYNC (`createSession` persists before it
+   * switches), so a grant landing in the same burst as the switch renders
+   * while `activeSessionId` has NOT yet moved — the dying instance, still
+   * mounted, still holding the stash, sees the cleared gate and sends. A ref
+   * is only as safe as the remount it assumes, and the remount is render-bound.
+   *
+   * So the cell lives in `App` (`pendingSendRef`), where a session move can
+   * kill it SYNCHRONOUSLY — `selectSession`, `createSession` and
+   * `deleteSession` clear it as their first line, before any `await`, which no
+   * render timing can interleave with — and this component checks
+   * `pending.sessionId === sessionId` as belt-and-braces on top. The remount
+   * is now neither the safety mechanism nor relied upon: the ref survives a
+   * remount and the id check catches it.
+   *
+   * Re-sends the stashed content — what the viewer asked to send at gate time
+   * — not the box's current text, and `doSend` clears the box as any send
+   * does. If the viewer edited the box while the consent dialog stood open,
+   * their edit is cleared with the send; the box held the stashed text
+   * visibly the whole time, which is the disclosure.
+   */
+  useEffect(() => {
+    if (sendGate) return;
+    const pending = pendingSendRef.current;
+    if (pending === null) return;
+    pendingSendRef.current = null;
+    if (pending.sessionId !== sessionId) return;
+    doSend(pending.content);
+  }, [sendGate, sessionId, pendingSendRef, doSend]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

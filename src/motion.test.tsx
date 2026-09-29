@@ -78,6 +78,8 @@ describe('🔴 prefers-reduced-motion is honoured, not merely declared', () => {
 
   it('the streaming dot pulses normally, and does NOT under the preference', () => {
     const props = {
+      sessionId: 'sess-motion',
+      pendingSendRef: { current: null },
       messages: [],
       isStreaming: true,
       onSend: vi.fn(),
@@ -134,6 +136,8 @@ describe('🔴 prefers-reduced-motion is honoured, not merely declared', () => {
     window.HTMLElement.prototype.scrollIntoView = scrollIntoView;
     try {
       const props = {
+        sessionId: 'sess-motion',
+        pendingSendRef: { current: null },
         messages: [{ ...message, id: 'x' }],
         isStreaming: false,
         onSend: vi.fn(),

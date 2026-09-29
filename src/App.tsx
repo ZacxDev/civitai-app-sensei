@@ -46,7 +46,7 @@ import {
   planCorrectionRound,
 } from './lib/grounding.js';
 
-import { ChatArea } from './components/ChatArea.js';
+import { ChatArea, type PendingSend } from './components/ChatArea.js';
 import type { MentionPickerType } from './components/ResourceMention.js';
 import { SessionList } from './components/SessionList.js';
 import { SettingsBar } from './components/SettingsBar.js';
@@ -469,6 +469,25 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   // draft show a stale "sign in" banner to a viewer who had since signed in but
   // still lacked the spend scope, with nothing to escalate it.
   const [gateRaised, setGateRaised] = useState(false);
+
+  /**
+   * The send the consent gate refused, held until the scope arrives.
+   *
+   * 🔴 A REF, NOT STATE, AND THE CLEARS ARE SYNCHRONOUS. The auto-retry has to
+   * survive the async consent round-trip — `requestConsent` is fire-and-forget
+   * (see `useRequestConsent`) and the grant arrives as a TOKEN_REFRESH some
+   * renders later — but it must NOT survive an explicit session move. State
+   * cannot do both: a state clear is render-bound, and the switch state itself
+   * is render-bound (`createSession` persists before it switches), so a grant
+   * arriving in the same burst as a "+ New" press can be applied by a render
+   * that still shows the OLD conversation. Measured: that exact race took the
+   * first version's remount-based safety apart in `consent-gate.e2e.test.tsx`
+   * — the submit fired into the conversation the viewer had just left. A ref
+   * write is not render-bound, which is why every session-move route below
+   * clears this cell as its FIRST line, before any `await`, and why the retry
+   * consumer ALSO checks the session id (`PendingSend`) as belt-and-braces.
+   */
+  const pendingSendRef = useRef<PendingSend | null>(null);
 
   const streamingRef = useRef(false);
   // 🔴 THERE IS NO `messagesRef` ANY MORE, AND ITS ABSENCE IS LOAD-BEARING.
@@ -939,6 +958,13 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   // silently computes from a pre-write snapshot and drops whatever landed in
   // between. Persist FIRST, update state only on success.
   const createSession = useCallback(async () => {
+    // 🔴 FIRST LINE, SYNCHRONOUSLY, BEFORE THE AWAIT BELOW — see
+    // `pendingSendRef`'s note. `createSession` persists BEFORE it switches
+    // (which is exactly why it is async), so a consent grant arriving in the
+    // same burst as this press would otherwise be applied by a render that
+    // still shows the OLD conversation, with the old stashed send alive. The
+    // reuse branch below never awaits at all.
+    pendingSendRef.current = null;
     // ─────────────────────────────────────────────────────────────────────────
     // 🔴 "+ New" REUSES AN UNUSED CHAT INSTEAD OF MINTING A SECOND ONE.
     //
@@ -1009,6 +1035,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   }, [activeModel, sessions, persist, activeSessionId]);
 
   const deleteSession = useCallback(async (id: string) => {
+    // 🔴 FIRST LINE, SYNCHRONOUSLY — see `pendingSendRef`'s note. Deleting the
+    // conversation a pending send is addressed to must not leave the stash
+    // waiting for a grant.
+    pendingSendRef.current = null;
     const next = sessionsLib.without(sessions, id);
     const ok = await persist('delete that chat', async () => {
       await sessionsLib.saveSessions(depsRef.current.appStorage, next);
@@ -1116,8 +1146,20 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     depsRef.current.track('session_delete');
   }, [activeSessionId, messagesSessionId, sessions, persist]);
 
-  const renameSession = useCallback(async (id: string) => {
-    const title = prompt('Rename session:');
+  /**
+   * Commit a rename for session `id`.
+   *
+   * 🔴 THE TITLE COMES FROM THE CALLER NOW. This used to call
+   * `window.prompt('Rename session:')` itself — silently ignored in the
+   * sandboxed iframe (`allow-modals` is not set; the viewer's console said so
+   * outright), so `prompt` resolved to nothing, `if (!title) return` fired, and
+   * every rename was a silent no-op. The editing UI lives in `SessionList` — an
+   * inline input on the row, see `RenameEditor` — which calls back only with a
+   * committed, non-empty, trimmed title. `prompt`/`alert`/`confirm` are all
+   * modals this sandbox refuses: none of them may appear in this codebase
+   * again.
+   */
+  const renameSession = useCallback(async (id: string, title: string) => {
     if (!title) return;
     const next = sessionsLib.withTitle(sessions, id, title);
     const ok = await persist('rename that chat', () =>
@@ -1161,6 +1203,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   sendGateRef.current = sendGate;
 
   /**
+/**
    * `signedIn` for readers outside the render pass, assigned during render in the
    * same style as `sendGateRef`. `handleSettingsChange` is the one that needs it:
    * it is a `useCallback([])` whose body runs inside a `setSettings` updater, so a
@@ -1169,23 +1212,38 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const signedInRef = useRef(signedIn);
   signedInRef.current = signedIn;
 
-  // Ask the host for whatever is missing. Safe to call repeatedly — it is the
-  // banner's button as well as the send path, and the host treats each message
-  // independently.
-  const raiseGate = useCallback(() => {
-    setGateRaised(true);
-    if (!viewer) {
-      requestSignIn();
-      depsRef.current.track('signin_requested');
-      return;
-    }
-    // Ask for both consent-gated scopes the manifest declares: the reply spends
-    // Buzz and the composer shows the balance beside it. The hint is advisory —
-    // the host grants the missing set it computed at mint — but asking for what
-    // the app actually uses keeps the two in step.
-    requestConsent({ scopes: [AI_WRITE_BUDGETED, BUZZ_READ_SELF] });
-    depsRef.current.track('consent_requested');
-  }, [viewer, requestConsent, requestSignIn]);
+  /**
+   * Ask the host for whatever is missing. Safe to call repeatedly — it is the
+   * banner's button as well as the send path, and the host treats each message
+   * independently.
+   *
+   * `content` is the text of the send that was refused. Present means the
+   * caller is a SEND (the composer is the only such caller), and the attempt is
+   * stashed in `pendingSendRef` for the auto-retry — see that ref's note for
+   * why the stash carries the session id and who clears it. Absent means the
+   * caller is the mention picker or the banner button: there is no send to
+   * retry, so nothing is stashed and the ask is just the ask.
+   */
+  const raiseGate = useCallback(
+    (content?: string) => {
+      setGateRaised(true);
+      if (content !== undefined && activeSessionId) {
+        pendingSendRef.current = { sessionId: activeSessionId, content };
+      }
+      if (!viewer) {
+        requestSignIn();
+        depsRef.current.track('signin_requested');
+        return;
+      }
+      // Ask for both consent-gated scopes the manifest declares: the reply spends
+      // Buzz and the composer shows the balance beside it. The hint is advisory —
+      // the host grants the missing set it computed at mint — but asking for what
+      // the app actually uses keeps the two in step.
+      requestConsent({ scopes: [AI_WRITE_BUDGETED, BUZZ_READ_SELF] });
+      depsRef.current.track('consent_requested');
+    },
+    [viewer, activeSessionId, requestConsent, requestSignIn],
+  );
 
   /**
    * `raiseGate` as of the LAST RENDER, for the same readers and the same reason
@@ -1433,7 +1491,14 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       ? 'failed'
       : 'loading';
 
-  const selectSession = useCallback(async (id: string) => {
+  const selectSession = useCallback((id: string) => {
+    // 🔴 FIRST LINE, SYNCHRONOUSLY, BEFORE ANYTHING ASYNC — see
+    // `pendingSendRef`'s note. Moving to another conversation is the viewer
+    // saying "the pending send is not wanted where it was addressed"; the
+    // state move below is render-bound (the async loaders), and a consent
+    // grant landing in the same burst must not fire the old conversation's
+    // stashed send into this one.
+    pendingSendRef.current = null;
     // The `[activeSessionId]` effect above loads the messages; doing it here too
     // was a second concurrent read of the same key for no benefit. Setting the id
     // is the whole action.
@@ -3107,23 +3172,38 @@ export function App({ deps: depsOverride }: AppProps = {}) {
                   >
                     <span>
                       {/*
-                        🔴 SAY ONLY WHAT IS TRUE ON EVERY PATH. This used to
-                        promise "your message is still in the box" — true when
-                        the send came from the composer, FALSE when it came
-                        from Research → Insert or from Regenerate, neither of
-                        which puts anything in the box. A banner that lies is
-                        the same class of defect this whole change removes, so
-                        the copy now claims nothing about where the text went.
+                        🔴 SAY ONLY WHAT IS TRUE ON EVERY PATH, AND THE OLD
+                        COPY WAS NO LONGER. It read "Grant it, then try
+                        again." — but since the auto-retry landed, a granted
+                        consent sends the stashed message ITSELF
+                        (`ChatArea`'s retry effect): "then try again" told the
+                        viewer to do a step that no longer exists. This copy
+                        survives every path: if the viewer is still on the chat
+                        they tried to send from, the grant sends it for them;
+                        if they switched (which remounted the composer and
+                        dropped the pending send), granting still enables the
+                        next press. The sign-in copy reads "then grant
+                        permission" because that IS the next step there —
+                        signing in does not grant the consent-gated scope
+                        (measured, and pinned by the escalate case in
+                        `consent-gate.e2e.test.tsx`), so the message does not
+                        send until the consent step that follows.
                       */}
                       {sendGate === 'consent'
-                        ? 'Sensei needs your permission to spend Buzz on a reply. Grant it, then try again.'
-                        : 'Sign in to chat with Sensei, then try again.'}
+                        ? 'Sensei needs your permission to spend Buzz on a reply. Grant it to send your message.'
+                        : 'Sign in to chat with Sensei, then grant permission to spend Buzz.'}
                     </span>
                     <Button
                       size="sm"
                       variant="light"
                       data-testid="gate-retry-button"
-                      onClick={raiseGate}
+                      // 🔴 `() => raiseGate()` AND NOT BARE `raiseGate` — the
+                      // signature gained an optional `content` (the auto-retry
+                      // stash), and a bare handler would receive the click
+                      // EVENT as that string. Typed as a MouseEventHandler, so
+                      // the compiler caught it; kept here so the next reader
+                      // does not re-derive it.
+                      onClick={() => raiseGate()}
                     >
                       {sendGate === 'consent' ? 'Grant permission' : 'Sign in'}
                     </Button>
@@ -3230,10 +3310,11 @@ export function App({ deps: depsOverride }: AppProps = {}) {
                   //  - `input`, `menuOpen` — both INTENDED; that is the fix.
                   //  - `sendingRef` → false. A sub-tick dedup guard reset by an
                   //    action that cannot occur within a tick of a send.
-                  //  - textarea focus. Already lost: the only thing that moves
-                  //    `activeSessionId` from the composer is a click on the
-                  //    sidebar or "+ New", which took focus first. Nothing here
-                  //    auto-focuses, so this is unchanged, not a regression.
+//  - textarea focus. INTENTIONALLY CHANGED (operator feedback): the composer
+  //    now takes focus when a conversation opens — `ChatArea`'s mount effect,
+  //    which fires on every remount this `key` causes. A viewer who opened a
+  //    new chat (or reopened one) can type immediately; before this they had
+  //    to click the box first.
                   //  - the message list's scroll offset. Reset, then driven
                   //    straight back to the bottom by this component's own
                   //    `[messages, isStreaming]` scroll effect — which already
@@ -3247,6 +3328,8 @@ export function App({ deps: depsOverride }: AppProps = {}) {
                   // a different session's, so React was discarding those DOM
                   // nodes regardless.
                   key={activeSessionId}
+                  sessionId={activeSessionId}
+                  pendingSendRef={pendingSendRef}
                   messages={messages}
                   isStreaming={isStreaming}
                   onSend={handleSend}
