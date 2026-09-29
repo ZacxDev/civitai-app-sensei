@@ -100,6 +100,14 @@ const DECLARATIONS = [
   },
 ];
 
+/**
+ * 🔴 THE V5 PARAGRAPH'S EXACT BYTES, held in the test rather than read from
+ * `types.ts`, so the assertion below cannot be satisfied by whatever the
+ * constant happens to say — deleting or rewording the paragraph goes red here,
+ * on the wire, not only in `types.test.ts`.
+ */
+const V5_PARAGRAPH = `When a question asks which models to use — the best, the recommended, the top ones — do not answer from a single ranked lookup. Run at least two differently-shaped lookups before answering: one in the use case's own words, and one by a different facet, such as recency, base model family or a different sort. Weigh fit rather than presenting download counts as the ranking — what the use case implies, each candidate's base model, how recent it is, and its trade-offs. Be honest about the catalog's limits: results are ordered by popularity, so a brand-new or barely-used model will not surface in a ranked lookup — say so when it matters to the question. This turn allows at most three tool results in total, so a couple of differently-shaped lookups is the ceiling, not five.`;
+
 function toolCallSnapshot(args: string) {
   return {
     workflowId: 'wf-tc',
@@ -200,6 +208,25 @@ describe('tool calling: the model forms its own query, one submit per round', ()
     expect('tool_choice' in first).toBe(false);
   });
 
+  it('🔴 the tool-enabled system message carries the v5 multi-facet lookup instruction', async () => {
+    // The system prompt is a claim about the wire. The recommendation guidance
+    // the research brief ranked says the model must run at least two
+    // differently-shaped lookups on a "which models" question — so the exact
+    // paragraph must reach the model on a send that actually carries tools.
+    // Exact bytes, not word-presence: this guard is walked around by rewording,
+    // and the budget sentence ("at most three tool results") is the part that
+    // must not silently drift from `MAX_TOOL_RESULT_MESSAGES`.
+    pollQueue = [textSnapshot('Here is an answer.')];
+    const all = await sendMessage('which models are best for portraits?');
+
+    const system = all[0].messages.find((m) => m.role === 'system');
+    expect(system).toBeTruthy();
+    expect(system!.content).toContain(V5_PARAGRAPH);
+    // Positive control on the fixture: the wire really carried tools, so this
+    // is the tool-enabled branch and not the degraded no-tools one.
+    expect(all[0].tools?.length ?? 0).toBeGreaterThan(0);
+  });
+
   it('drives a tool POST with the MODEL-authored arguments, then resubmits with the result', async () => {
     pollQueue = [
       toolCallSnapshot(JSON.stringify({ query: 'DreamShaper checkpoint' })),
@@ -257,9 +284,19 @@ describe('tool calling: the model forms its own query, one submit per round', ()
   });
 
   it('stops at the round cap with a USER-VISIBLE message, not silently', async () => {
+    // 🔴 THE FIXTURE VARIES ITS LOOKUPS, AND THAT IS NOT COSMETIC — IT IS THE
+    // TWO GUARDS' DIVISION OF LABOR. This used to return the IDENTICAL call
+    // every round, which made it the natural fixture for "an unbounded loop";
+    // the duplicate short-circuit (`tool-loop-resilience.e2e`) now ends THAT
+    // loop at the second round instead of billing it, by design. The MESSAGE
+    // cap this test pins is what stops a loop whose calls keep CHANGING, so
+    // each round must ask for something new for the cap to be the thing under
+    // test. The duplicate path is pinned separately and stays reachable on its
+    // own fixture.
+    //
     // Always asks for a tool — the model never settles.
-    pollQueue = Array.from({ length: MAX_TOOL_RESULT_MESSAGES + 2 }, () =>
-      toolCallSnapshot(JSON.stringify({ query: 'loop' })),
+    pollQueue = Array.from({ length: MAX_TOOL_RESULT_MESSAGES + 2 }, (_, i) =>
+      toolCallSnapshot(JSON.stringify({ query: `loop ${i}` })),
     );
     await sendMessage('go in circles', MAX_TOOL_RESULT_MESSAGES + 1);
 

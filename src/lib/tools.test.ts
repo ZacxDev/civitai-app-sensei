@@ -2,12 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   fetchToolDeclarations,
   callTool,
+  callToolWithFallback,
+  executeToolCalls,
   readQueryArgument,
   stripAirReferences,
   boundToolResponse,
   MAX_TOOL_RESULT_MESSAGES,
   type ToolCall,
 } from './tools.js';
+import { groundedIdsFromToolResult } from './grounding.js';
 import * as researchLib from './research.js';
 
 const AUTH = { token: 'block-jwt-abc' };
@@ -208,6 +211,173 @@ describe('tools — callTool reports failure TO THE MODEL rather than throwing',
     // 8,000 is a hard REJECT of the whole next request server-side, not a
     // truncation, so exceeding it would lose the conversation.
     expect(out.length).toBeLessThanOrEqual(8_000);
+  });
+});
+
+describe('tools — callToolWithFallback renders every failure INSTRUCTIVELY', () => {
+  // 🔴 WHY A SECOND RENDERING EXISTS. The tool loop maps over the round's calls
+  // through this helper so one failed POST cannot take the round down — every
+  // issued `tool_call_id` still gets exactly one `role:'tool'` response — and
+  // the OpenAI tool shape has no `is_error` field: the error lives in `content`.
+  // The plain rendering told the model THAT it failed but never what to do, so a
+  // retry (or an honest "I could not look that up") was reachable only by luck.
+  // These tests pin the instructive strings EXACTLY — rewording the remedy or
+  // dropping the failure class goes red here.
+  beforeEach(() => {
+    requests = [];
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('success path is the identical string callTool returns', async () => {
+    install(() =>
+      new Response(JSON.stringify({ items: [{ id: 1 }], truncated: 0 }), { status: 200 }),
+    );
+    const c = call('{"query":"DreamShaper"}');
+    // 🔴 A RELATIONSHIP PIN, NOT A TAUTOLOGY: the two renderers must agree on
+    // SUCCESS byte-for-byte, so the loop's results are indistinguishable from
+    // what prior releases put on the wire when nothing failed.
+    expect(await callToolWithFallback(c, AUTH)).toBe(await callTool(c, AUTH));
+  });
+
+  it('🔴 non-200 with a JSON error body → the instructive string, never a throw', async () => {
+    install(() =>
+      new Response(JSON.stringify({ error: 'upstream exploded' }), {
+        status: 500,
+        statusText: 'Internal Server Error',
+      }),
+    );
+    const out = await callToolWithFallback(call('{"query":"x"}'), AUTH);
+    expect(JSON.parse(out)).toEqual({
+      error:
+        'catalog lookup failed: Civitai tools error: 500 Internal Server Error. ' +
+        'Retry with different or fewer search terms, or say plainly that the lookup failed.',
+    });
+  });
+
+  it('🔴 non-200 with HTML junk → the same instructive shape', async () => {
+    install(() => new Response('<html><body>502 — bad gateway</body></html>', {
+      status: 502,
+      statusText: 'Bad Gateway',
+    }));
+    const out = await callToolWithFallback(call('{"query":"x"}'), AUTH);
+    expect(JSON.parse(out)).toEqual({
+      error:
+        'catalog lookup failed: Civitai tools error: 502 Bad Gateway. ' +
+        'Retry with different or fewer search terms, or say plainly that the lookup failed.',
+    });
+  });
+
+  it('🔴 a fetch rejection (network error) → the instructive string', async () => {
+    install(() => Promise.reject(new TypeError('Failed to fetch')));
+    const out = await callToolWithFallback(call('{"query":"x"}'), AUTH);
+    expect(JSON.parse(out)).toEqual({
+      error:
+        'catalog lookup failed: Failed to fetch. ' +
+        'Retry with different or fewer search terms, or say plainly that the lookup failed.',
+    });
+  });
+
+  it('🔴 the request deadline reads as a TIMEOUT, not a bare engine message', async () => {
+    // The deadline fires as a `TimeoutError` DOMException (what `AbortSignal
+    // .timeout` produces when `fetch` honours it). Synthetic, and honestly so:
+    // driving the REAL 15 s deadline means a 15 s test, and the classification —
+    // not the timer — is the thing under test here. The timer's own behaviour is
+    // covered by the abort-timing cases above.
+    install(() =>
+      Promise.reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError')),
+    );
+    const out = await callToolWithFallback(call('{"query":"x"}'), AUTH);
+    expect(JSON.parse(out)).toEqual({
+      error:
+        'catalog lookup failed: timed out after 15s. ' +
+        'Retry with different or fewer search terms, or say plainly that the lookup failed.',
+    });
+  });
+
+  it('🔴 an abort is NOT swallowed into a retryable failure', async () => {
+    // 🔴 A STOP IS NOT A CATALOG FAILURE. The rendered string must be the same
+    // plain shape `callTool` always produced for a Stop mid-call — the loop
+    // checks the turn's own `aborted()` right after the round and discards it —
+    // and it must NOT carry the retry advice, because advising a model to retry
+    // through a viewer's Stop is advice nobody can act on.
+    const controller = new AbortController();
+    let requestSignal: AbortSignal | undefined;
+    install((_url, init) => {
+      requestSignal = (init as { signal?: AbortSignal })?.signal;
+      return new Promise<Response>((_resolve, reject) => {
+        requestSignal?.addEventListener('abort', () =>
+          reject(new DOMException('Aborted', 'AbortError')),
+        );
+        queueMicrotask(() => controller.abort());
+      });
+    });
+    const out = await callToolWithFallback(call('{"query":"x"}'), {
+      ...AUTH,
+      signal: controller.signal,
+    });
+    expect(JSON.parse(out)).toEqual({ error: 'Aborted' });
+    expect(out).not.toMatch(/Retry with different/);
+    // Positive control: the fixture really parked a request that received the
+    // signal — otherwise the assertion above proves nothing about mid-call.
+    expect(requestSignal?.aborted).toBe(true);
+  });
+
+  it('🔴 malformed arguments → an instructive refusal naming the fix, and NO request', async () => {
+    install(() => new Response('{}', { status: 200 }));
+    const out = await callToolWithFallback(call('{not json'), AUTH);
+    expect(requests).toHaveLength(0);
+    expect(JSON.parse(out)).toEqual({
+      error:
+        'the tool call was refused: arguments were not valid JSON. ' +
+        'Retry with a valid JSON object of arguments.',
+    });
+  });
+
+  it('🔴 every instructive failure string grounds NOTHING — it is not catalog data', async () => {
+    // 🔴 THE RELATIONSHIP THE TOOL LOOP DEPENDS ON: the grounded set is built
+    // from whatever the round's strings carry, so an error string that smuggled
+    // an `items` array would ground ids nobody looked up. `grounding.test.ts`
+    // pins the extractor on generic error JSON; this pins OUR rendered strings
+    // against that extractor — the seam between the two modules.
+    const failures: Array<Promise<string>> = [];
+    install((_url, init) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'POST' && String(init?.body).includes('"bad"')) {
+        return Promise.reject(new TypeError('Failed to fetch'));
+      }
+      if (method === 'POST') {
+        return Promise.reject(new DOMException('Aborted', 'AbortError'));
+      }
+      return new Response(JSON.stringify({ tools: [] }), { status: 200 });
+    });
+    failures.push(callToolWithFallback(call('{"query":"bad"}'), AUTH));
+    failures.push(callToolWithFallback(call('{"query":"ok"}'), { ...AUTH, signal: AbortSignal.abort('x') }));
+    const [failed, aborted] = await Promise.all(failures);
+    for (const out of [failed, aborted]) {
+      expect(JSON.parse(out)).toHaveProperty('error');
+      expect(groundedIdsFromToolResult(out)).toEqual([]);
+    }
+  });
+
+  it('🔴 executeToolCalls isolates per call: one failure leaves the sibling intact', async () => {
+    install((_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (body?.arguments?.query === 'bad') {
+        return new Response('{"error":"nope"}', { status: 500, statusText: 'Internal Server Error' });
+      }
+      return new Response(JSON.stringify({ items: [{ id: 4384 }], truncated: 0 }), { status: 200 });
+    });
+    const out = await executeToolCalls(
+      [call('{"query":"good"}'), call('{"query":"bad"}')],
+      AUTH,
+    );
+    // Both positions answered — a rejected `Promise.all` would have lost the
+    // successful result and the round with it.
+    expect(out).toHaveLength(2);
+    expect(JSON.parse(out[0])).toEqual({ items: [{ id: 4384 }], truncated: 0 });
+    expect(JSON.parse(out[1]).error).toMatch(/catalog lookup failed/);
   });
 });
 

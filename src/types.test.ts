@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_SETTINGS,
@@ -5,6 +6,14 @@ import {
   LEGACY_DEFAULT_SYSTEM_PROMPTS,
   migrateSettings,
 } from './types.js';
+
+/**
+ * 🔴 THE V5 PARAGRAPH'S EXACT BYTES, held in the test rather than read back from
+ * `types.ts`, so the assertion cannot be satisfied by whatever the constant
+ * happens to say. Full-prompt equality with `eval/prompt.rewrite.v5.txt` is
+ * pinned separately below; this is the brief-ranked addition itself.
+ */
+const V5_PARAGRAPH = `When a question asks which models to use — the best, the recommended, the top ones — do not answer from a single ranked lookup. Run at least two differently-shaped lookups before answering: one in the use case's own words, and one by a different facet, such as recency, base model family or a different sort. Weigh fit rather than presenting download counts as the ranking — what the use case implies, each candidate's base model, how recent it is, and its trade-offs. Be honest about the catalog's limits: results are ordered by popularity, so a brand-new or barely-used model will not surface in a ranked lookup — say so when it matters to the question. This turn allows at most three tool results in total, so a couple of differently-shaped lookups is the ceiling, not five.`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 🔴 THE SYSTEM PROMPT IS A CLAIM ABOUT THE WIRE, AND IT HAS BEEN WRONG TWICE
@@ -49,26 +58,68 @@ describe('DEFAULT_SYSTEM_PROMPT — must describe the retrieval the app actually
     expect(DEFAULT_SYSTEM_PROMPT).toMatch(/never invent/i);
   });
 
-  it('🔴 is the prompt the eval actually measured — 1831 chars, unedited', () => {
-    // The shipped default is a MEASURED artifact: byte-identical to
-    // `eval/prompt.rewrite.v4.txt` as `eval/run-eval.mjs` sent it (that runner
-    // `.trim()`s the file, and records `systemPromptChars: 1831` in
-    // `eval/results/recommend-rewrite-v4-2026-09-01.json`). The recorded
-    // before/after — 14/24 → 23/24 lookups, 7 → 0 ungrounded citations — is
-    // attributable to THIS text and no other.
+  it('🔴 is byte-identical to eval/prompt.rewrite.v5.txt — the arm file the next eval run sends', () => {
+    // 🔴 THE ATTRIBUTION MOVED ONE GENERATION BACK, AND THIS GUARD NOW CARRIES
+    // THE DRIFT. It used to pin the constant itself at 1831 chars as "the prompt
+    // the eval actually measured" — that text was v4, whose recorded numbers
+    // (14/24 → 23/24 lookups, 7 → 0 ungrounded) are attributable to it and to
+    // nothing else. v5 edits the constant IN PLACE, per the change brief, which
+    // voids that attribution for THIS text until a new arm runs. So:
     //
-    // 🔴 This is what makes an in-place edit loud instead of silent. With no
-    // `--prompt-file`, `run-eval.mjs` reads this constant straight out of
-    // `src/types.ts`, so an edited default would be graded against the same
-    // recorded baseline and the comparison would quietly stop meaning anything.
-    // If this assertion fails, do not update the number — re-run the eval.
-    expect(DEFAULT_SYSTEM_PROMPT).toHaveLength(1831);
+    //   - the v4 bytes and their 1831-char measurement are pinned on the
+    //     LEGACY list entry instead, byte-for-byte against the prompt recorded
+    //     in `eval/results/recommend-rewrite-v4-2026-09-01.json` (the arm the
+    //     eval actually paid for) — see the test below;
+    //   - THIS constant is pinned byte-for-byte against
+    //     `eval/prompt.rewrite.v5.txt`, the exact bytes the next
+    //     `run-eval.mjs --prompt-file` arm will send, and at 2610 chars;
+    //   - the v5 paragraph is asserted as exact bytes, not word-presence —
+    //     this repo's guards get walked around by rewording.
+    //
+    // ⚠️ HONESTLY UNMEASURED: v5 has NOT been scored by the eval. No number in
+    // the eval results is its number. Do not cite the v4 numbers for it.
+    const v5 = readFileSync(new URL('../eval/prompt.rewrite.v5.txt', import.meta.url), 'utf8').trim();
+    expect(DEFAULT_SYSTEM_PROMPT).toBe(v5);
+    expect(DEFAULT_SYSTEM_PROMPT).toHaveLength(2610);
+    expect(DEFAULT_SYSTEM_PROMPT).toContain(V5_PARAGRAPH);
 
-    // The two clauses v4 added, which are what the measured gains are ascribed
-    // to: recommendation is a lookup (the citation fix), and the assistant
-    // states whose site it is (the identity criterion, 6/6 of released turns).
+    // The two clauses v4 added, which the measured gains were ascribed to —
+    // v5 must not drop them while adding its own.
     expect(DEFAULT_SYSTEM_PROMPT).toContain('Recommending a model is a catalog question');
     expect(DEFAULT_SYSTEM_PROMPT).toMatch(/answer as Civitai's own assistant/i);
+  });
+
+  it('🔴 the v4 default is in the migration list, byte-identical to the recorded eval arm', () => {
+    // The v4 default's bytes are an independent record, not a transcription of
+    // this repo's source: `eval/run-eval.mjs` stamped the prompt it actually
+    // SENT into `eval/results/recommend-rewrite-v4-2026-09-01.json` (24 paid
+    // turns). Pinning the legacy entry against THAT file means a transcription
+    // error in `types.ts` is red rather than silent, and the eval's attribution
+    // follows the bytes into the migration list.
+    const recorded = (
+      JSON.parse(
+        readFileSync(
+          new URL('../eval/results/recommend-rewrite-v4-2026-09-01.json', import.meta.url),
+          'utf8',
+        ),
+      ) as { systemPrompt: string }
+    ).systemPrompt;
+    expect(recorded, 'the recorded v4 arm prompt must be present').toBeTruthy();
+    expect(recorded).toHaveLength(1831);
+
+    // 🔴 EXACT-BYTES membership, and exactly ONE entry carries them — a `find`
+    // would quietly pick the first of several and keep passing while testing
+    // something else.
+    const inList = LEGACY_DEFAULT_SYSTEM_PROMPTS.filter((p) => p === recorded);
+    expect(
+      inList,
+      'the v4 default must be in the migration list with its exact recorded bytes',
+    ).toHaveLength(1);
+    // And the migration actually moves a viewer holding it onto the current
+    // default — the whole reason the entry exists.
+    expect(migrateSettings({ ...DEFAULT_SETTINGS, systemPrompt: recorded }).systemPrompt).toBe(
+      DEFAULT_SYSTEM_PROMPT,
+    );
   });
 
   it('POSITIVE CONTROL — the legacy prompt this replaces DOES trip both guards', () => {
