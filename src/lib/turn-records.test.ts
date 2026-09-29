@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { UseAppStorage } from '@civitai/blocks-react';
+import type { AppStorage } from './sdk-runtime.js';
 import { fakeAppStorage } from '../test-helpers.js';
 import {
   MAX_TURN_RECORDS,
@@ -60,7 +60,7 @@ describe('startTurnRecord writes on the caller`s own stack', () => {
       set: vi.fn(async () => {
         throw new Error('kv rejected');
       }),
-    } as unknown as UseAppStorage;
+    } as unknown as AppStorage;
     const rec = startTurnRecord(rejecting, seed);
     rec.workflow('wf-1');
     rec.settle('saved');
@@ -85,7 +85,7 @@ describe('startTurnRecord writes on the caller`s own stack', () => {
         order.push(value.outcome);
         return { ok: true as const };
       }),
-    } as unknown as UseAppStorage;
+    } as unknown as AppStorage;
 
     const rec = startTurnRecord(storage, seed);
     rec.settle('saved');

@@ -27,7 +27,7 @@ import { clearCache } from './lib/research.js';
 // actually caused the overlap.
 // ─────────────────────────────────────────────────────────────────────────────
 
-vi.mock('@civitai/blocks-react', () => ({
+vi.mock('./lib/sdk-runtime.js', () => ({
   useAppStorage: () => fakeAppStorage().appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),

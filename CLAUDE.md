@@ -58,10 +58,12 @@ Only `x86_64-linux` is exercised; the flake also evaluates for `aarch64-linux`
 and `aarch64-darwin`. `x86_64-darwin` is absent because nixpkgs-unstable dropped
 it — listing it hands an Intel-Mac contributor a `throw` instead of a shell.
 
-There IS a `pnpm-workspace.yaml`, and it is **temporary** — it exists only to
-carry a `minimumReleaseAgeExclude` for two freshly-published `@civitai`
-versions, and its own header names the timestamp after which it can be deleted.
-Read that header before adding to it.
+There IS a `pnpm-workspace.yaml`, and it now carries **only** `packages: ['.']` —
+its `minimumReleaseAgeExclude` block was deleted once every version listed in it
+had aged past pnpm's cutoff. Read its header before adding to it: an exclusion is
+short-lived by construction, and the header says how to re-measure a publish time
+(`npm view <pkg> time --json`) rather than trusting a timestamp typed into a
+comment.
 
 pnpm 11 enforces a minimum-release-age policy (~24h) on the lockfile by
 default. 🔴 **The two install paths behave DIFFERENTLY, and an earlier version
@@ -82,15 +84,26 @@ minimumReleaseAge cutoff
 So the exclusion has to be **in the tree**, not just on your disk. Either commit
 it, or wait for the version to age past the cutoff and commit neither.
 
-🔴 **The `packages: ['.']` key is for the PLATFORM BUILDER, not CI — do not
-repeat the sibling repos' reason for it.** `civitai-app-gen-matrix` and
-`civitai-app-playable-collections` both say `actions/setup-node`'s `cache: pnpm`
-errors `packages field missing or empty` without it. Measured: that command is
-`pnpm store path --silent`, which returns rc=0 on pnpm 10 and 11 and errors only
-on **pnpm 9**. CI pins pnpm 11, so CI does not need the key. The builder does —
-it runs `corepack enable` unpinned on `node:22-alpine` (see the third-environment
-table below), so pnpm 9 is in reach, and `civitai app submit` ships this file
-with the tree.
+🔴 **The `packages: ['.']` key rests on NO established rationale — two were
+written for it and both were refuted by measurement.** `src/toolchain-lockstep.ts`'s
+guard comment is the canonical record; do not restate a reason here without
+reading it.
+
+- The sibling repos (`civitai-app-gen-matrix`,
+  `civitai-app-playable-collections`) say `actions/setup-node`'s `cache: pnpm`
+  errors `packages field missing or empty` without it. **False:** that step runs
+  `pnpm store path --silent`, rc=0 on pnpm 10 and 11.
+- An earlier version of THIS section said the key is "for the PLATFORM BUILDER",
+  because it runs `corepack enable` unpinned on `node:22-alpine` so pnpm 9 is in
+  reach. **Also false, in the direction that matters:** measured in that image
+  with a paired control, unpinned corepack resolves *forward* to pnpm 12.5.1, not
+  back to 9, and pnpm 12 does not error. (`corepack prepare pnpm@9.15.9` in the
+  same container on the same fixture *does* error, so the fixture can produce the
+  failure — the builder just never reaches the major that has it.)
+
+What is measured: pnpm 9.15.9 rejects a `packages`-less file; 10.34.5, 11.27.0 and
+12.5.1 accept it. CI pins pnpm 11. The key is kept because it is one line and
+harmless, not because a reachable hazard was demonstrated.
 
 ⚠️ `pnpm config get minimumReleaseAge` reports `undefined`, which means "no user
 override", **not** "no policy" — it is the wrong instrument for this question;

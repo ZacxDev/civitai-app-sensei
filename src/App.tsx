@@ -1,4 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// 🔴 THE TEN RUNTIME HOOKS NOW COME FROM `./lib/sdk-runtime.js`, NOT FROM
+// `@civitai/blocks-react`. Same names, same shapes, different transport underneath:
+// the snapshot-derived three still read the bridge transport (so nothing about
+// `BLOCK_INIT` changes), the host-mediated four are still postMessage — through
+// `@civitai/sdk`'s `createHost` — and app storage plus the four workflow
+// operations are HTTP against `/api/v1/blocks/*` through
+// `initialize({ transport })`. The `/ui` import BELOW deliberately stays on the
+// bridge package until starters#328; `lib/sdk-transport.ts` explains why ONE
+// transport has to serve both packages rather than two being stood up.
 import {
   useAppStorage,
   useBlockAnalytics,
@@ -10,8 +19,8 @@ import {
   useRequestConsent,
   useRequestSignIn,
   useResourcePicker,
-} from '@civitai/blocks-react';
-import type { UseAppStorage } from '@civitai/blocks-react';
+} from './lib/sdk-runtime.js';
+import type { AppStorage } from './lib/sdk-runtime.js';
 import { Button, Group, Loader, Stack } from '@civitai/blocks-react/ui';
 
 import { palette, pageStyle, token, brand, radius, mutedText } from './theme.js';
@@ -44,7 +53,7 @@ import { SettingsBar } from './components/SettingsBar.js';
 import { SettingsModal } from './components/SettingsModal.js';
 
 export interface AppDeps {
-  appStorage: UseAppStorage;
+  appStorage: AppStorage;
   track: (eventName: string, properties?: Record<string, unknown>) => void;
 }
 
@@ -329,6 +338,23 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   depsRef.current = deps;
 
   const canGenerate = hasGenerateScope(token_.scopes);
+
+  /**
+   * Whether the host has told us who the viewer is.
+   *
+   * 🔴 A BOOLEAN, NOT `viewer` ITSELF, AND THE NARROWING IS WHAT MAKES IT SAFE TO
+   * PUT IN A DEPENDENCY ARRAY. The boot load effect below keys on this. `viewer`
+   * is an object off the transport snapshot, so depending on it would re-run that
+   * effect on any re-mint that changes the object's identity — and that effect
+   * ends with `setActiveSessionId(loaded[0].id)`, which would yank a viewer out of
+   * whatever conversation they were reading. Keyed on presence, only the
+   * anonymous→signed-in transition re-runs it, which is the one transition that
+   * has anything new to load.
+   *
+   * ONE PLACE: `sendGate` reads it too, so the app has a single answer to "is
+   * there a viewer" and the gate and the loader cannot disagree.
+   */
+  const signedIn = viewer != null;
 
   // ---- State ----
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -736,6 +762,35 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   // ---- Load sessions on mount ----
   useEffect(() => {
     if (!ready) return;
+    // 🔴 GATED ON A SIGNED-IN VIEWER, AND WITHOUT THIS GATE EVERY ANONYMOUS
+    // IMPRESSION OPENS ON A FALSE FAILURE BANNER.
+    //
+    // `POST /api/v1/blocks/app-storage/get` answers an anonymous subject with
+    // 403 BY DESIGN — `enforceContextBinding` throws
+    // `forbidden('apps:storage:read requires authenticated subject')`
+    // (civitai `src/server/middleware/block-scope.middleware.ts`), and the
+    // route's own docblock says so outright: "🔴 AN ANONYMOUS VIEWER GETS 403
+    // HERE, NOT THE BRIDGE'S CLEAN `{ value: null }`, AND THAT DIVERGENCE IS
+    // DELIBERATE". The bridge hook this app used before the `@civitai/sdk` port
+    // resolved an anon read to `null`, which is why this effect could once run
+    // unconditionally. It cannot now: the read rejects, the `catch` below sets
+    // `storageError`, and the viewer is told their saved chats failed to load —
+    // about data they never had, on what is probably the majority of
+    // impressions of a public block.
+    //
+    // 🔴 `setLoading(false)` IS PART OF THE GATE, NOT TIDYING. `loading` starts
+    // `true` and this effect's `finally` is its ONLY writer, so a bare early
+    // return would trade the false banner for a permanent "Loading sessions…".
+    //
+    // ⚠ WHAT THIS DOES *NOT* GATE, stated because the next reader will look for
+    // it here: the WRITE paths. An anonymous viewer can still press "+ New",
+    // and `persist` will surface the write's own refusal. That banner is TRUE —
+    // the click really cannot be saved — where this one was false, so it is
+    // left alone deliberately rather than overlooked.
+    if (!signedIn) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -783,7 +838,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       }
     })();
     return () => { cancelled = true; };
-  }, [ready, applyLoadedMessages]);
+  }, [ready, signedIn, applyLoadedMessages]);
 
   // ---- Composer state belongs to ONE conversation ----
   //
@@ -1120,7 +1175,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   // no bookkeeping, and a viewer who signs in but still lacks the spend scope
   // escalates 'signin' → 'consent' on its own rather than sitting on a dead
   // end. Order matters — an anonymous viewer cannot grant a scope.
-  const sendGate: null | 'signin' | 'consent' = !viewer
+  const sendGate: null | 'signin' | 'consent' = !signedIn
     ? 'signin'
     : !canGenerate
       ? 'consent'
@@ -1146,6 +1201,16 @@ export function App({ deps: depsOverride }: AppProps = {}) {
    */
   const sendGateRef = useRef(sendGate);
   sendGateRef.current = sendGate;
+
+  /**
+/**
+   * `signedIn` for readers outside the render pass, assigned during render in the
+   * same style as `sendGateRef`. `handleSettingsChange` is the one that needs it:
+   * it is a `useCallback([])` whose body runs inside a `setSettings` updater, so a
+   * captured `signedIn` would be the value as of first render forever.
+   */
+  const signedInRef = useRef(signedIn);
+  signedInRef.current = signedIn;
 
   /**
    * Ask the host for whatever is missing. Safe to call repeatedly — it is the
@@ -1251,25 +1316,28 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // `PAGE_RESOURCE_PICKER_TYPES` was widened to the LoRA family
         // (`+ LoCon, DoRA`) by civitai#4494 — merged to `main` as `bedcccc42b`.
         //
-        // 🔴 ARGUED FROM THE PACKAGE ACTUALLY IN THE PATH, which an earlier
-        // version of this comment was not. It reasoned that `@civitai/app-sdk`'s
-        // `types.js` "ships NO runtime that sends `OPEN_RESOURCE_PICKER`" — true
-        // of that module, and beside the point, because the call above does not
-        // go through it. It goes through `@civitai/blocks-react`'s
-        // `useResourcePicker`, which DOES send the message. Naming the wrong
-        // package made the argument unfalsifiable by reading the code it names.
+        // 🔴 ARGUED FROM THE PACKAGES ACTUALLY IN THE PATH, which two earlier
+        // versions of this comment were not. The first reasoned from
+        // `@civitai/app-sdk`'s `types.js`, which ships no runtime at all. The
+        // second named `blocks-react/dist/hooks/useResourcePicker.js` — correct
+        // BEFORE the `@civitai/sdk` port, and no longer in the path after it, so
+        // the argument became unfalsifiable by reading the code it cited. Both
+        // times the conclusion was right and the citation was wrong; the citation
+        // is the part a reader can check.
         //
-        // The conclusion holds on the right package, verified against the
-        // installed dist (`blocks-react/dist/hooks/useResourcePicker.js`): `open`
-        // builds `{ type: 'OPEN_RESOURCE_PICKER', payload: { resourceType:
-        // opts.resourceType, … } }` — the value is forwarded VERBATIM, with no
-        // allowlist, no normalisation and no membership check — and
-        // `sendTypedRequest` (`internal/transport.js`) is a pass-through that
-        // validates nothing outbound. The union is imported from the SDK purely
-        // to TYPE the parameter, so it bounds AUTHORING only; what decides
-        // whether the modal opens is the HOST's `resolveResourcePickerRequest`,
-        // which now accepts all four. Measured on that PR: a raw untyped
-        // `{resourceType:'LoCon'}` opens the modal.
+        // THE PATH TODAY, end to end, verified against the installed dists:
+        //   `lib/sdk-runtime.ts`'s `useResourcePicker` → `@civitai/sdk`'s
+        //   `host.openResourcePicker(args)` (`sdk/dist/host/index.js`), which is
+        //   `call('OPEN_RESOURCE_PICKER', args, …)` — `args` forwarded VERBATIM,
+        //   no allowlist, no normalisation, no membership check → the adapter in
+        //   `lib/sdk-transport.ts` → `sendTypedRequest`
+        //   (`blocks-react/dist/internal/transport.js`), a pass-through that
+        //   validates nothing outbound.
+        // The union is imported from the SDK purely to TYPE the parameter, so it
+        // bounds AUTHORING only; what decides whether the modal opens is the
+        // HOST's `resolveResourcePickerRequest`, which now accepts all four.
+        // Measured on that PR: a raw untyped `{resourceType:'LoCon'}` opens the
+        // modal.
         //
         // Remove the cast when the SDK release widens the union; do NOT narrow
         // `MENTION_PICKER_TYPES` to satisfy it, which would ship a control for
@@ -2853,7 +2921,20 @@ export function App({ deps: depsOverride }: AppProps = {}) {
   const handleSettingsChange = useCallback((patch: Partial<AppSettings>) => {
     setSettings((prev) => {
       const next = { ...prev, ...patch };
-      depsRef.current.appStorage.set('sensei:settings', next).catch(() => {});
+      // 🔴 THE SAME GATE AS THE BOOT LOAD EFFECT, for the same reason and one
+      // step weaker. The Settings control renders for an anonymous viewer too
+      // (the sign-in prompt is an inline composer notice, not a replacement
+      // screen), and `apps:storage:write` refuses an anonymous subject exactly
+      // as `apps:storage:read` does. Unlike the loader this write's rejection is
+      // already swallowed, so the defect it leaves is not a banner — it is a
+      // guaranteed-403 request per keystroke of a settings change, an audit row
+      // for each, and a live trap for the next reader who decides this `catch`
+      // should report. The in-memory `next` is returned either way, so an
+      // anonymous viewer's choice still applies for the session; it simply is
+      // not persisted, which is the truth of their situation.
+      if (signedInRef.current) {
+        depsRef.current.appStorage.set('sensei:settings', next).catch(() => {});
+      }
       return next;
     });
   }, []);

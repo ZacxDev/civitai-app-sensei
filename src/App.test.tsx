@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { App } from './App.js';
 import { fakeAppStorage } from './test-helpers.js';
 
-vi.mock('@civitai/blocks-react', () => ({
+vi.mock('./lib/sdk-runtime.js', () => ({
   useAppStorage: () => fakeAppStorage().appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
