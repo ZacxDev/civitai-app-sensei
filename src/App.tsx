@@ -2034,6 +2034,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // which reads as "we spent a round and cannot claim it worked". A default
       // of `true` would record success for turns nobody ever re-checked.
       let correctionResolved = false;
+      // The serialized form of the LAST executed round's calls — the comparator
+      // for the duplicate short-circuit below. `undefined` until a first round
+      // runs, which is what makes a FIRST round unable to trigger it.
+      let prevCallsKey: string | undefined;
 
       for (;;) {
         // Stop must end the loop, not just the in-flight request. Without this
@@ -2192,6 +2196,38 @@ export function App({ deps: depsOverride }: AppProps = {}) {
           hitRoundCap = true;
           break;
         }
+        // 🔴 AN IDENTICAL REPEAT ENDS THE TURN INSTEAD OF BILLING IT. Each round
+        // is one separately-billed submit, and a model that re-emits the
+        // immediately preceding round's calls byte-for-byte is asking for the
+        // SAME lookups whose results are already in `apiMessages` — executing
+        // them buys a duplicate POST and a second billed submit of identical
+        // work, and risks the loop the round cap exists to bound. So the turn
+        // ends here, on the SAME exit path as the cap: no execution, no submit
+        // for this round, nothing grounded for it, and the cap notice telling
+        // the viewer why it stopped.
+        //
+        // The contract is byte identity of `[{name, arguments}]` in order — the
+        // `arguments` STRING as the provider handed it, not a parsed-then-re-
+        // serialized form, so `{"a":1}` and `{ "a" : 1 }` are different rounds.
+        // Two identical calls within ONE response serialize to a longer array
+        // and are one round, handled normally; a first round compares against
+        // `undefined` and can never match.
+        //
+        // 🔴 DELIBERATELY NOT RESET BY A CORRECTION ROUND. The correction's
+        // message is not a tool call, so the comparator survives it — and a
+        // corrected reply that repeats the identical lookup short-circuits too,
+        // because those results are already in this payload. A repeat that the
+        // correction asked for would name DIFFERENT ids and so carry different
+        // arguments; the identical case is the model looping, which is exactly
+        // what this stops billing for.
+        const callsKey = JSON.stringify(
+          calls.map((c) => ({ name: c.function.name, arguments: c.function.arguments })),
+        );
+        if (callsKey === prevCallsKey) {
+          hitRoundCap = true;
+          break;
+        }
+        prevCallsKey = callsKey;
         rounds += 1;
         toolMessages += calls.length;
 
@@ -2218,14 +2254,25 @@ export function App({ deps: depsOverride }: AppProps = {}) {
 
         let results: string[];
         try {
-          results = await Promise.all(
-            calls.map((c) =>
-              toolsLib.callTool(c, {
-                token: token_.raw,
-                signal: controller.signal,
-              }),
-            ),
-          );
+          // 🔴 PER-CALL ISOLATION, EXPLICIT AT THE ROUND. `executeToolCalls`
+          // maps `callToolWithFallback` over the round: one failed POST (500,
+          // network error, timeout) becomes an instructive error string in ITS
+          // OWN `role:'tool'` message and never rejects the `Promise.all` —
+          // every issued `tool_call_id` gets exactly one response, which is
+          // what the host correlates on, and a missing one is a BAD_REQUEST
+          // for the whole next payload after the viewer paid for the round.
+          // The sibling results stay intact.
+          //
+          // 🔴 AND A FAILED CALL GROUNDS NOTHING, AS A CONSEQUENCE OF ITS
+          // SHAPE: an error string carries no `items`, so
+          // `groundedIdsFromToolResult` returns nothing for it — pinned in
+          // `tools.test.ts` for the instructive strings specifically. The
+          // grounding below therefore admits only what a successful call
+          // returned.
+          results = await toolsLib.executeToolCalls(calls, {
+            token: token_.raw,
+            signal: controller.signal,
+          });
         } finally {
           setLookupQuery(null);
         }

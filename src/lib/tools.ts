@@ -399,7 +399,65 @@ function toolError(message: string): string {
 }
 
 /**
- * Execute one tool call and return the string to put in the `role:'tool'` message.
+ * The outcome of executing one tool call, BEFORE it is rendered for the model.
+ *
+ * 🔴 STRUCTURED FAILURE, NOT A SENTINEL STRING. `callToolWithFallback` has to
+ * know the failure CLASS to write the remedy, and the alternative — sniffing
+ * the rendered `{"error":…}` string — is a classifier that any catalog result
+ * carrying an `error` field would trip and that a reworded renderer would
+ * silently blind. The classification now happens exactly once, where the
+ * failure is caught, and the two renderers below ({@link callTool}'s plain
+ * form and {@link callToolWithFallback}'s instructive one) only ever choose a
+ * shape for it.
+ *
+ * 🔴 ONE EXECUTION PATH, TWO RENDERINGS. `callTool` is the transcript shape
+ * every prior release shipped and its tests pin; `callToolWithFallback` is what
+ * the tool loop submits, whose error strings tell the model what to try
+ * instead. Neither re-executes anything — rendering a failure cannot re-run the
+ * request that failed.
+ */
+export type ToolCallOutcome =
+  | { ok: true; content: string }
+  /** The model's `arguments` string could not be used. Model-fixable by re-sending. */
+  | { ok: false; kind: 'arguments'; reason: string }
+  /**
+   * The CALLER's signal ended the call. This outcome must never reach the wire
+   * as a retryable failure — the loop re-checks `aborted()` right after the
+   * round and breaks, discarding the string.
+   */
+  | { ok: false; kind: 'aborted'; reason: string }
+  /** Transport- or host-level failure (non-200, network error, request deadline). */
+  | { ok: false; kind: 'failed'; reason: string };
+
+/** Classify one caught failure. The abort split is on the SIGNAL, not the message text. */
+function classifyToolFailure(e: unknown, auth: ToolAuth): ToolCallOutcome {
+  // The caller's signal is the reliable abort signal: `fetch` rejects with an
+  // `AbortError` DOMException on abort, but the reason's spelling varies across
+  // engines, and the 429-sleep path throws its own AbortError
+  // (`toolsFetch`). If the turn was asked to stop, it stopped.
+  if (auth.signal?.aborted || (e instanceof DOMException && e.name === 'AbortError')) {
+    return {
+      ok: false,
+      kind: 'aborted',
+      reason: e instanceof Error ? e.message : 'aborted',
+    };
+  }
+  // `AbortSignal.timeout` fires its own DOMException name, distinct from a
+  // viewer Stop — render it as the deadline it is rather than as a raw engine
+  // message. `TOOL_REQUEST_TIMEOUT_MS` is the actual bound, so the string moves
+  // with the constant.
+  if (e instanceof DOMException && e.name === 'TimeoutError') {
+    return { ok: false, kind: 'failed', reason: `timed out after ${TOOL_REQUEST_TIMEOUT_MS / 1000}s` };
+  }
+  return {
+    ok: false,
+    kind: 'failed',
+    reason: e instanceof Error ? e.message : 'tool call failed',
+  };
+}
+
+/**
+ * Execute one tool call and classify the outcome. Never throws.
  *
  * 🔴 NEVER THROWS FOR A TOOL-LEVEL FAILURE, and that is the design. A malformed
  * `arguments` string, an unknown tool, a rate limit — each is something the
@@ -410,17 +468,17 @@ function toolError(message: string): string {
  *
  * A transport failure is reported the same way for the same reason.
  */
-export async function callTool(call: ToolCall, auth: ToolAuth): Promise<string> {
+async function executeToolCall(call: ToolCall, auth: ToolAuth): Promise<ToolCallOutcome> {
   let args: unknown;
   try {
     // The provider hands `arguments` back as a STRING; a model can emit one that
     // is not valid JSON, and that is a normal failure mode rather than a bug.
     args = JSON.parse(call.function.arguments || '{}');
   } catch {
-    return toolError('arguments were not valid JSON');
+    return { ok: false, kind: 'arguments', reason: 'arguments were not valid JSON' };
   }
   if (args === null || typeof args !== 'object' || Array.isArray(args)) {
-    return toolError('arguments must be a JSON object');
+    return { ok: false, kind: 'arguments', reason: 'arguments must be a JSON object' };
   }
 
   try {
@@ -437,10 +495,81 @@ export async function callTool(call: ToolCall, auth: ToolAuth): Promise<string> 
     // exceeding it is a reject of the WHOLE next request, not a truncation.
     // Bounded at a RECORD boundary, so what survives is always valid JSON.
     // Stripped for the same class of reason — see `stripAirReferences`.
-    return stripAirReferences(boundToolResponse(body));
+    return { ok: true, content: stripAirReferences(boundToolResponse(body)) };
   } catch (e) {
-    return toolError(e instanceof Error ? e.message : 'tool call failed');
+    return classifyToolFailure(e, auth);
   }
+}
+
+/**
+ * Execute one tool call and return the string to put in the `role:'tool'` message.
+ *
+ * The plain transcript rendering every prior release shipped: every failure
+ * becomes `{"error":"<reason>"}`. See {@link callToolWithFallback} for the
+ * instructive rendering the tool loop now submits.
+ */
+export async function callTool(call: ToolCall, auth: ToolAuth): Promise<string> {
+  const outcome = await executeToolCall(call, auth);
+  if (outcome.ok) return outcome.content;
+  return toolError(outcome.reason);
+}
+
+/**
+ * Execute one tool call, rendering every failure as an INSTRUCTIVE result: what
+ * failed, and what to try instead.
+ *
+ * 🔴 WHY A SECOND RENDERING EXISTS. The plain rendering tells the model THAT the
+ * lookup failed (`{"error":"Civitai tools error: 500 Internal Server Error"}`)
+ * but never what to do about it, and the OpenAI tool shape has no `is_error`
+ * field — the error lives in `content`, so an error that reads like a bare
+ * string is one the model may answer around rather than react to. The
+ * instructive form names the failure class and the remedy, which is what makes
+ * a retry (or an honest "I could not look that up") reachable in one step.
+ *
+ * 🔴 PER-CALL, NEVER ROUND-LEVEL. The tool loop maps this over the round's calls
+ * ({@link executeToolCalls}), so one failed POST leaves its sibling results
+ * intact and every issued `tool_call_id` still gets exactly one `role:'tool'`
+ * response — the host correlates by id and a missing one is a BAD_REQUEST for
+ * the whole next payload, after the viewer has already paid for the round.
+ *
+ * 🔴 THE ABORT OUTCOME IS RENDERED BUT NEVER SENT. It carries the same plain
+ * shape {@link callTool} always produced for a Stop mid-call; the loop checks
+ * the turn's own `aborted()` right after the round and breaks, so the string is
+ * discarded before `apiMessages` is ever built. It must not be rewritten into
+ * retry advice — an abort is not a failure the model should retry through.
+ */
+export async function callToolWithFallback(call: ToolCall, auth: ToolAuth): Promise<string> {
+  const outcome = await executeToolCall(call, auth);
+  if (outcome.ok) return outcome.content;
+  switch (outcome.kind) {
+    case 'aborted':
+      // Same plain shape `callTool` always produced for a Stop mid-call. The
+      // loop checks the turn's own `aborted()` right after the round and
+      // breaks, so this string is discarded before `apiMessages` is built.
+      return toolError(outcome.reason);
+    case 'arguments':
+      // The model authored the bad arguments, so the remedy is addressed to it.
+      return toolError(
+        `the tool call was refused: ${outcome.reason}. Retry with a valid JSON object of arguments.`,
+      );
+    case 'failed':
+      return toolError(
+        `catalog lookup failed: ${outcome.reason}. ` +
+          'Retry with different or fewer search terms, or say plainly that the lookup failed.',
+      );
+  }
+}
+
+/**
+ * Execute a round's tool calls with per-call isolation: one string per call, in
+ * call order, failures rendered instructively ({@link callToolWithFallback}) and
+ * never throwing — a partial failure cannot take the round down.
+ */
+export async function executeToolCalls(
+  calls: readonly ToolCall[],
+  auth: ToolAuth,
+): Promise<string[]> {
+  return Promise.all(calls.map((c) => callToolWithFallback(c, auth)));
 }
 
 /**
