@@ -162,13 +162,21 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
     expect(submitSpy).not.toHaveBeenCalled();
   });
 
-  it('KEEPS the message in the composer instead of stashing or dropping it', async () => {
-    // 🔴 The whole reason nothing is held in App state. An earlier draft of this
-    // fix stashed the text and auto-sent it on grant; that stash carried no
-    // session id, so it could be delivered into a conversation the viewer had
-    // switched to — spending their Buzz there — and it vanished silently if the
-    // session was deleted meanwhile. Leaving the text in the box has no such
-    // failure mode: there is nothing to misroute, duplicate or lose.
+  it('KEEPS the message in the composer while the gate stands', async () => {
+    // 🔴 THE COMPOSER IS THE ONLY PLACE THE TEXT LIVES. An earlier draft of
+    // this fix stashed the text in App state and auto-sent it on grant; the
+    // stash carried no session id, so it could be delivered into a conversation
+    // the viewer had switched to — spending their Buzz there — and it vanished
+    // silently if the session was deleted meanwhile. That draft was REJECTED
+    // and the rejection pinned here.
+    //
+    // The auto-retry the operator later asked for (and which the SDK's
+    // `useRequestConsent` doc anticipates) came back WITH that lesson: the
+    // stash is a ref inside `ChatArea`, which App mounts with
+    // `key={activeSessionId}` — so a session switch REMOUNTS the component and
+    // the stash dies with it. Nothing to misroute, nothing to lose: see
+    // `ChatArea`'s retry effect and the component-scope case in
+    // `ChatArea.test.tsx` that pins the remount kill.
     render(<App />);
     await startSession();
 
@@ -181,9 +189,13 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
     expect((screen.getByTestId('chat-input') as HTMLTextAreaElement).value).toBe('Hello Sensei');
   });
 
-  it('nothing is sent anywhere merely because the scope arrived', async () => {
-    // Pins the misroute shut. The grant alone must move no message and spend no
-    // Buzz — the viewer presses Send, the app never does it for them.
+  it('nothing is sent anywhere merely because the scope arrived — in a DIFFERENT chat', async () => {
+    // Pins the misroute shut. The grant must never deliver a message into a
+    // conversation other than the one the viewer tried to send from. The
+    // mechanism, since the auto-retry landed: switching conversations REMOUNTS
+    // `ChatArea` (keyed by `activeSessionId`), and the pending send is a ref
+    // inside it — it dies with the mount, so the grant here finds nothing to
+    // send. Same-session grants DO auto-send; that is the case below.
     const { rerender } = render(<App />);
     await startSession();
 
@@ -202,17 +214,28 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
       expect(screen.queryByTestId('gate-retry-button')).toBeNull();
     });
     expect(submitSpy).not.toHaveBeenCalled();
-    // Scoped to the message list on purpose: the text is STILL in the composer
-    // (that is the fix), so an unscoped text query would match the textarea and
-    // pass for the wrong reason. What must not exist is a rendered BUBBLE.
+    // Scoped to the message list on purpose: the OLD conversation's text is
+    // gone from the composer (the remount cleared it), so an unscoped text
+    // query would be looking for nothing anyway. What must not exist is a
+    // rendered BUBBLE in this conversation.
     expect(
       within(screen.getByTestId('messages-container')).queryByText('Hello Sensei'),
     ).toBeNull();
   });
 
-  it('clears the notice by itself and sends on the next press once granted', async () => {
-    // End to end through the fix: the banner is DERIVED, so a re-mint clears it
-    // with no bookkeeping, the text is still in the box, and one press sends.
+  it('🔴 clears the notice by itself and SENDS THE PENDING MESSAGE once granted — no second press', async () => {
+    // End to end through the auto-retry: the viewer presses Send once, the
+    // consent dialog opens, the viewer grants, the host re-mints — and the
+    // message the viewer already tried to send goes out with no further press.
+    // The banner is DERIVED, so the re-mint clears it with no bookkeeping.
+    //
+    // 🔴 THIS SUPERSEDES THE OLD PIN. The same case previously asserted the
+    // OPPOSITE — "one press sends", with the app never sending for the viewer
+    // — because the only way to hold the send then was an App-state stash with
+    // the misroute hazard above. The stash now lives in `ChatArea`, keyed to
+    // the conversation, so the hazard is closed by construction and the
+    // operator's ask (first use: consent, then the action happens) is the
+    // contract.
     const { rerender } = render(<App />);
     await startSession();
 
@@ -222,7 +245,7 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
       expect(screen.getByTestId('consent-notice')).toBeTruthy();
     });
 
-    // Host grants → re-mints. No effect, no retry logic: the banner just goes.
+    // Host grants → re-mints. No press, no retry button, no bookkeeping.
     currentScopes = GRANTED_SCOPES;
     rerender(<App />);
     await waitFor(() => {
@@ -235,11 +258,10 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
     expect(screen.queryByTestId('signin-notice')).toBeNull();
     expect(screen.queryByTestId('gate-retry-button')).toBeNull();
 
-    fireEvent.click(screen.getByTestId('send-button'));
-
-    // Scoped to the message list: since 0.1.5 the auto-title lands, so the same
-    // text is also the session's name in the sidebar. See the note in
-    // `e2e.test.tsx` — the unscoped form was passing because of a defect.
+    // 🔴 NO SECOND PRESS — the send happened on the grant.
+    await waitFor(() => {
+      expect(submitSpy).toHaveBeenCalledTimes(1);
+    });
     await waitFor(() => {
       expect(
         within(screen.getByTestId('messages-container')).getByText('Hello Sensei'),
@@ -251,6 +273,8 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
       },
       { timeout: 5000 },
     );
+    // And the composer is empty, as any sent message leaves it.
+    expect((screen.getByTestId('chat-input') as HTMLTextAreaElement).value).toBe('');
   });
 
   it('asks an anonymous viewer to sign in rather than doing nothing', async () => {
@@ -545,11 +569,12 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
 
   it('states the banner copy exactly, on both gates', async () => {
     // 🔴 THE COPY IS THE DELIVERABLE, so pin the WHOLE normalised string. An
-    // earlier version promised "your message is still in the box" — true from
-    // the composer, FALSE from Regenerate and Research -> Insert, neither of
-    // which puts anything there. A partial/substring match would be satisfied
-    // by that lie being restored, so this asserts the entire sentence. It will
-    // fail on any reword: that is the price of a machine-checkable claim.
+    // earlier version promised "your message is still in the box" — false on
+    // every non-composer path — and the version before THIS one said "then try
+    // again", which the auto-retry made into a step that no longer exists. Both
+    // rewordings were caught by exactly this kind of exact-match assertion, so
+    // it stays exact. It will fail on any reword: that is the price of a
+    // machine-checkable claim.
     const norm = (el: Element) => (el.textContent ?? '').replace(/\s+/g, ' ').trim();
 
     currentViewer = null;
@@ -563,7 +588,7 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
       expect(screen.getByTestId('signin-notice')).toBeTruthy();
     });
     expect(norm(screen.getByTestId('signin-notice'))).toBe(
-      'Sign in to chat with Sensei, then try again.Sign in',
+      'Sign in to chat with Sensei, then grant permission to spend Buzz.Sign in',
     );
 
     currentViewer = { id: 1 };
@@ -573,7 +598,7 @@ describe('consent gate: the block token lacks ai:write:budgeted', () => {
       expect(screen.getByTestId('consent-notice')).toBeTruthy();
     });
     expect(norm(screen.getByTestId('consent-notice'))).toBe(
-      'Sensei needs your permission to spend Buzz on a reply. Grant it, then try again.Grant permission',
+      'Sensei needs your permission to spend Buzz on a reply. Grant it to send your message.Grant permission',
     );
   });
 

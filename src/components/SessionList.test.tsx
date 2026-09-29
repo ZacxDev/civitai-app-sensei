@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SessionList } from './SessionList.js';
+import { renameSessionRow } from '../test-dom-helpers.js';
 import { NSFW_MODEL_ID, SFW_MODEL_ID } from '../lib/models.js';
 import type { Session } from '../types.js';
 
@@ -90,12 +91,17 @@ describe('SessionList', () => {
     expect(onDelete).toHaveBeenCalledWith('s1');
   });
 
-  it('calls onRename when clicking rename button', () => {
-    const onRename = vi.fn();
-    renderList({ sessions: [makeSession('s1', 'Chat 1')], onRename });
-    fireEvent.click(screen.getByTestId('session-menu-s1'));
-    fireEvent.click(screen.getByTestId('rename-session-s1'));
-    expect(onRename).toHaveBeenCalledWith('s1');
+  it('clicking Rename opens the inline editor, focused and pre-filled', () => {
+    // 🔴 REPOINTED for the prompt removal. The old flow was `window.prompt()`
+    // inside `App.renameSession` — silently ignored in the sandboxed iframe, so
+    // the click did nothing at all. Now the click starts an EDIT on the row; the
+    // commit callback fires when that edit is committed, not on the click.
+    renderList({ sessions: [makeSession('s1', 'Chat 1')] });
+    renameSessionRow('s1');
+    const input = screen.getByTestId('rename-input-s1') as HTMLInputElement;
+    expect(input).toBeInTheDocument();
+    expect(input.value).toBe('Chat 1');
+    expect(document.activeElement).toBe(input);
   });
 
   it('🔴 marks the active session with aria-current, not with a colour', () => {
@@ -236,23 +242,114 @@ describe('🔴 SessionList — the per-row ⋮ menu', () => {
 
   it('a menu action does not also select the row', () => {
     // The panel is a descendant of the row's own `onClick`, so without
-    // `stopPropagation` pressing Rename would ALSO switch the viewer's
-    // conversation — which for `onDelete` means deleting a chat and navigating
-    // into it in one press.
+    // `stopPropagation` pressing Delete would ALSO switch the viewer's
+    // conversation — deleting a chat and navigating into it in one press.
+    // Delete is the action asserted on because it still fires immediately;
+    // Rename only STARTS an edit now (pinned in the editor describe below).
     const onSelect = vi.fn();
-    const onRename = vi.fn();
-    renderList({ sessions: [makeSession('s1', 'Chat 1')], onSelect, onRename });
+    const onDelete = vi.fn();
+    renderList({ sessions: [makeSession('s1', 'Chat 1')], onSelect, onDelete });
     fireEvent.click(screen.getByTestId('session-menu-s1'));
-    fireEvent.click(screen.getByTestId('rename-session-s1'));
-    expect(onRename).toHaveBeenCalledWith('s1');
+    fireEvent.click(screen.getByTestId('delete-session-s1'));
+    expect(onDelete).toHaveBeenCalledWith('s1');
     expect(onSelect).not.toHaveBeenCalled();
   });
 
   it('the menu closes after rename or delete', () => {
+    // Rename closes the panel and opens the editor in the same tick — both
+    // asserted, because a rename that closed the panel but started no editor
+    // would read as "menu closed" while the feature was dead.
     renderList({ sessions: [makeSession('s1', 'Chat 1')] });
-    fireEvent.click(screen.getByTestId('session-menu-s1'));
-    fireEvent.click(screen.getByTestId('rename-session-s1'));
+    renameSessionRow('s1');
     expect(screen.queryByTestId('session-menu-panel-s1')).toBeNull();
+    expect(screen.getByTestId('rename-input-s1')).toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 THE INLINE RENAME EDITOR — `window.prompt` DIED HERE.
+//
+// The rename flow used to be one call in `App.renameSession`:
+// `prompt('Rename session:')`. In the embedded run page that call is silently
+// IGNORED — the iframe is sandboxed without `allow-modals` (the viewer's
+// console: `Ignored call to 'prompt()'. The document is sandboxed, and the
+// 'allow-modals' keyword is not set.`) — so `prompt` resolved to null, the
+// guard returned, and clicking Rename did NOTHING. These cases pin the
+// replacement: the row itself becomes an input, and the commit callback fires
+// on Enter or blur, never on the menu click.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('🔴 SessionList — the inline rename editor', () => {
+  it('Enter commits the trimmed title and closes the editor', () => {
+    const onRename = vi.fn();
+    renderList({ sessions: [makeSession('s1', 'Chat 1')], onRename });
+    renameSessionRow('s1');
+    const input = screen.getByTestId('rename-input-s1');
+    fireEvent.change(input, { target: { value: '  Renamed chat  ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onRename).toHaveBeenCalledTimes(1);
+    expect(onRename).toHaveBeenCalledWith('s1', 'Renamed chat');
+    expect(screen.queryByTestId('rename-input-s1')).toBeNull();
+  });
+
+  it('blur commits too — clicking away is a commit, not a loss', () => {
+    const onRename = vi.fn();
+    renderList({ sessions: [makeSession('s1', 'Chat 1')], onRename });
+    renameSessionRow('s1');
+    fireEvent.change(screen.getByTestId('rename-input-s1'), { target: { value: 'Blurred name' } });
+    fireEvent.blur(screen.getByTestId('rename-input-s1'));
+    expect(onRename).toHaveBeenCalledWith('s1', 'Blurred name');
+    expect(onRename).toHaveBeenCalledTimes(1);
+  });
+
+  it('Escape cancels: no commit, editor gone', () => {
+    const onRename = vi.fn();
+    renderList({ sessions: [makeSession('s1', 'Chat 1')], onRename });
+    renameSessionRow('s1');
+    fireEvent.change(screen.getByTestId('rename-input-s1'), { target: { value: 'scratch' } });
+    fireEvent.keyDown(screen.getByTestId('rename-input-s1'), { key: 'Escape' });
+    expect(onRename).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('rename-input-s1')).toBeNull();
+    // The title text is back (this component is controlled, so the OLD title
+    // renders until App's state moves).
+    expect(screen.getByText('Chat 1')).toBeTruthy();
+  });
+
+  it('an empty or whitespace-only title commits NOTHING', () => {
+    // The old `if (!title) return` in `App.renameSession`, preserved as a
+    // cancel: clearing the box and walking away must not ship an empty name.
+    const onRename = vi.fn();
+    renderList({ sessions: [makeSession('s1', 'Chat 1')], onRename });
+    renameSessionRow('s1');
+    fireEvent.change(screen.getByTestId('rename-input-s1'), { target: { value: '   ' } });
+    fireEvent.keyDown(screen.getByTestId('rename-input-s1'), { key: 'Enter' });
+    expect(onRename).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('rename-input-s1')).toBeNull();
+  });
+
+  it('a click inside the editor does not also select the row', () => {
+    // The input lives inside the row, whose `onClick` selects. While editing,
+    // that press must be inert — a viewer fixing a title should not be able to
+    // switch conversations by clicking in the text they are editing.
+    const onSelect = vi.fn();
+    renderList({ sessions: [makeSession('s1', 'Chat 1')], onSelect });
+    renameSessionRow('s1');
+    fireEvent.click(screen.getByTestId('rename-input-s1'));
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('only one row edits at a time', () => {
+    // 🔴 ONE CELL AT THE LIST LEVEL, NOT PER ROW — the same reason the ⋮ menu
+    // is one cell. Starting a second edit must end the first.
+    const onRename = vi.fn();
+    renderList({
+      sessions: [makeSession('s1', 'Chat 1'), makeSession('s2', 'Chat 2')],
+      onRename,
+    });
+    renameSessionRow('s1');
+    expect(screen.getByTestId('rename-input-s1')).toBeInTheDocument();
+    renameSessionRow('s2');
+    expect(screen.getByTestId('rename-input-s2')).toBeInTheDocument();
+    expect(screen.queryByTestId('rename-input-s1')).toBeNull();
   });
 });
 
@@ -376,10 +473,13 @@ describe('🔴 SessionList — the ⋮ panel can be DISMISSED, and gives focus b
     expect(screen.queryByTestId(`session-menu-panel-${ID}`)).toBeNull();
   });
 
-  it('🔴 RENAME BY KEYBOARD leaves focus on the trigger, not on <body>', async () => {
+  it('🔴 RENAME BY KEYBOARD lands in the inline editor, not on <body>', async () => {
     // The Rename button unmounts as it is activated, and React does not move the
     // focus it was holding — so `activeElement` fell to `<body>`, dumping a viewer
-    // who had tabbed deep into the sidebar back to the top of the tab order.
+    // who had tabbed deep into the sidebar back to the top of the tab order. The
+    // menu's close returns focus to the trigger, and the editor that mounts in
+    // the same tick then takes it — one stop deeper into the task the viewer
+    // asked for, and still not `<body>`.
     const user = userEvent.setup();
     const onRename = vi.fn();
     renderBeside({ onRename });
@@ -390,8 +490,12 @@ describe('🔴 SessionList — the ⋮ panel can be DISMISSED, and gives focus b
     expect(document.activeElement).toBe(screen.getByTestId(`rename-session-${ID}`));
 
     await user.keyboard('{Enter}');
-    expect(onRename).toHaveBeenCalledWith(ID);
-    expect(document.activeElement).toBe(trigger);
+    expect(screen.queryByTestId(`session-menu-panel-${ID}`)).toBeNull();
+    expect(document.activeElement).toBe(screen.getByTestId(`rename-input-${ID}`));
+    // The commit fires when the EDIT is committed, not when the menu item is
+    // pressed — the old flow conflated the two, and the conflation is exactly
+    // what `window.prompt` sat between.
+    expect(onRename).not.toHaveBeenCalled();
   });
 
   it('🔴 DELETE BY KEYBOARD leaves focus on "+ New" — the trigger is gone with the row', async () => {

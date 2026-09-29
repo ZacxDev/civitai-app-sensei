@@ -81,3 +81,115 @@ describe('copyText — reports whether the write LANDED', () => {
     await expect(copyText('x')).resolves.toBe(false);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 THE execCommand FALLBACK, MEASURED INTO EXISTENCE. A viewer in the
+// embedded run page reported copy failing with the console showing
+// `[Violation] Permissions policy violation: The Clipboard API has been
+// blocked because of a permissions policy applied to the current document.`
+// — `writeText` EXISTS there, so the old "absent ⇒ false" branch never ran,
+// and the rejection rendered "Copy failed" on every press. The helper now
+// falls through to a selected off-screen textarea + `document.execCommand`.
+// These tests drive that path through a FAKE `document`, because the `node`
+// vitest project has none at all — which is also why the tests above (no
+// fallback installed) still see `false` on every failure: the fallback
+// short-circuits on a missing document.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const realDocument = (globalThis as { document?: unknown }).document;
+
+function installDocument(execCommand: unknown) {
+  const scratch = {
+    value: '',
+    style: {} as Record<string, string>,
+    setAttribute: () => {},
+    select: () => {},
+    remove: () => {
+      removed = true;
+    },
+  };
+  let removed = false;
+  const doc = {
+    body: { appendChild: () => {} },
+    execCommand,
+    createElement: () => scratch,
+  };
+  Object.defineProperty(globalThis, 'document', {
+    value: doc,
+    configurable: true,
+    writable: true,
+  });
+  return {
+    scratch,
+    wasRemoved: () => removed,
+    get exec(): unknown {
+      return execCommand;
+    },
+  };
+}
+
+describe('copyText — the execCommand fallback for a policy-blocked clipboard', () => {
+  afterEach(() => {
+    Object.defineProperty(globalThis, 'document', {
+      value: realDocument,
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  it('🔴 a REJECTED async write falls through and the fallback can succeed', async () => {
+    // THE VIEWER-REPORTED SHAPE, end to end: writeText present, policy-blocked,
+    // fallback does the copy. Before the fallback this resolved false and the
+    // row menu said "Copy failed" forever.
+    installClipboard({ writeText: vi.fn().mockRejectedValue(new Error('NotAllowedError')) });
+    const exec = vi.fn(() => true);
+    const { scratch, wasRemoved } = installDocument(exec);
+    await expect(copyText('sess-abc')).resolves.toBe(true);
+    expect(exec).toHaveBeenCalledWith('copy');
+    expect(scratch.value).toBe('sess-abc');
+    expect(wasRemoved()).toBe(true);
+  });
+
+  it('falls back when `navigator.clipboard` is absent entirely', async () => {
+    installClipboard(undefined);
+    const exec = vi.fn(() => true);
+    installDocument(exec);
+    await expect(copyText('x')).resolves.toBe(true);
+  });
+
+  it('reports false when the fallback itself fails', async () => {
+    // The fallback is a second chance, not a guarantee — a browser may refuse
+    // it too, and the outcome must stay truthful ("Copy failed").
+    installClipboard(undefined);
+    installDocument(vi.fn(() => false));
+    await expect(copyText('x')).resolves.toBe(false);
+  });
+
+  it('reports false when `execCommand` is missing or throws', async () => {
+    installClipboard(undefined);
+    installDocument(undefined);
+    await expect(copyText('x')).resolves.toBe(false);
+
+    installClipboard(undefined);
+    const thrown = installDocument(
+      vi.fn(() => {
+        throw new Error('not allowed');
+      }),
+    );
+    await expect(copyText('x')).resolves.toBe(false);
+    // 🔴 REMOVAL ON THE THROW PATH TOO. An engine that throws must not leave
+    // the off-screen textarea behind — it holds the session id in its value.
+    expect(thrown.wasRemoved()).toBe(true);
+  });
+
+  it('never reaches the fallback when the async write succeeds', async () => {
+    // Guards the order: the modern path winning must not also fire the legacy
+    // one, or every successful copy silently double-writes.
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    installClipboard({ writeText });
+    const exec = vi.fn(() => true);
+    installDocument(exec);
+    await expect(copyText('x')).resolves.toBe(true);
+    expect(exec).not.toHaveBeenCalled();
+  });
+});

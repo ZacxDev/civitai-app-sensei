@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
-import { ChatArea, BUBBLE_MAX_WIDTH, type ChatAreaProps } from './ChatArea.js';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { ChatArea, BUBBLE_MAX_WIDTH, type ChatAreaProps, type PendingSend } from './ChatArea.js';
 import type { Message } from '../types.js';
 import type { ResolvedResource } from '../lib/mentions.js';
 import { resourceDisplayName } from '@civitai/blocks-react/ui';
@@ -21,31 +21,40 @@ function makeMessage(role: Message['role'], content: string): Message {
  * is precisely the silently-inert composer a caller who forgot the prop would
  * ship. This helper supplies them so the pre-existing cases stay readable; it is
  * NOT a default on the component.
+ *
+ * It ALSO mints a fresh `pendingSendRef` per render — the auto-retry stash cell.
+ * A module-level one would leak a stashed send from one test into the next.
  */
 function renderChat(props: Partial<ChatAreaProps> = {}) {
-  return render(
-    <ChatArea
-      sendGate={null}
-      onGatedSend={vi.fn()}
-      // `null` = the transcript on screen IS the selected conversation's, which
-      // is the state every case here is about. The paused states are driven
-      // through the real app in `composer-pending-transcript.e2e.test.tsx`.
-      sendPaused={null}
-      messages={[]}
-      isStreaming={false}
-      onSend={vi.fn()}
-      pendingMentions={[]}
-      onPickMention={vi.fn()}
-      onRemoveMention={vi.fn()}
-      // Empty rather than absent, because the prop is REQUIRED and an empty set
-      // is the honest value for a conversation that has grounded nothing. These
-      // cases render no model links, so it changes nothing they assert; the
-      // grounding behaviour itself is pinned in `MessageBubble.test.tsx`,
-      // `lib/markdown.test.ts` and `citation-grounding.e2e.test.tsx`.
-      groundedModelIds={new Set<string>()}
-      {...props}
-    />,
-  );
+  const pendingSendRef: { current: PendingSend | null } = { current: null };
+  return {
+    pendingSendRef,
+    ...render(
+      <ChatArea
+        sessionId={props.sessionId ?? 'sess-default'}
+        pendingSendRef={pendingSendRef}
+        sendGate={null}
+        onGatedSend={vi.fn()}
+        // `null` = the transcript on screen IS the selected conversation's, which
+        // is the state every case here is about. The paused states are driven
+        // through the real app in `composer-pending-transcript.e2e.test.tsx`.
+        sendPaused={null}
+        messages={[]}
+        isStreaming={false}
+        onSend={vi.fn()}
+        pendingMentions={[]}
+        onPickMention={vi.fn()}
+        onRemoveMention={vi.fn()}
+        // Empty rather than absent, because the prop is REQUIRED and an empty set
+        // is the honest value for a conversation that has grounded nothing. These
+        // cases render no model links, so it changes nothing they assert; the
+        // grounding behaviour itself is pinned in `MessageBubble.test.tsx`,
+        // `lib/markdown.test.ts` and `citation-grounding.e2e.test.tsx`.
+        groundedModelIds={new Set<string>()}
+        {...props}
+      />,
+      ),
+  };
 }
 
 const A = BLOCK_GENERATION_RESOURCE as ResolvedResource;
@@ -348,6 +357,8 @@ describe('the mention affordance in the composer (clawgate #434, criterion 3)', 
     const onPickMention = vi.fn();
     const onGatedSend = vi.fn();
     const props = {
+      sessionId: 'sess-default',
+      pendingSendRef: { current: null as PendingSend | null },
       onGatedSend,
       messages: [] as Message[],
       isStreaming: false,
@@ -373,6 +384,8 @@ describe('the mention affordance in the composer (clawgate #434, criterion 3)', 
 
   it('🔴 a menu open when a STREAM starts is closed with it', () => {
     const props = {
+      sessionId: 'sess-default',
+      pendingSendRef: { current: null as PendingSend | null },
       sendGate: null,
       onGatedSend: vi.fn(),
       messages: [] as Message[],
@@ -511,5 +524,169 @@ describe('🔴 ChatArea — bubble alignment and measure', () => {
     // because the cap is worthless without it.
     renderChat({ messages: transcript });
     for (const w of wraps()) expect(w.style.minWidth).toBe('0');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔴 FIRST-USE FOCUS AND THE CONSENT AUTO-RETRY — operator feedback, both about
+// the same moment: the viewer's very first interaction with the app.
+//
+// Autofocus: opening a new chat (or reopening one) should land the caret in the
+// composer with no click. `ChatArea` is mounted with `key={activeSessionId}` in
+// `App`, so it REMOUNTS on every conversation change and the mount effect below
+// covers both routes.
+//
+// Auto-retry: a gated send — the default state of a first-time signed-in
+// viewer, because `ai:write:budgeted` is consent-gated — used to sit forever
+// behind a banner telling the viewer to press Send again after granting. The
+// SDK's contract ("retry the action once the scope appears") is now followed:
+// the attempt is stashed — in an App-owned cell, stamped with the session id —
+// and when `sendGate` clears the composer sends it. The e2e coverage for the
+// real App wiring (including the synchronous clear on session move, which
+// exists because a measured race beat the first draft's remount-based safety)
+// is in `consent-gate.e2e.test.tsx`.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('🔴 ChatArea — composer autofocus and the consent auto-retry', () => {
+  it('focuses the composer on mount', () => {
+    renderChat();
+    expect(document.activeElement).toBe(screen.getByTestId('chat-input'));
+  });
+
+  it('re-focusing on remount: a fresh instance gets the caret even if one existed before', () => {
+    // The remount IS the "open another conversation" route — `App` keys this
+    // component by session id. Unmount, mount a fresh one, and the caret must
+    // move to the new composer.
+    const first = renderChat();
+    first.unmount();
+    renderChat();
+    expect(document.activeElement).toBe(screen.getByTestId('chat-input'));
+  });
+
+  /**
+   * Stand-in for the App wiring: `onGatedSend` writes the stash the way
+   * `App.raiseGate(content)` does (content stamped with the session), and the
+   * element builder lets a case rerender the SAME instance with a different
+   * gate/session — which is how the consent grant and the session races reach
+   * this component.
+   */
+  function retryHarness() {
+    const onSend = vi.fn();
+    const pendingSendRef: { current: PendingSend | null } = { current: null };
+    const onGatedSend = vi.fn((content?: string) => {
+      if (content !== undefined) {
+        pendingSendRef.current = { sessionId: 'sess-A', content };
+      }
+    });
+    const el = (gate: 'signin' | 'consent' | null, sid: string = 'sess-A') => (
+      <ChatArea
+        sessionId={sid}
+        pendingSendRef={pendingSendRef}
+        sendGate={gate}
+        onGatedSend={onGatedSend}
+        sendPaused={null}
+        messages={[]}
+        isStreaming={false}
+        onSend={onSend}
+        pendingMentions={[]}
+        onPickMention={vi.fn()}
+        onRemoveMention={vi.fn()}
+        groundedModelIds={new Set<string>()}
+      />
+    );
+    return { onSend, pendingSendRef, onGatedSend, el };
+  }
+
+  const typeAndSend = () => {
+    fireEvent.change(screen.getByTestId('chat-input'), { target: { value: 'Hello Sensei' } });
+    fireEvent.click(screen.getByTestId('send-button'));
+  };
+
+  it('🔴 a gated send is RETRIED when the gate clears — no second press', async () => {
+    // The end-to-end shape of the consent flow, at component scope: send while
+    // gated → the host asks → grant arrives as a `sendGate` of `null` → the
+    // stashed content is sent and the composer cleared.
+    const h = retryHarness();
+    const { rerender } = render(h.el('consent'));
+
+    typeAndSend();
+
+    // Gated: the parent is asked, nothing is sent, the text is kept.
+    expect(h.onGatedSend).toHaveBeenCalledTimes(1);
+    expect(h.onSend).not.toHaveBeenCalled();
+    expect((screen.getByTestId('chat-input') as HTMLTextAreaElement).value).toBe('Hello Sensei');
+
+    // The host granted and re-minted; the gate is derived and now clear.
+    rerender(h.el(null));
+
+    await waitFor(() => {
+      expect(h.onSend).toHaveBeenCalledTimes(1);
+    });
+    expect(h.onSend).toHaveBeenCalledWith('Hello Sensei');
+    // The send CLEARS the composer, exactly as a normal send does.
+    expect((screen.getByTestId('chat-input') as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('an intermediate gate change that is still gated sends nothing', async () => {
+    // Sign-in → consent escalation: `sendGate` changes VALUE but never clears,
+    // so there is nothing to retry yet. This is the path a first-use viewer
+    // actually walks — anonymous is the rarer arm, but the escalation is the
+    // measured production order (the scope is consent-gated and sign-in does
+    // not grant it).
+    const h = retryHarness();
+    const { rerender } = render(h.el('signin'));
+    typeAndSend();
+    expect(h.onGatedSend).toHaveBeenCalledTimes(1);
+
+    rerender(h.el('consent'));
+    await waitFor(() => {
+      expect(screen.getByTestId('send-button')).toBeTruthy();
+    });
+    expect(h.onSend).not.toHaveBeenCalled();
+    // The text is still in the box, ready for the eventual grant.
+    expect((screen.getByTestId('chat-input') as HTMLTextAreaElement).value).toBe('Hello Sensei');
+  });
+
+  it('🔴 the stash is stamped with a session, and a gate clearing on ANOTHER session sends nothing', async () => {
+    // The belt-and-braces half of the misroute guard (`PendingSend`). A stash
+    // addressed to `sess-A` must not fire through an instance showing `sess-B`
+    // — which is exactly the state a REMOUNT under a moved `activeSessionId`
+    // produces, since the ref is App-owned and survives the remount.
+    const h = retryHarness();
+    const { rerender } = render(h.el('consent', 'sess-A'));
+    typeAndSend();
+    expect(h.onGatedSend).toHaveBeenCalledTimes(1);
+
+    rerender(h.el(null, 'sess-B'));
+    await waitFor(() => {
+      expect(screen.getByTestId('send-button')).toBeTruthy();
+    });
+    expect(h.onSend).not.toHaveBeenCalled();
+    // Consumed, not kept: a stale stash must not fire on a LATER gate clear
+    // either. The session check happens AFTER the cell is emptied.
+    expect(h.pendingSendRef.current).toBeNull();
+  });
+
+  it('🔴 a stash the app cleared SYNCHRONOUSLY before the gate clears sends nothing', async () => {
+    // THE RACE THE E2E CAUGHT, pinned at component scope. `createSession`
+    // persists before it switches, so a grant landing in the same burst as a
+    // "+ New" press is applied by a render that still shows the OLD session —
+    // the remount-based safety of the first draft lost to exactly this. App
+    // clears the cell synchronously in every session-move route, before any
+    // await; simulated here by clearing the ref and THEN clearing the gate on
+    // the same instance with the SAME session id — the one state where the id
+    // check would happily send.
+    const h = retryHarness();
+    const { rerender } = render(h.el('consent', 'sess-A'));
+    typeAndSend();
+    expect(h.onGatedSend).toHaveBeenCalledTimes(1);
+
+    // App's synchronous clear (first line of select/create/deleteSession).
+    h.pendingSendRef.current = null;
+
+    rerender(h.el(null, 'sess-A'));
+    await waitFor(() => {
+      expect(screen.getByTestId('send-button')).toBeTruthy();
+    });
+    expect(h.onSend).not.toHaveBeenCalled();
   });
 });

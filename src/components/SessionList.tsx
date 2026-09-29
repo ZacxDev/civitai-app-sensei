@@ -15,7 +15,13 @@ export interface SessionListProps {
   onSelect: (id: string) => void;
   onCreate: () => void;
   onDelete: (id: string) => void;
-  onRename: (id: string) => void;
+  /**
+   * Commit a rename. The EDITING UI lives in this component — an inline input
+   * on the row, replacing the `window.prompt()` that used to sit in
+   * `App.renameSession` — and only a committed, non-empty title reaches here.
+   * See `RenameEditor` for why `prompt` had to go.
+   */
+  onRename: (id: string, title: string) => void;
   /**
    * The model the app is set to right now.
    *
@@ -76,6 +82,20 @@ export function SessionList({
    * Delete.
    */
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  /**
+   * The row currently being renamed, and the text in its editor.
+   *
+   * 🔴 WHY THIS STATE LIVES HERE AND NOT IN `App.renameSession`: the old flow
+   * called `window.prompt()` — which a sandboxed iframe SILENTLY IGNORES (no
+   * `allow-modals`), so prompt returned nothing, the `if (!title) return` fired,
+   * and clicking Rename did nothing at all. The console even said so: `Ignored
+   * call to 'prompt()'. The document is sandboxed, and the 'allow-modals'
+   * keyword is not set.` The fix is the editing UI the web uses for a list item:
+   * the row itself becomes an input (see `RenameEditor`). The list owns
+   * `renamingId` so two rows cannot edit at once; the draft text is the
+   * editor's own state, so a cancelled edit cannot leave text behind.
+   */
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   /**
    * The "+ New" button, as the FOCUS TARGET AFTER A DELETE.
    *
@@ -187,7 +207,16 @@ export function SessionList({
               return (
                 <div
                   key={session.id}
-                  onClick={() => onSelect(session.id)}
+                  onClick={() => {
+                    // 🔴 A PRESS INSIDE THE EDITOR IS NOT A SELECTION. While the
+                    // row is being renamed its input sits inside this row, so
+                    // every click on it bubbles here; treating that as
+                    // `onSelect` is harmless for the same row but would
+                    // re-select on a stray press mid-edit. Rename commits live
+                    // in the editor's Enter/blur, never here.
+                    if (renamingId === session.id) return;
+                    onSelect(session.id);
+                  }}
                   // 🔴 `aria-current` IS THE ACTIVE-ROW CONTRACT, not the
                   // background colour. A test that reads a colour pins a
                   // decoration; this is the fact a screen reader gets, and it
@@ -209,23 +238,45 @@ export function SessionList({
                   }}
                   data-testid={`session-item-${session.id}`}
                 >
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontWeight: isActive ? 600 : 400,
-                        fontSize: 13,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
+                  {/*
+                    🔴 WHILE THE ROW IS BEING RENAMED, THE EDITOR REPLACES THE
+                    TITLE BLOCK AND THE ⋮ IS GONE — not hidden by CSS but not
+                    rendered. The menu's own click path starts the rename and
+                    closes itself first (`close(true)` in `SessionRowMenu`), so
+                    a menu cannot be open on an editing row; rendering the
+                    trigger during a rename would just be a second way to click
+                    out of the edit (its blur-commit fires first) for no
+                    affordance the edit itself does not provide.
+                  */}
+                  {renamingId === session.id ? (
+                    <RenameEditor
+                      initial={session.title}
+                      testId={`rename-input-${session.id}`}
+                      onCommit={(title) => {
+                        setRenamingId(null);
+                        onRename(session.id, title);
                       }}
-                    >
-                      {session.title}
+                      onCancel={() => setRenamingId(null)}
+                    />
+                  ) : (
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontWeight: isActive ? 600 : 400,
+                          fontSize: 13,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {session.title}
+                      </div>
+                      <div style={{ ...metaText, fontSize: 11, marginTop: 1 }}>
+                        {formatRelativeTime(session.updatedAt, at)}
+                        {otherModel ? ` · ${otherModel}` : ''}
+                      </div>
                     </div>
-                    <div style={{ ...metaText, fontSize: 11, marginTop: 1 }}>
-                      {formatRelativeTime(session.updatedAt, at)}
-                      {otherModel ? ` · ${otherModel}` : ''}
-                    </div>
-                  </div>
+                  )}
                   {/*
                     ONE row action now — the ⋮ that opens the menu. Rename and
                     Delete moved INSIDE it; see `SessionRowMenu`.
@@ -238,13 +289,19 @@ export function SessionList({
                     conditional rendering, which would make the actions
                     unreachable by keyboard entirely.
                   */}
-                  <SessionRowMenu
-                    session={session}
-                    open={openMenuId === session.id}
-                    onOpenChange={(next) => setOpenMenuId(next ? session.id : null)}
-                    onRename={onRename}
-                    onDelete={deleteAndRefocus}
-                  />
+                  {renamingId !== session.id && (
+                    <SessionRowMenu
+                      session={session}
+                      open={openMenuId === session.id}
+                      onOpenChange={(next) => setOpenMenuId(next ? session.id : null)}
+                      // Starting an edit is THIS component's state change, not a
+                      // call out to App. The old flow called `window.prompt()`
+                      // inside `App.renameSession`, which the sandboxed iframe
+                      // ignores silently — see the `renamingId` note above.
+                      onRename={(id) => setRenamingId(id)}
+                      onDelete={deleteAndRefocus}
+                    />
+                  )}
                 </div>
               );
             })}
@@ -252,6 +309,104 @@ export function SessionList({
         ))}
       </div>
     </div>
+  );
+}
+
+/**
+ * THE INLINE RENAME INPUT THAT REPLACED `window.prompt()`.
+ *
+ * 🔴 WHY THE PROMPT DIED, AND WHY THIS IS A COMPONENT AT ALL. The rename flow
+ * used to be one line in `App.renameSession`: `prompt('Rename session:')`. In
+ * the embedded run page that call is silently IGNORED — the document is
+ * sandboxed without `allow-modals`, so the browser skips it and resolves to
+ * `null` (the viewer's console: `Ignored call to 'prompt()'. The document is
+ * sandboxed, and the 'allow-modals' keyword is not set.`) — and `if (!title)
+ * return` turned that into a silent no-op. Rename read as broken because it
+ * WAS broken, on the exact surface this app ships on. The replacement is the
+ * pattern list UIs use everywhere: the row's title becomes a focused input.
+ *
+ * Commit rules: Enter or blur COMMITS the trimmed text, Escape CANCELS, an
+ * empty (whitespace-only) title commits nothing — the old `if (!title) return`
+ * survives as "clearing the box and walking away cancels", not "ship an empty
+ * name".
+ */
+function RenameEditor({
+  initial,
+  testId,
+  onCommit,
+  onCancel,
+}: {
+  initial: string;
+  testId: string;
+  onCommit: (title: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  /**
+   * 🔴 THE COMMIT LATCH. Enter commits, the parent unmounts this editor, and
+   * browsers deliver a `blur` on a node being torn down inconsistently —
+   * `onBlur={commit}` must not fire a SECOND commit after the first, with the
+   * same or a cleared draft. Whichever of commit/cancel runs first latches;
+   * every later call is a no-op.
+   */
+  const settledRef = useRef(false);
+
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    input.focus();
+    // The whole title selected, so typing replaces it — the prompt() flow
+    // pre-filled the same way.
+    input.select();
+  }, []);
+
+  const commit = () => {
+    if (settledRef.current) return;
+    settledRef.current = true;
+    const trimmed = value.trim();
+    if (!trimmed) {
+      onCancel();
+      return;
+    }
+    onCommit(trimmed);
+  };
+
+  const cancel = () => {
+    if (settledRef.current) return;
+    settledRef.current = true;
+    onCancel();
+  };
+
+  return (
+    <input
+      ref={inputRef}
+      value={value}
+      onChange={(e) => setValue(e.currentTarget.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          commit();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          cancel();
+        }
+      }}
+      onBlur={commit}
+      aria-label="Rename this chat"
+      data-testid={testId}
+      style={{
+        flex: 1,
+        minWidth: 0,
+        font: 'inherit',
+        fontSize: 13,
+        color: token.text,
+        background: token.surface2,
+        border: `1px solid ${token.border}`,
+        borderRadius: radius.sm,
+        padding: '3px 6px',
+      }}
+    />
   );
 }
 
@@ -317,9 +472,12 @@ export function SessionList({
  *     with.
  *
  * 🔴 AND FOCUS GOES BACK TO THE TRIGGER, on every close route where the trigger
- * still exists. `close(true)` is Escape and Rename; the outside-pointer and
- * tab-out routes pass `false`, because the viewer is deliberately somewhere else
- * and pulling them back would be a focus trap. Delete is the one route the
+ * still exists. `close(true)` is Escape and Rename — though on the Rename route
+ * the trigger's focus is momentary by design: the parent starts an inline edit
+ * in the same tick, and `RenameEditor` focuses its input on mount, which is
+ * where a renaming viewer needs to be. The outside-pointer and tab-out routes
+ * pass `false`, because the viewer is deliberately somewhere else and pulling
+ * them back would be a focus trap. Delete is the one route the
  * trigger cannot serve — it unmounts with the row — and is handled a level up in
  * `SessionList`'s `deleteAndRefocus`, which applies that same rule: it refocuses
  * on the keyboard route and leaves focus alone on the pointer one.
