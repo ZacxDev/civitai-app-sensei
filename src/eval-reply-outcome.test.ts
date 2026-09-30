@@ -248,20 +248,46 @@ describe('🔴 summarize.mjs refuses to attribute a cause a legacy file never re
     expect(out).toMatch(/empty replies \(#476\):\s*1/);
   });
 
-  it('🔴 every file already in eval/results/ is schema 1 and none reports a cause count', () => {
-    // Real data, not a fixture: the recorded arms are exactly the population
-    // that got mislabelled, so they are the population worth pinning.
-    // ⚠️ There are TEN of them. #37's commit message and PR body both say
-    // "15 result files" — that number was never counted and is wrong; this
-    // assertion is what caught it. The floor is a positive control that the
-    // loop below actually iterated over something.
+  it('🔴 every file in eval/results/ is stamped for the schema it really is', () => {
+    // History, because the ORIGINAL form of this guard was a snapshot, not an
+    // invariant. Written 2026-09-02 as "every file ALREADY in eval/results/ is
+    // schema 1" — true then: #37 moved the RUNNER to schema 2 (a real
+    // verdict-read `withheld` + `emptyReply`, stamped `resultSchema: 2`) the
+    // same day, and no arm ran again until 2026-09-29, when the repo's own
+    // current runner produced two schema-2 files and tripped its own guard.
+    // The population claim is gone; the per-file contract it was guarding
+    // stays, both directions:
+    //   - a schema-1 file must be FLAGGED as one — summarise refuses both
+    //     causes (`noText`) and the file may not report a cause count;
+    //   - a schema-2 file must carry the STAMP (`resultSchema === 2`) and must
+    //     NOT be flagged as legacy. A schema-2 file with the stamp STRIPPED is
+    //     caught by the key-presence fallback in `schemaOf` — the emptyReply
+    //     rows make it schema 2 while the missing stamp fails the assertion
+    //     below — so a mislabeled file cannot hide either way.
     const dir = join(ROOT, 'eval/results');
     const files = readdirSync(dir).filter((f) => f.endsWith('.json'));
     expect(files.length).toBeGreaterThanOrEqual(10);
+    let sawSchema2 = 0;
     for (const f of files) {
-      const out = summarizeFixture(JSON.parse(readFileSync(join(dir, f), 'utf8')));
-      expect(out, f).toContain('SCHEMA 1');
-      expect(out, f).not.toMatch(/empty replies \(#476\):\s*\d/);
+      const doc = JSON.parse(readFileSync(join(dir, f), 'utf8')) as {
+        resultSchema?: number;
+        results: Array<Record<string, unknown>>;
+      };
+      const out = summarizeFixture(doc);
+      const is2 = doc.resultSchema === 2 || doc.results.some((r) => 'emptyReply' in r);
+      if (!is2) {
+        expect(out, f).toContain('SCHEMA 1');
+        expect(out, f).not.toMatch(/empty replies \(#476\):\s*\d/);
+      } else {
+        expect(doc.resultSchema, `${f} has schema-2 rows but no resultSchema stamp`).toBe(2);
+        expect(out, f).not.toContain('SCHEMA 1');
+        sawSchema2 += 1;
+      }
     }
+    // Positive control for the loop above: the schema-2 branch must have
+    // actually executed for at least one real file — the 2026-09-29 v5 arms
+    // are the first two — otherwise the `is2` predicate could be permanently
+    // false and the guard would silently check only legacy files again.
+    expect(sawSchema2).toBeGreaterThanOrEqual(2);
   });
 });
