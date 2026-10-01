@@ -25,13 +25,13 @@ changes the measured production failure.
 - NOT done: platform-side items (ranked list below); live verification of 0.1.27.
 
 ## Open investigations — live diagnosis state
-### dp-talos-proxy-01 intermittent outbound egress (app-blocks build node)
+### The app-blocks build node has intermittent outbound egress
 as-of: 2026-09-30
-- **Symptom + exact repro:** Tekton app-blocks builds on cluster dp-1 fail on exactly one egress step per run: `push` (crane → ghcr.io:443, i/o timeout) or `callback` (finally-task curl POST civitai.com, timeout at 135s) — never both the same run. Repro: submit any app-block version; watch the PipelineRun on node `dp-talos-proxy-01`.
-- **Observed (with values):** sensei 0.1.26: run1 push ✓ 2s + callback ✗ timeout; run2 push ✗ ghcr timeout + callback ✓; run3 all ✓ (live). model-benchmarking runs 8cac4b63 (push ✗) / 73735a5a (callback ✗) show the same split. All three pods ran on dp-talos-proxy-01; `kubectl get ciliumnetworkpolicies -A` shows no policy restricting the callback pods.
+- **Symptom + exact repro:** Tekton app-blocks builds on the production app-blocks cluster fail on exactly one egress step per run: `push` (crane → ghcr.io:443, i/o timeout) or `callback` (finally-task curl POST civitai.com, timeout at 135s) — never both the same run. Repro: submit any app-block version; watch the PipelineRun on the app-blocks build node.
+- **Observed (with values):** sensei 0.1.26: run1 push ✓ 2s + callback ✗ timeout; run2 push ✗ ghcr timeout + callback ✓; run3 all ✓ (live). model-benchmarking runs 8cac4b63 (push ✗) / 73735a5a (callback ✗) show the same split. All three pods ran on the same build node; `kubectl get ciliumnetworkpolicies -A` shows no policy restricting the callback pods.
 - **Ruled out:** pipeline-step logic (the failing steps are plain curl/crane and the build itself (kaniko) succeeds every time) `via: command` — kubectl logs of the finally tasks, read directly.
-- **Leading hypothesis:** node-level intermittent outbound connectivity on dp-talos-proxy-01 — NAT/conntrack exhaustion or Cilium masquerade/routing flap.
-- **Next probe:** from a pod pinned to that node (`kubectl debug node/dp-talos-proxy-01` or a nodeSelector pod): `for i in $(seq 1 20); do curl -m 5 -sS -o /dev/null -w '%{http_code}\n' https://civitai.com/api/v1/models; sleep 2; done` — count non-200s; run the identical loop from a sibling node as control. Then `conntrack -S` on the node under the same load.
+- **Leading hypothesis:** node-level intermittent outbound connectivity on the app-blocks build node — NAT/conntrack exhaustion or Cilium masquerade/routing flap.
+- **Next probe:** from a pod pinned to that node (a nodeSelector pod; the node name is in the datapacket-talos runbook): `for i in $(seq 1 20); do curl -m 5 -sS -o /dev/null -w '%{http_code}\n' https://civitai.com/api/v1/models; sleep 2; done` — count non-200s; run the identical loop from a sibling node as control. Then `conntrack -S` on the node under the same load.
 
 ### blocks.pollWorkflow transient 503s (degrading month over month)
 as-of: 2026-09-30
@@ -44,7 +44,7 @@ as-of: 2026-09-30
 ## Next steps (ranked)
 1. Verify 0.1.27 live after moderator approval: run the closing-condition check above; on live, also confirm `rename-input-` testid still present and the JS bundle hash MOVED.
    forcing: gate — moderator review of `pubreq_01M3QRBBP2MBC0ZFP15HF81TA1` is the pending external gate; poll with `python3 ~/.claude/skills/civitai-app-fleet/app_state.py sensei`.
-2. Dig dp-talos-proxy-01 egress (open investigation #1) — it cost 2 failed builds of the 0.1.26 release and will keep eating ~10 min per fleet release until fixed. Platform-side: `datapacket-talos` (app-blocks skill) for the node dig.
+2. Dig the app-blocks build-node egress (open investigation #1) — it cost 2 failed builds of the 0.1.26 release and will keep eating ~10 min per fleet release until fixed. Platform-side: `datapacket-talos` (app-blocks skill) for the node dig.
    forcing: incident — 2 of 3 sensei 0.1.26 builds failed on egress, evidence in the k8s transcripts and the pubreq rows.
 3. Diagnose the pollWorkflow 503 degradation (open investigation #2) — it poisons ~35% of paid eval turns (~30% Buzz overhead) and any block app's polling UX. If server-side, it belongs in civitai/civitai; if Cloudflare, infra.
    forcing: incident — poison rate 2/24 → 13/36 → 11/24 over four weeks, recorded verbatim in the committed eval results.
@@ -60,7 +60,7 @@ as-of: 2026-09-30
 
 ## Gotchas / decisions / dead-ends
 - The devrc bash guard's regexes catch `git add` variants, the WORD "stash" anywhere in a command (commit messages included), and `git commit` textually co-located with `git checkout -b` in one call. Split calls; write commit messages without banned substrings.
-- `civitai app submit` builds from an INTERNAL Forgejo mirror (`forgejo.civitai.com/civitai-apps/sensei.git`) — the commit a PipelineRun reports (e.g. `9eb68546…`) exists nowhere on GitHub and that is by design. Do not chase it; the image tag is that mirror commit.
+- `civitai app submit` builds from an internal mirror (the pipeline's own git remote, not GitHub) — the commit a PipelineRun reports (e.g. `9eb68546…`) exists nowhere on GitHub and that is by design. Do not chase it; the image tag is that mirror commit.
 - The eval runner bypasses the app entirely — it drives the tool loop itself and CANNOT exercise the app's Layer-2 correction or duplicate-call guard. Ungrounded scores on no-tool turns understate the shipped app. The v1 set (`prompt-eval-set.v1.json`) has NO recommendation question — for recommendation behavior use `eval/recommend-probe.v1.json`.
 - `civitai whoami` does not print the OAuth token; it lives in `~/.config/civitai/config.yaml` `access_token` (44 chars). The runner needs it as `CIVITAI_OAUTH_TOKEN`.
 - The v5 eval's headline metric (multi-shaped lookups) is NEW — computed per-turn from `toolCalls[].rawArguments` shape tuples; not part of summarize.mjs.
