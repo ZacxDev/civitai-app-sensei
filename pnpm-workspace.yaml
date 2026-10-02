@@ -1,29 +1,65 @@
-# 🔴 THE `minimumReleaseAgeExclude` BLOCK IS BACK, WITH ONE LIVE ENTRY, AND IT IS
-# LOAD-BEARING RIGHT NOW. `@civitai/blocks-react@0.62.0` was published
-# 2026-10-02T04:00:25Z, so it sits inside pnpm 11's built-in ~24h
-# `minimumReleaseAge` cutoff until roughly 2026-10-03T04:00Z. Measured in BOTH
-# directions on 2026-10-02, which is the only reason this paragraph is trusted:
-# with the entry removed, `pnpm install --frozen-lockfile` FAILS —
+# 🔴 THE `minimumReleaseAgeExclude` BLOCK HAS FOUR LIVE ENTRIES AND EVERY ONE OF
+# THEM IS LOAD-BEARING RIGHT NOW, until roughly 2026-10-03T17:38Z. The
+# blocks-react ^0.63.0 / app-sdk ^0.55.0 bump put them there. Publish instants, as
+# named by pnpm's OWN refusal (which is the figure the gate compares against):
 #
-#   ✗ Lockfile failed supply-chain policy check (203 entries)
+#   @civitai/blocks-react@0.63.0   2026-10-02T17:38:43.000Z   direct
+#   @civitai/app-sdk@0.55.0        2026-10-02T17:38:42.000Z   direct
+#   @civitai/components@0.9.1      2026-10-02T17:38:43.000Z   🔴 TRANSITIVE
+#   @civitai/theme@0.5.0           2026-10-02T17:38:43.000Z   direct (bumped here)
+#
+# 🔴 FOUR TOKENS FOR TWO EDITED RANGES, BECAUSE THE GATE SCORES EVERY LOCKFILE
+# ENTRY AND NOT ONLY THE RANGES YOU TOUCHED. `@civitai/components` is not a direct
+# dependency of this app at all — `package.json` pins `@civitai/components-react`,
+# a DIFFERENT package — and 0.9.1 enters the lockfile only underneath
+# `blocks-react@0.63.0`. So counting your own `package.json` edits is not a way to
+# predict how many tokens you need. pnpm appended `components@0.9.1` and
+# `theme@0.5.0` ITSELF during a bare `pnpm install`, printing `Added 2 entries to
+# minimumReleaseAgeExclude` in among the dependency table — read what it wrote
+# rather than assuming your own two sufficed.
+#
+# MEASURED BOTH WAYS, PER TOKEN, which is the only reason this paragraph is
+# trusted: each of the four was deleted on its own from a CLEAN tree and
+# `pnpm install --frozen-lockfile` exited 1 naming exactly that package, e.g.
+#
 #   [ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] 1 lockfile entries failed verification:
-#     @civitai/blocks-react@0.62.0 was published at 2026-10-02T04:00:25.000Z,
-#     within the minimumReleaseAge cutoff (2026-10-01T04:54:39.418Z)
+#     @civitai/components@0.9.1 was published at 2026-10-02T17:38:43.000Z,
+#     within the minimumReleaseAge cutoff (2026-10-01T19:20:48.392Z)
 #
-# — and with it restored the same command exits 0 (`Already up to date`).
-# `.github/workflows/ci.yml` line 40 runs exactly that command, so dropping this
-# entry today fails CI outright.
+# — with all four present the same command exits 0 over 205 entries.
+# 🔴 `rm -rf node_modules` BEFORE EACH ARM OR THE CONTROL IS WORTHLESS: against a
+# warm tree the command short-circuits to `Already up to date` and returns 0
+# whether or not the exclusion is there. `.github/workflows/ci.yml` line 40 runs
+# exactly this command against a cold cache, so a warm local 0 is not CI's answer.
 #
 # ⚠️ `pnpm config get minimumReleaseAge` returns `undefined` HERE AND THAT DOES NOT
 # MEAN UNSET-AND-INERT — it means pnpm applies its built-in 24h default. Reading
 # that `undefined` as "no policy, so the list does nothing" is the specific wrong
-# turn to avoid; the control above is what settles it, not the config read.
+# turn to avoid; the control above is what settles it, not the config read. This
+# paragraph was re-verified on the ^0.63.0 bump and is CORRECT as written — an
+# earlier revision of this file deleted the whole block under a header asserting it
+# was inert, and CI failed. Leave it.
 #
-# The three entries this file used to carry — `@civitai/app-sdk@0.45.0`,
-# `@civitai/blocks-react@0.53.1`, `@civitai/sdk@0.8.0` — have all aged out and are
-# gone, correctly. Re-measure a publish time with `npm view <pkg> time --json`,
-# which is the only authority on one; do not trust a timestamp written into a
-# comment, including these.
+# 🔴 THE REPLACE CONVENTION HAS AN ORDERING TRAP, FOUND ON THIS BUMP. Replacing
+# `@civitai/blocks-react@0.62.0` with `@civitai/blocks-react@0.63.0` and THEN
+# installing fails: at gate time the lockfile still resolves 0.62.0, which now has
+# no exclusion, so the install is refused before it can write the new lockfile —
+# and the error names 0.62.0, i.e. the version you just removed on purpose, which
+# reads as nonsense. Allow BOTH for the resolving install
+# (`'@civitai/blocks-react@0.62.0 || 0.63.0'`), then delete the old alternative
+# once the lockfile no longer mentions it (`grep -c blocks-react@0.62.0` → 0) and
+# re-run the clean frozen install to confirm. The committed state is the pruned
+# one, per the rule below.
+#
+# Entries this file carried before and no longer does — `@civitai/app-sdk@0.45.0`,
+# `@civitai/blocks-react@0.53.1`, `@civitai/blocks-react@0.62.0`,
+# `@civitai/sdk@0.8.0` — have all aged out or been bumped past, correctly.
+# Re-measure a publish time with `npm view <pkg> time --json`, which is the only
+# authority on one; do not trust a timestamp written into a comment, including
+# these. ⚠️ `npm view` and pnpm disagree by minutes on the same version (npm says
+# 17:42:54.561Z for blocks-react@0.63.0 against pnpm's 17:38:43.000Z) — two
+# registry fields, not a transcription error. Quote pnpm's, because pnpm is what
+# fails.
 #
 # THE RULE, unchanged: pin the version EXACTLY, never a bare package name, or every
 # future release of that package is exempted including one cut by a compromised
@@ -76,4 +112,7 @@
 packages:
   - '.'
 minimumReleaseAgeExclude:
-  - '@civitai/blocks-react@0.62.0'
+  - '@civitai/blocks-react@0.63.0'
+  - '@civitai/components@0.9.1'
+  - '@civitai/theme@0.5.0'
+  - '@civitai/app-sdk@0.55.0'

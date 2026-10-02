@@ -67,10 +67,21 @@ describe('boot token parity with @civitai/theme', () => {
     );
   });
 
-  it('the LIGHT literals match the package :root block', () => {
-    const body = tokenValue(THEME_CSS, ':root', '--civitai-color-body');
-    const text = tokenValue(THEME_CSS, ':root', '--civitai-color-text');
-    const surface = tokenValue(THEME_CSS, ':root', '--civitai-color-surface');
+  // 🔴 READS `[data-theme='light']`, NOT `:root`, AND THAT CHANGED AT
+  // @civitai/theme@0.5.0 — the package went DARK-FIRST. Through 0.4.0 `:root` held
+  // the LIGHT palette and `[data-theme='dark']` overrode it; from 0.5.0 `:root`
+  // holds the DARK palette and the light palette moved to its own
+  // `[data-theme='light']` block (the package also no longer ships any
+  // `prefers-color-scheme` rule of its own). The boot LITERALS did not move —
+  // light is still #fefefe and dark still #1a1b1e, so `index.html` is untouched by
+  // that bump; only the selector this file reads the light palette OUT OF did.
+  // Keeping `:root` here would have compared the light boot block against the
+  // package's DARK values and, worse, made the sanity assertion in the next case
+  // compare dark against itself.
+  it("the LIGHT literals match the package [data-theme='light'] block", () => {
+    const body = tokenValue(THEME_CSS, "[data-theme='light']", '--civitai-color-body');
+    const text = tokenValue(THEME_CSS, "[data-theme='light']", '--civitai-color-text');
+    const surface = tokenValue(THEME_CSS, "[data-theme='light']", '--civitai-color-surface');
 
     const media = BOOT_CSS.slice(BOOT_CSS.indexOf('@media (prefers-color-scheme: light)'));
     expect(tokenValue(media, ':root', '--sn-boot-body')).toBe(body);
@@ -89,7 +100,10 @@ describe('boot token parity with @civitai/theme', () => {
   // media query or an explicit light signal would make a no-preference viewer boot
   // light while every other layer of this app resolves unknown to dark.
   it('no light value is reachable without an explicit light signal', () => {
-    const lightBody = tokenValue(THEME_CSS, ':root', '--civitai-color-body');
+    // `[data-theme='light']` per the note above — from theme 0.5.0 the package's
+    // `:root` IS the dark palette, which would make the sanity assertion below
+    // compare dark against itself and pass vacuously in both directions.
+    const lightBody = tokenValue(THEME_CSS, "[data-theme='light']", '--civitai-color-body');
     const darkBody = tokenValue(THEME_CSS, "[data-theme='dark']", '--civitai-color-body');
     expect(lightBody).not.toBe(darkBody); // sanity: or this test proves nothing
 
@@ -107,7 +121,8 @@ describe('boot token parity with @civitai/theme', () => {
   // `background` DECLARATION is not decoration: it paints the html canvas, the layer
   // beneath the skeleton. Flipping it to white changed nothing and no test failed.
   it('every html-canvas background matches its region', () => {
-    const lightBody = tokenValue(THEME_CSS, ':root', '--civitai-color-body');
+    // `[data-theme='light']` per the note on the LIGHT-literals case above.
+    const lightBody = tokenValue(THEME_CSS, "[data-theme='light']", '--civitai-color-body');
     const darkBody = tokenValue(THEME_CSS, "[data-theme='dark']", '--civitai-color-body');
 
     const baseHtml = BOOT_CSS.indexOf('html {');
