@@ -1,14 +1,24 @@
 /**
  * THE `@civitai/*` PACKAGES MOVE AS ONE SET, AND NOTHING USED TO CHECK IT.
  *
- * `@civitai/blocks-react` declares EXACT pins for `@civitai/theme` and
+ * `@civitai/blocks-react` declares pins for `@civitai/theme` and
  * `@civitai/components` in its own `dependencies` (at 0.49.0: `theme 0.3.1`,
- * `components 0.4.1`), and `@civitai/components-react` declares exact pins for the
- * same two. Exact pins on both sides cannot be deduped, so bumping `app-sdk` +
+ * `components 0.4.1`), and `@civitai/components-react` declares pins for the
+ * same two. Pins on both sides that cannot be deduped mean bumping `app-sdk` +
  * `blocks-react` while leaving `components-react` and `theme` behind installs a
  * SECOND copy of each. Measured: with `package.json` at `blocks-react ^0.49.0` +
  * `components-react ^0.3.0` + `theme ^0.2.0`, `node_modules/.pnpm` holds
  * `@civitai+components@{0.3.1,0.4.1}` and `@civitai+theme@{0.2.1,0.3.1}`.
+ *
+ * ⚠️ TWO OF THOSE SENTENCES SAID "EXACT", AND THAT IS NO LONGER TRUE — corrected at
+ * `blocks-react@0.62.0`, which declares `theme ^0.4.0` / `components ^0.9.0`, and
+ * `components-react@0.9.1`, which declares `components ^0.9.0` and NO theme at all.
+ * The duplication mechanism survives the change because a caret on a pre-1.0
+ * version pins the minor: `^0.9.0` and `0.4.1` still cannot dedupe. Measured on
+ * this bump — `blocks-react 0.62.0` against a left-behind `components-react 0.4.1`
+ * and `theme 0.3.1` put `@civitai/theme: 0.3.1, 0.4.0` and
+ * `@civitai/components: 0.4.1, 0.9.0` in the resolvable tree. What DID have to
+ * change is how the cases below compare; see `resolvedDepVersion`.
  *
  * ── WHAT THE SKEW ACTUALLY DOES, MEASURED IN THAT STATE ─────────────────────
  *
@@ -298,6 +308,84 @@ function civitaiPins(manifest: Manifest): Record<string, string> {
   );
 }
 
+/**
+ * The version of `dep` that `topLevelPackage`'s installed copy actually RESOLVES —
+ * read off the tree, not out of a declaration string.
+ *
+ * 🔴 THIS FUNCTION EXISTS BECAUSE UPSTREAM LOOSENED ITS PINS, AND THE OLD GUARD
+ * SAID SO IN ADVANCE. Up to `blocks-react@0.53.1` the `@civitai/*` entries of its
+ * `dependencies` were EXACT versions (`theme 0.3.1`, `components 0.4.1`), so string
+ * equality against the installed version was a sound test, and the case named
+ * `blocks-react's pins are EXACT versions` existed to say: "if upstream ever
+ * loosens these to ranges, the assertions below would be comparing a range to a
+ * version and this test is where that gets noticed rather than silently inverted
+ * into a vacuous pass." At `0.62.0` they are ranges — `theme ^0.4.0`,
+ * `components ^0.9.0` — and that case is what went red. It was right; the
+ * comparisons were the thing that had to change.
+ *
+ * So the relationship cases below no longer compare DECLARATIONS at all. They
+ * compare the EDGE: the copy `blocks-react` resolves, the copy `components-react`
+ * resolves, and the copy `createRequire` resolves from `src/`. That is strictly
+ * more than the old test asserted — a declaration is only a proxy for the edge, and
+ * the edge is what renders — and it is indifferent to whether upstream writes an
+ * exact version or a range.
+ *
+ * Same reach as `installedCivitaiVersions`, and for the same reason: pnpm
+ * materialises a package at `<store>/node_modules/<name>`, so the sibling links it
+ * resolves THROUGH are two levels up. The three states that reach cannot see are
+ * enumerated once, in that function — do not restate them here.
+ */
+function resolvedDepVersion(topLevelPackage: string, dep: string): string {
+  const owner = realpathSync(join(NODE_MODULES, topLevelPackage));
+  const scope = dirname(dirname(owner));
+  return readManifest(join(realpathSync(join(scope, dep)), 'package.json')).version;
+}
+
+/**
+ * Whether `range`, as written in a published `dependencies` block, admits
+ * `version`.
+ *
+ * 🔴 FAIL-CLOSED ON AN UNRECOGNISED FORM, which is the whole reason this is hand-
+ * rolled rather than delegated. `semver` is not a declared dependency of this repo,
+ * and reaching for a transitive copy would make an undeclared package load-bearing
+ * in a gate. More importantly, a full range parser would SILENTLY accept a form
+ * nobody here has thought about (`||` alternatives, a pre-release tag, `*`, a git
+ * or `workspace:` specifier) and quietly reduce the cases below to whatever that
+ * form happens to mean. This throws instead, so the next shape upstream publishes
+ * lands as a named failure in this file — the same discipline the retired
+ * exactness check was providing, carried forward rather than dropped.
+ *
+ * Supported deliberately narrowly, to exactly the two forms in play:
+ *   - an exact version, `1.2.3`
+ *   - a caret range, `^x.y.z`, with pre-1.0 handled as npm defines it: `^0.y.z`
+ *     admits only `0.y.*`, so `^0.9.0` does NOT admit `0.10.0`. Getting that
+ *     backwards is the single most common semver error, and it is the case this
+ *     repo lives in — every `@civitai/*` package is still pre-1.0.
+ */
+function rangeAdmits(range: string, version: string): boolean {
+  const triple = (s: string): [number, number, number] => {
+    const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(s);
+    if (!m) throw new Error(`not a plain version triple: ${s}`);
+    return [Number(m[1]), Number(m[2]), Number(m[3])];
+  };
+  const [vMajor, vMinor, vPatch] = triple(version);
+
+  if (/^\d+\.\d+\.\d+$/.test(range)) {
+    return range === version;
+  }
+  if (/^\^\d+\.\d+\.\d+$/.test(range)) {
+    const [rMajor, rMinor, rPatch] = triple(range.slice(1));
+    if (vMajor !== rMajor) return false;
+    // Pre-1.0: the caret pins the MINOR too.
+    if (rMajor === 0) return vMinor === rMinor && vPatch >= rPatch;
+    return vMinor > rMinor || (vMinor === rMinor && vPatch >= rPatch);
+  }
+  throw new Error(
+    `unsupported range form ${JSON.stringify(range)} — this guard refuses to ` +
+      'guess at what it admits; teach `rangeAdmits` the new form explicitly',
+  );
+}
+
 const BLOCKS_REACT = manifestOf('@civitai/blocks-react');
 const COMPONENTS_REACT = manifestOf('@civitai/components-react');
 const BLOCKS_REACT_PINS = civitaiPins(BLOCKS_REACT);
@@ -307,6 +395,14 @@ describe('@civitai/* dependency lockstep', () => {
   it('the extractors can fail — a missing package throws rather than reading as absent', () => {
     expect(() => manifestOf('@civitai/not-a-real-package')).toThrow();
     expect(() => soleVersion('@civitai/not-a-real-package')).toThrow(/not installed at all/);
+    // The edge reader too, in both directions: an owner that is not installed, and
+    // a dependency that owner does not link. Without this a `resolvedDepVersion`
+    // that returned a falsy value on a miss would make the relationship cases below
+    // compare two misses and pass.
+    expect(() => resolvedDepVersion('@civitai/not-a-real-package', '@civitai/theme')).toThrow();
+    expect(() =>
+      resolvedDepVersion('@civitai/blocks-react', '@civitai/not-a-real-package'),
+    ).toThrow();
   });
 
   it('orphansAreNotSecondCopies — the walk separates a STALE tree from a SKEWED one', () => {
@@ -437,36 +533,99 @@ describe('@civitai/* dependency lockstep', () => {
     expect([...INSTALLED.keys()].sort()).toContain('@civitai/components');
   });
 
-  it("blocks-react's pins are EXACT versions, which is what makes equality the right test", () => {
-    // If upstream ever loosens these to ranges, the assertions below would be
-    // comparing a range to a version and this test is where that gets noticed
-    // rather than silently inverted into a vacuous pass.
+  it('blocks-react declares exactly the two shared packages, and every range form is understood', () => {
+    // The key set is load-bearing: the relationship cases below iterate it, so a
+    // package silently leaving or joining `blocks-react`'s `dependencies` would
+    // shrink or widen what they cover without any of them failing.
     expect(Object.keys(BLOCKS_REACT_PINS).sort()).toEqual([
       '@civitai/components',
       '@civitai/theme',
     ]);
+    // The successor to the retired exactness check. It no longer demands an exact
+    // version — `0.62.0` publishes ranges and that is upstream's call — but it does
+    // demand that `rangeAdmits` RECOGNISES the form, so a shape nobody here has
+    // reasoned about fails loudly instead of being interpreted by guesswork.
     for (const [dep, pin] of Object.entries(BLOCKS_REACT_PINS)) {
-      expect(pin, `${dep} pin is not an exact version`).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(
+        () => rangeAdmits(pin, soleVersion(dep)),
+        `${dep}: blocks-react declares ${pin}, a range form this guard cannot evaluate`,
+      ).not.toThrow();
     }
+  });
+
+  it('rangeAdmits is right about the pre-1.0 caret, and refuses what it does not know', () => {
+    // 🔴 A SELF-CONTROL ON THE PREDICATE EVERY CASE BELOW NOW RESTS ON. A
+    // `rangeAdmits` that returned `true` unconditionally would make the three
+    // relationship cases vacuous, and the pre-1.0 caret is the exact rule it would
+    // be easiest to get wrong in the direction that passes.
+    expect(rangeAdmits('0.9.0', '0.9.0')).toBe(true);
+    expect(rangeAdmits('0.9.0', '0.9.1')).toBe(false); // exact means exact
+    expect(rangeAdmits('^0.9.0', '0.9.0')).toBe(true);
+    expect(rangeAdmits('^0.9.0', '0.9.7')).toBe(true);
+    expect(rangeAdmits('^0.9.0', '0.10.0')).toBe(false); // pre-1.0 pins the MINOR
+    expect(rangeAdmits('^0.9.1', '0.9.0')).toBe(false); // below the floor
+    expect(rangeAdmits('^0.9.0', '1.0.0')).toBe(false);
+    expect(rangeAdmits('^1.2.0', '1.3.0')).toBe(true); // post-1.0 does not
+    expect(rangeAdmits('^1.2.0', '2.0.0')).toBe(false);
+    expect(() => rangeAdmits('>=0.4.0 <1.0.0', '0.5.0')).toThrow(/unsupported range form/);
+    expect(() => rangeAdmits('*', '0.5.0')).toThrow(/unsupported range form/);
+    expect(() => rangeAdmits('^0.9.0', 'not-a-version')).toThrow(/not a plain version triple/);
   });
 
   // ── the relationship ───────────────────────────────────────────────────────
-  it('every version blocks-react PINS is the only one installed, at exactly that version', () => {
+  it('every @civitai package blocks-react depends on RESOLVES to the single installed copy', () => {
+    // Was: "the installed version equals blocks-react's exact pin". `0.62.0`
+    // publishes ranges, so this reads the EDGE instead — the copy blocks-react's own
+    // dependency scope links — and holds it to being the one copy in the tree. The
+    // declared range is checked too, so a tree that disagrees with the declaration
+    // (a stale install, a hand-edited lockfile) is caught as well as a duplicate.
     for (const [dep, pin] of Object.entries(BLOCKS_REACT_PINS)) {
-      expect(soleVersion(dep), `${dep}: blocks-react pins ${pin}`).toBe(pin);
+      const resolved = resolvedDepVersion('@civitai/blocks-react', dep);
+      expect(
+        resolved,
+        `blocks-react@${BLOCKS_REACT.version} resolves ${dep}@${resolved}, but the tree ` +
+          `holds ${(INSTALLED.get(dep) ?? []).join(', ')}`,
+      ).toBe(soleVersion(dep));
+      expect(
+        rangeAdmits(pin, resolved),
+        `blocks-react@${BLOCKS_REACT.version} declares ${dep}@${pin} but resolves ${resolved}`,
+      ).toBe(true);
     }
   });
 
-  it('components-react pins the SAME versions blocks-react does', () => {
+  it('components-react RESOLVES the same copies blocks-react does', () => {
     // The half a `pnpm peers check` cannot see: nothing here is a peer range, so
     // that tool reports `No peer dependency issues found` in the skewed state too.
+    //
+    // 🔴 ITERATES WHAT components-react ACTUALLY DECLARES, because at `0.9.1` it no
+    // longer declares `@civitai/theme` at all — only `@civitai/components`. The old
+    // case iterated blocks-react's keys and read `theirs[dep]`, so it reported
+    // `undefined` for theme and failed on a tree that was perfectly coherent. What
+    // keeps theme covered is not this case: it is `noSecondCopyOfAnyPackage` below
+    // (one theme in the tree) plus the case above (blocks-react resolves it), which
+    // together leave no room for a second copy for components-react to reach.
     const theirs = civitaiPins(COMPONENTS_REACT);
-    for (const [dep, pin] of Object.entries(BLOCKS_REACT_PINS)) {
+    const shared = Object.keys(theirs).filter((dep) => dep in BLOCKS_REACT_PINS);
+    // Positive control: if upstream drops its last shared dependency this case stops
+    // asserting anything, and that should be visible rather than green.
+    expect(
+      shared,
+      `components-react@${COMPONENTS_REACT.version} shares no @civitai dependency with ` +
+        `blocks-react@${BLOCKS_REACT.version} — this case now checks nothing`,
+    ).not.toEqual([]);
+    for (const dep of shared) {
+      const ours = resolvedDepVersion('@civitai/blocks-react', dep);
+      const theirsResolved = resolvedDepVersion('@civitai/components-react', dep);
       expect(
-        theirs[dep],
-        `components-react@${COMPONENTS_REACT.version} pins ${dep}@${theirs[dep]} but ` +
-          `blocks-react@${BLOCKS_REACT.version} pins ${pin}`,
-      ).toBe(pin);
+        theirsResolved,
+        `components-react@${COMPONENTS_REACT.version} resolves ${dep}@${theirsResolved} but ` +
+          `blocks-react@${BLOCKS_REACT.version} resolves ${ours}`,
+      ).toBe(ours);
+      expect(
+        rangeAdmits(theirs[dep], theirsResolved),
+        `components-react@${COMPONENTS_REACT.version} declares ${dep}@${theirs[dep]} but ` +
+          `resolves ${theirsResolved}`,
+      ).toBe(true);
     }
   });
 
@@ -488,11 +647,16 @@ describe('@civitai/* dependency lockstep', () => {
       }
     }
     expect(resolved?.name, `no package manifest above ${stylesheet}`).toBe('@civitai/theme');
+    // Against the theme blocks-react RESOLVES, not against the range it declares —
+    // `0.62.0` declares `^0.4.0`, and a range is not a thing a stylesheet can be
+    // equal to. The claim is unchanged: the file the boot-parity assertions read is
+    // the file the rendered tree is painted by.
+    const rendered = resolvedDepVersion('@civitai/blocks-react', '@civitai/theme');
     expect(
       resolved?.version,
       `bootTokens.test.ts asserts index.html against @civitai/theme@${resolved?.version}, but ` +
-        `blocks-react@${BLOCKS_REACT.version} renders against ${BLOCKS_REACT_PINS['@civitai/theme']}`,
-    ).toBe(BLOCKS_REACT_PINS['@civitai/theme']);
+        `blocks-react@${BLOCKS_REACT.version} renders against ${rendered}`,
+    ).toBe(rendered);
   });
 
   it('noSecondCopyOfAnyPackage — one installed version per @civitai package', () => {

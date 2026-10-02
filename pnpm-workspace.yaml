@@ -1,20 +1,36 @@
-# 🔴 THE `minimumReleaseAgeExclude` BLOCK IS GONE, AND THAT IS WHY THIS FILE IS
-# NEARLY EMPTY. It carried three entries — `@civitai/app-sdk@0.45.0`,
-# `@civitai/blocks-react@0.53.1`, `@civitai/sdk@0.8.0` — to get past pnpm's ~24h
-# `minimumReleaseAge` policy while each was fresh. All three have aged out
-# (re-measured with `npm view <pkg> time --json`, which is the only authority on a
-# publish time — do not trust a timestamp written into a comment, including these):
+# 🔴 THE `minimumReleaseAgeExclude` BLOCK IS BACK, WITH ONE LIVE ENTRY, AND IT IS
+# LOAD-BEARING RIGHT NOW. `@civitai/blocks-react@0.62.0` was published
+# 2026-10-02T04:00:25Z, so it sits inside pnpm 11's built-in ~24h
+# `minimumReleaseAge` cutoff until roughly 2026-10-03T04:00Z. Measured in BOTH
+# directions on 2026-10-02, which is the only reason this paragraph is trusted:
+# with the entry removed, `pnpm install --frozen-lockfile` FAILS —
 #
-#   @civitai/app-sdk@0.45.0      published 2026-09-19T19:03:44Z  → free 2026-09-20T19:03Z
-#   @civitai/blocks-react@0.53.1 published 2026-09-20T02:20:25Z  → free 2026-09-21T02:20Z
-#   @civitai/sdk@0.8.0           published 2026-09-27T02:04:53Z  → free 2026-09-28T02:04:53Z
+#   ✗ Lockfile failed supply-chain policy check (203 entries)
+#   [ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] 1 lockfile entries failed verification:
+#     @civitai/blocks-react@0.62.0 was published at 2026-10-02T04:00:25.000Z,
+#     within the minimumReleaseAge cutoff (2026-10-01T04:54:39.418Z)
 #
-# so the block was INERT and `pnpm install --frozen-lockfile` passes without it.
-# Deleted rather than left to accrete a line per bump; re-add an exclusion — with
-# the version pinned EXACTLY, never a bare package name, or every future release of
-# that package is exempted including one cut by a compromised token — only for as
-# long as a newly published version sits inside the cutoff, and delete it again
-# after.
+# — and with it restored the same command exits 0 (`Already up to date`).
+# `.github/workflows/ci.yml` line 40 runs exactly that command, so dropping this
+# entry today fails CI outright.
+#
+# ⚠️ `pnpm config get minimumReleaseAge` returns `undefined` HERE AND THAT DOES NOT
+# MEAN UNSET-AND-INERT — it means pnpm applies its built-in 24h default. Reading
+# that `undefined` as "no policy, so the list does nothing" is the specific wrong
+# turn to avoid; the control above is what settles it, not the config read.
+#
+# The three entries this file used to carry — `@civitai/app-sdk@0.45.0`,
+# `@civitai/blocks-react@0.53.1`, `@civitai/sdk@0.8.0` — have all aged out and are
+# gone, correctly. Re-measure a publish time with `npm view <pkg> time --json`,
+# which is the only authority on one; do not trust a timestamp written into a
+# comment, including these.
+#
+# THE RULE, unchanged: pin the version EXACTLY, never a bare package name, or every
+# future release of that package is exempted including one cut by a compromised
+# token. Keep an entry only for as long as that version sits inside the cutoff, and
+# delete it again after — a bump that moves `package.json` off a version expires
+# that version's entry, so replace it rather than letting the list accrete a line
+# per bump.
 #
 # 🔴 WHY IT HAS TO BE COMMITTED WHILE IT MATTERS, because this is the half that is
 # easy to get wrong: a bare `pnpm install` SUCCEEDS and silently writes this file
@@ -22,9 +38,12 @@
 # `.github/workflows/ci.yml` runs, and which any reproducible build uses — FAILS
 # with `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION` until the exclusion is in the tree.
 # So a pin and its exclusion land in ONE commit, or a reviewer's checkout does not
-# install.
+# install. (Confirmed on the 0.62.0 bump: a bare `pnpm install` appended the entry
+# below on its own, printing `Added 1 entry to minimumReleaseAgeExclude` in among
+# the dependency table. That line is easy to scroll past, and the commit it belongs
+# to is the one you are writing — stage this file.)
 
-# The `packages` key is what remains, and 🔴 ON NO ESTABLISHED RATIONALE. Two were
+# The `packages` key is the other half, and 🔴 ON NO ESTABLISHED RATIONALE. Two were
 # written for it and BOTH were refuted by measurement. They are recorded here so
 # nobody reaches for a third; the reaching is what produced the first two.
 #
@@ -56,3 +75,5 @@
 # this one — it carries the same two dead drafts.
 packages:
   - '.'
+minimumReleaseAgeExclude:
+  - '@civitai/blocks-react@0.62.0'
