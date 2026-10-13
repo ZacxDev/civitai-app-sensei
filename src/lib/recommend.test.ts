@@ -587,7 +587,9 @@ describe('recommend — wiring into the tool loop', () => {
     // Cut by code point: an astral character at the boundary survives whole.
     const astral = readQueryArgument(recommendCall({ image_description: '🎨'.repeat(300) }));
     expect(Array.from(astral!)).toHaveLength(MAX_LOOKUP_LABEL_CHARS);
-    expect(astral).not.toContain('\uFFFD');
+    // No LONE high surrogate (what a UTF-16 cut leaves; it renders as U+FFFD).
+    // Measured: true on the old `slice(0, 199)` output, false on this one.
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(astral!)).toBe(false);
     expect(astral!.slice(0, -1)).toBe('🎨'.repeat(MAX_LOOKUP_LABEL_CHARS - 1));
     // `query` still wins for search tools, unchanged.
     expect(readQueryArgument({ id: 'c', type: 'function', function: { name: 'search_models', arguments: '{"query":"anime"}' } })).toBe('anime');
