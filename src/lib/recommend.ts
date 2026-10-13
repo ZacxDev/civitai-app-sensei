@@ -60,14 +60,37 @@ export const RECOMMEND_TOOL_NAME = 'recommend_resources';
  * gate: `false` keeps the declaration off the wire and the executor out of the
  * round, which is the whole feature. The ROUTE has its own server-side gates
  * (Flipt `resource-intent-jev`, and `resource-intent-checkpoint` for checkpoint
- * requests); while those are dark the route answers 404 / 400, which
- * {@link executeRecommend} reports to the model as "not available" rather than
- * as an answer.
+ * requests); while those are dark the route answers 404, or a 400 carrying a
+ * plain-string reason (not a validation error), which {@link executeRecommend}
+ * reports to the model as "not available" — never as an answer, and never as a
+ * bad argument to retry with.
  */
 export const RECOMMEND_TOOL_ENABLED = true;
 
 /** `RESOURCE_INTENT_MAX_PROMPT_LENGTH` in the route's schema — `prompt` is `.min(1).max(6000)`. */
 export const MAX_IMAGE_DESCRIPTION_CHARS = 6_000;
+
+/**
+ * A base-model name longer than this is refused before any request. Real names
+ * are short ("SDXL 1.0", "Illustrious"); the host's own tool registry bounds a
+ * base-model filter value at 64 for the same reason. Unbounded, the name is
+ * echoed into up to three notes and could push a tool message past the host's
+ * 8,000-character cap — a reject of the whole next submit.
+ */
+export const MAX_BASE_MODEL_CHARS = 64;
+
+/**
+ * The host's bounds on ONE tool declaration and on the tools array, mirrored
+ * from `chat-completion.step.ts` (`MAX_TOOL_DESCRIPTION_CHARS`,
+ * `MAX_TOOL_PARAMETERS_CHARS`, `MAX_TOOLS`). Exceeding any of them is a
+ * BAD_REQUEST on every submit that carries the declaration — i.e. every SFW
+ * turn. The mock host does not validate them, so `recommend.test.ts` asserts the
+ * declaration against these and {@link composeLocalTools} refuses to push the
+ * array past the count.
+ */
+export const HOST_MAX_TOOL_DESCRIPTION_CHARS = 1_024;
+export const HOST_MAX_TOOL_PARAMETERS_CHARS = 4_096;
+export const HOST_MAX_TOOLS = 8;
 
 /**
  * How many suggestions per kind reach the model.
@@ -169,6 +192,12 @@ export function parseRecommendArgs(args: Record<string, unknown>): ParsedRecomme
   // Blank is ABSENT: a model that emits `"base_model": ""` has not named an
   // ecosystem, and forwarding "" is a 400 from the route (`.min(1)`).
   const baseModel = typeof rawBase === 'string' && rawBase.trim().length > 0 ? rawBase.trim() : null;
+  if (baseModel !== null && baseModel.length > MAX_BASE_MODEL_CHARS) {
+    return {
+      ok: false,
+      reason: `base_model is longer than ${MAX_BASE_MODEL_CHARS} characters — give the base model's name only`,
+    };
+  }
   return { ok: true, value: { imageDescription, baseModel } };
 }
 
@@ -191,9 +220,10 @@ export interface ResourceIntentRequest {
  * model.
  *
  * 🔴 NEVER A CHECKPOINT REQUEST WITHOUT `baseModel`. The route 400s it
- * (`baseModel is required when kind is 'checkpoint'`) — but that 400 is still a
- * request against the per-block rate bucket the add-on request shares, spent on
- * an answer known in advance. The add-on body carries NO `kind`: absent is the
+ * (`baseModel is required when kind is 'checkpoint'`) at schema validation,
+ * which runs before its rate limit, so the cost is not quota — it is a round
+ * trip spent on an answer known in advance, and a refusal the model would then
+ * have to be told to ignore. The add-on body carries NO `kind`: absent is the
  * route's add-on path, unchanged.
  */
 export function buildResourceIntentRequests(args: RecommendArgs): ResourceIntentRequest[] {
@@ -215,10 +245,17 @@ export function buildResourceIntentRequests(args: RecommendArgs): ResourceIntent
 
 // ── Route answer → classified state ──────────────────────────────────────────
 
-/** One suggestion as the model is shown it. `modelId` is what grounds a link (`lib/grounding.ts`). */
+/**
+ * One suggestion as the model is shown it. `modelId` is what grounds a link
+ * (`lib/grounding.ts`).
+ *
+ * 🔴 NO `versionId`. The route sends one, and it is deliberately dropped: a
+ * second integer id beside `modelId` and `url` invites a model to link
+ * `/models/<versionId>`, which grounding (correctly) refuses — and an
+ * ungrounded link costs the viewer a billed correction round.
+ */
 export interface ShownSuggestion {
   modelId: number;
-  versionId?: number;
   name: string;
   type?: string;
   baseModel?: string;
@@ -228,14 +265,28 @@ export interface ShownSuggestion {
 
 export type KindResult =
   | { state: 'ok'; items: ShownSuggestion[]; total: number; popularityOrder: boolean }
-  /** 200, `degraded: false`, no suggestions — the route's real "nothing fits / nothing needed". */
-  | { state: 'empty' }
+  /**
+   * 200, `degraded: false`, no suggestions. TWO different findings share this
+   * shape, told apart by the route's own stage-1 verdict:
+   *  - `none_needed` — the compiled `criteria.role` is `'none'`: the route judged
+   *    the image needs no add-on. The ONLY reading that licenses "nothing needed".
+   *  - `nothing_matched` — any other role (or none reported): the route wanted a
+   *    resource and nothing survived its search, maturity clamp and hydration —
+   *    e.g. an SFW-clamped viewer, or a base-model name that matches nothing.
+   *    Presenting that as "no add-on needed" would be false.
+   */
+  | { state: 'empty'; reason: 'none_needed' | 'nothing_matched' }
   /** 200, `degraded: true` — the route's own pipeline failed. NOT an answer. */
   | { state: 'degraded' }
   | { state: 'unauthorized' }
+  /** 400 with a VALIDATION error: an argument the model can fix. */
   | { state: 'invalid'; detail: string | null }
-  /** 404 — the route is dark for this caller (its Flipt flag). */
-  | { state: 'unavailable' }
+  /**
+   * 404 (the route is dark for this caller), or a 400 with a plain-string
+   * reason — a route-level refusal such as a dark checkpoint flag, which no
+   * argument change can fix.
+   */
+  | { state: 'unavailable'; detail: string | null }
   | { state: 'rate_limited'; retryAfterSeconds: number | null }
   | { state: 'malformed' }
   | { state: 'error'; reason: string };
@@ -258,8 +309,6 @@ function projectSuggestion(raw: unknown, kind: ResourceKind): ShownSuggestion | 
   const name = boundedString(s.modelName, MAX_NAME_CHARS);
   if (modelId === null || !name) return null;
   const out: ShownSuggestion = { modelId, name, url: modelUrl(modelId) };
-  const versionId = positiveInt(s.versionId);
-  if (versionId !== null) out.versionId = versionId;
   const type = boundedString(s.modelType, MAX_FIELD_CHARS);
   if (type) out.type = type;
   const baseModel = boundedString(s.baseModel, MAX_FIELD_CHARS);
@@ -286,7 +335,15 @@ export function classifyResourceIntentBody(body: unknown, kind: ResourceKind): K
   // somehow carried some is still one the route itself disowns, so it is not
   // presented.
   if (b.degraded) return { state: 'degraded' };
-  if (b.suggestions.length === 0) return { state: 'empty' };
+  if (b.suggestions.length === 0) {
+    // `criteria.role` is the compiled stage-1 verdict; `intent.role.value` is the
+    // same answer before compilation. Checkpoint mode reports neither (no stage
+    // 1), and an absent verdict is NOT evidence that nothing is needed.
+    const criteria = b.criteria as { role?: unknown } | null | undefined;
+    const intent = b.intent as { role?: { value?: unknown } } | null | undefined;
+    const role = criteria?.role ?? intent?.role?.value;
+    return { state: 'empty', reason: role === 'none' ? 'none_needed' : 'nothing_matched' };
+  }
   const projected = b.suggestions
     .map((s) => projectSuggestion(s, kind))
     .filter((s): s is ShownSuggestion => s !== null);
@@ -304,8 +361,10 @@ export function classifyResourceIntentBody(body: unknown, kind: ResourceKind): K
 /** Classify a non-2xx answer. */
 export function classifyHttpError(e: BlocksHttpError): KindResult {
   if (e.status === 401 || e.status === 403) return { state: 'unauthorized' };
-  if (e.status === 400) return { state: 'invalid', detail: e.detail };
-  if (e.status === 404) return { state: 'unavailable' };
+  if (e.status === 400) {
+    return e.validation ? { state: 'invalid', detail: e.detail } : { state: 'unavailable', detail: e.detail };
+  }
+  if (e.status === 404) return { state: 'unavailable', detail: null };
   if (e.status === 429) return { state: 'rate_limited', retryAfterSeconds: e.retryAfterSeconds };
   return { state: 'error', reason: `HTTP ${e.status}` };
 }
@@ -322,12 +381,13 @@ async function requestKind(req: ResourceIntentRequest, auth: ToolAuth): Promise<
     );
     return classifyResourceIntentBody(body, req.kind);
   } catch (e) {
-    if (e instanceof BlocksHttpError) return classifyHttpError(e);
     // 🔴 AN ABORT ENDS THE WHOLE CALL. It is re-thrown so `executeToolCall`
     // classifies it as `aborted`, which the loop discards — rendering it as a
     // per-kind failure would hand the model a "retry" for a turn the viewer
-    // stopped.
+    // stopped. Checked FIRST: a Stop landing while an error body is being read
+    // surfaces as a `BlocksHttpError`, and is still a Stop.
     if (isAbort(e, auth)) throw e;
+    if (e instanceof BlocksHttpError) return classifyHttpError(e);
     if (e instanceof DOMException && e.name === 'TimeoutError') return { state: 'error', reason: 'timed out' };
     return { state: 'error', reason: e instanceof Error ? e.message : 'request failed' };
   }
@@ -364,8 +424,9 @@ function failureNote(kind: ResourceKind, r: KindResult, baseModel: string | null
       );
     case 'unavailable':
       return (
-        `${label[0].toUpperCase()}${label.slice(1)} recommendations are not available on Civitai right now. ` +
-        'Say so; you may use the model search tool instead.'
+        `${label[0].toUpperCase()}${label.slice(1)} recommendations are not available on Civitai right now` +
+        `${r.detail ? ` (${r.detail})` : ''}. This is not a problem with the arguments — do not retry with a ` +
+        'different base model or description. Say so; you may use the model search tool instead.'
       );
     case 'rate_limited':
       return (
@@ -394,29 +455,29 @@ function section(kind: ResourceKind, r: KindResult, baseModel: string | null): R
         : {}),
     };
   }
+  if (r.state === 'empty' && kind === 'addon' && r.reason === 'none_needed') {
+    return {
+      status: 'none_needed',
+      note:
+        'The recommender judged that this image needs no add-on resource — a checkpoint and a good prompt ' +
+        'are enough. Tell the user that plainly.',
+    };
+  }
   if (r.state === 'empty') {
-    // 🔴 WITH A BASE MODEL, AN EMPTY ADD-ON LIST HAS TWO READINGS, and the note
-    // says so rather than picking one. The add-on path does not validate
-    // `baseModel` (only checkpoint mode does), so a misspelled name filters the
-    // list to nothing and comes back as an ordinary empty `200` — measured live:
-    // an unknown base model gave an empty, non-degraded add-on list beside a
-    // checkpoint 400. Told only "no add-on needed", the model would pass a typo
-    // off as a recommendation.
-    return kind === 'addon'
-      ? {
-          status: 'none_needed',
-          note: baseModel
-            ? `No add-on came back for this image with base model "${baseModel}". Either the image needs no ` +
-              'add-on, or that base model name is not one Civitai recognises (check the checkpoints section ' +
-              'for a refusal). Say which applies; if the name may be wrong, ask the user or retry without ' +
-              'base_model.'
-            : 'The recommender judged that this image needs no add-on resource — a checkpoint and a good prompt ' +
-              'are enough. Tell the user that plainly.',
-        }
-      : {
-          status: 'none_found',
-          note: `No checkpoint suggestion came back${baseModel ? ` for base model "${baseModel}"` : ''}. Say so; do not invent one.`,
-        };
+    // 🔴 NOTHING MATCHED IS NOT "NOTHING NEEDED". With a base model there is a
+    // second reading worth naming: the add-on path does not validate `baseModel`
+    // (only checkpoint mode does), so a misspelled name filters the list to
+    // nothing and comes back as an ordinary empty `200` — measured live: an
+    // unknown base model gave an empty, non-degraded add-on list beside a
+    // checkpoint 400.
+    return {
+      status: 'none_found',
+      note:
+        `No ${kindLabel(kind)} matched this image${baseModel ? ` for base model "${baseModel}"` : ''}. ` +
+        'This does not mean none is needed — say nothing suitable was found' +
+        (baseModel ? ', and if the base model name may be wrong, ask the user or retry without base_model' : '') +
+        '. Do not invent one.',
+    };
   }
   return { status: 'failed', note: failureNote(kind, r, baseModel) };
 }
@@ -471,15 +532,39 @@ export function renderRecommendation(
     howToPresent: HOW_TO_PRESENT,
   };
 
-  let content = stripAirReferences(JSON.stringify(payload));
-  // The fields are bounded so this cannot be reached with today's caps; it is a
-  // backstop rather than a path, because exceeding the host's message cap is a
-  // reject of the WHOLE next request, not a truncation.
+  // 🔴 THE FIELD BOUNDS ARE ON CHARACTERS, THE CAP IS ON THE SERIALIZED STRING,
+  // and JSON escaping is the gap between them: a name of quotes or backslashes
+  // doubles, a control character becomes six. Ten items at their bounds CAN
+  // therefore exceed the host's cap, which is a reject of the WHOLE next request,
+  // not a truncation. So the payload is shrunk in steps that each keep every
+  // shown record complete — first the echo and the presentation note, then the
+  // trigger words — and only then refused.
+  const serialize = (p: Record<string, unknown>) => stripAirReferences(JSON.stringify(p));
+  let content = serialize(payload);
   if (content.length > MAX_MESSAGE_CHARS) {
-    content = stripAirReferences(JSON.stringify({ ...payload, imageDescription: undefined, howToPresent: undefined }));
+    content = serialize({ ...payload, imageDescription: undefined, howToPresent: undefined });
   }
   if (content.length > MAX_MESSAGE_CHARS) {
-    return { ok: false, kind: 'failed', reason: 'the recommendation result was too large to include' };
+    const noWords = (sec: unknown) => {
+      const o = sec as { items?: ShownSuggestion[] } | undefined;
+      if (!o?.items) return sec;
+      return { ...o, items: o.items.map(({ triggerWords: _drop, ...rest }) => rest) };
+    };
+    content = serialize({
+      ...payload,
+      imageDescription: undefined,
+      howToPresent: undefined,
+      addons: noWords(payload.addons),
+      checkpoints: noWords(payload.checkpoints),
+    });
+  }
+  if (content.length > MAX_MESSAGE_CHARS) {
+    return {
+      ok: false,
+      kind: 'failed',
+      reason: 'the recommendation result was too large to include',
+      remedy: 'Do not call this tool again this turn; use the model search tool instead, or say the lookup failed.',
+    };
   }
   return { ok: true, content };
 }
@@ -508,6 +593,8 @@ export async function executeRecommend(
  * - The host served NO tools ⇒ nothing added. That is the degraded no-tools
  *   turn (`App.tsx`): the system prompt is told catalog lookup is unavailable,
  *   and a lone recommendation tool would make that notice false.
+ * - The host already serves {@link HOST_MAX_TOOLS} tools ⇒ nothing added (the
+ *   array would exceed the host's cap on every submit).
  * - The host already declares a tool of this name ⇒ the host's wins and the
  *   local executor is not registered, so the call goes where its contract came
  *   from.
@@ -516,7 +603,14 @@ export function composeLocalTools(
   host: readonly ToolDeclaration[],
   enabled: boolean = RECOMMEND_TOOL_ENABLED,
 ): { declarations: ToolDeclaration[]; local: LocalToolExecutors | undefined } {
-  if (!enabled || host.length === 0 || host.some((d) => d.function.name === RECOMMEND_TOOL_NAME)) {
+  if (
+    !enabled ||
+    host.length === 0 ||
+    // The host caps the tools ARRAY too; pushing it past the cap would make
+    // every submit carrying it a BAD_REQUEST. The host's own tools win.
+    host.length >= HOST_MAX_TOOLS ||
+    host.some((d) => d.function.name === RECOMMEND_TOOL_NAME)
+  ) {
     return { declarations: [...host], local: undefined };
   }
   return {

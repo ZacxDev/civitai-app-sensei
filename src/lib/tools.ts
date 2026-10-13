@@ -311,13 +311,29 @@ export class BlocksHttpError extends Error {
   readonly retryAfterSeconds: number | null;
   /** The route's own reason, bounded: its `{ error }` string, or the body's first characters. */
   readonly detail: string | null;
+  /**
+   * Whether the body was a schema-VALIDATION refusal (a serialized ZodError), as
+   * opposed to a route-level refusal with a plain string reason. A 400 has both
+   * shapes on the same route — e.g. resource-intent answers an unknown base
+   * model with a ZodError and a dark checkpoint flag with
+   * `{ error: "kind 'checkpoint' is not enabled" }` — and the right advice to
+   * the model is opposite: fix the argument vs. do not retry at all.
+   */
+  readonly validation: boolean;
 
-  constructor(status: number, statusText: string, retryAfterSeconds: number | null, detail: string | null) {
+  constructor(
+    status: number,
+    statusText: string,
+    retryAfterSeconds: number | null,
+    detail: string | null,
+    validation = false,
+  ) {
     super(`Civitai tools error: ${status} ${statusText}`);
     this.name = 'BlocksHttpError';
     this.status = status;
     this.retryAfterSeconds = retryAfterSeconds;
     this.detail = detail;
+    this.validation = validation;
   }
 }
 
@@ -343,6 +359,18 @@ function issueMessages(issues: unknown): string | null {
     .map((i) => (i as { message?: unknown } | null)?.message)
     .filter((m): m is string => typeof m === 'string' && m.length > 0);
   return messages.length > 0 ? messages.join('; ') : null;
+}
+
+/** True when an error body is a serialized validation failure (either shape above). */
+function isValidationBody(text: string): boolean {
+  try {
+    const err = (JSON.parse(text) as { error?: unknown })?.error;
+    if (!err || typeof err !== 'object') return false;
+    const e = err as { name?: unknown; issues?: unknown };
+    return e.name === 'ZodError' || Array.isArray(e.issues);
+  } catch {
+    return false;
+  }
 }
 
 function errorDetail(text: string): string | null {
@@ -462,6 +490,7 @@ export async function toolsFetch(
           res.statusText,
           res.status === 429 ? retryAfterSecondsOf(res) : null,
           errorDetail(text),
+          isValidationBody(text),
         );
       }
       return await res.json();
@@ -757,6 +786,13 @@ export async function executeToolCalls(
  */
 const DISPLAYED_ARGUMENTS = ['query', 'image_description'] as const;
 
+/**
+ * The label is one inline line in the composer. An image description may run to
+ * 6,000 characters, so the label is cut with an ellipsis rather than letting
+ * the model's argument length decide the composer's height.
+ */
+export const MAX_LOOKUP_LABEL_CHARS = 200;
+
 export function readQueryArgument(call: ToolCall | undefined): string | null {
   if (!call) return null;
   try {
@@ -764,7 +800,10 @@ export function readQueryArgument(call: ToolCall | undefined): string | null {
     if (args === null || typeof args !== 'object') return null;
     for (const key of DISPLAYED_ARGUMENTS) {
       const q = (args as Record<string, unknown>)[key];
-      if (typeof q === 'string' && q.trim().length > 0) return q.trim();
+      if (typeof q === 'string' && q.trim().length > 0) {
+        const t = q.trim();
+        return t.length > MAX_LOOKUP_LABEL_CHARS ? `${t.slice(0, MAX_LOOKUP_LABEL_CHARS - 1)}…` : t;
+      }
     }
     return null;
   } catch {

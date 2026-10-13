@@ -4,12 +4,21 @@ import {
   RECOMMEND_TOOL_NAME,
   SHOWN_PER_KIND,
   MAX_IMAGE_DESCRIPTION_CHARS,
+  HOST_MAX_TOOLS,
+  HOST_MAX_TOOL_DESCRIPTION_CHARS,
+  HOST_MAX_TOOL_PARAMETERS_CHARS,
   buildResourceIntentRequests,
   composeLocalTools,
   executeRecommend,
   parseRecommendArgs,
 } from './recommend.js';
-import { callToolWithFallback, executeToolCalls, readQueryArgument, type ToolCall } from './tools.js';
+import {
+  MAX_LOOKUP_LABEL_CHARS,
+  callToolWithFallback,
+  executeToolCalls,
+  readQueryArgument,
+  type ToolCall,
+} from './tools.js';
 import { groundedIdsFromToolResult } from './grounding.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -64,12 +73,15 @@ function suggestion(modelId: number, versionId: number, extra: Record<string, un
   };
 }
 
+// A real add-on answer carries the compiled stage-1 verdict in `criteria.role`
+// (null only when degraded, or in checkpoint mode). The default here is a role
+// that WANTS a resource; the "nothing needed" case sets `role: 'none'` itself.
 function okBody(suggestions: unknown[], extra: Record<string, unknown> = {}) {
   return {
     degraded: false,
     insightFallback: false,
-    intent: null,
-    criteria: null,
+    intent: { role: { value: 'style', distribution: { style: 1 } } },
+    criteria: { criteriaVersion: 2, role: 'style', styleFamily: 'photorealistic', modelTypes: null, baseModel: null },
     suggestions,
     noneProbability: 0.1,
     model: 'typesafe/jev-1.13-20260917',
@@ -79,7 +91,11 @@ function okBody(suggestions: unknown[], extra: Record<string, unknown> = {}) {
   };
 }
 
-const DEGRADED = okBody([], { degraded: true, model: 'jev-unavailable' });
+const DEGRADED = okBody([], { degraded: true, model: 'jev-unavailable', intent: null, criteria: null });
+const NONE_NEEDED = okBody([], {
+  intent: { role: { value: 'none', distribution: { none: 1 } } },
+  criteria: { criteriaVersion: 2, role: 'none', styleFamily: 'other', modelTypes: null, baseModel: null },
+});
 
 function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), { status, headers });
@@ -175,6 +191,7 @@ describe('recommend — request bodies come from the model\'s arguments', () => 
       [{ query: DESCRIPTION }, /image_description is required/],
       [{ image_description: 'x'.repeat(MAX_IMAGE_DESCRIPTION_CHARS + 1) }, /longer than 6000/],
       [{ image_description: DESCRIPTION, base_model: 5 }, /base_model must be a string/],
+      [{ image_description: DESCRIPTION, base_model: 'b'.repeat(65) }, /base_model is longer than 64/],
     ];
     for (const [args, reason] of cases) {
       const out = await executeRecommend(args, AUTH);
@@ -211,9 +228,9 @@ describe('recommend — every response class is told apart', () => {
     expect(parsed.addons.status).toBe('ok');
     expect(parsed.addons.items).toHaveLength(SHOWN_PER_KIND);
     expect(parsed.addons.notShown).toBe(8 - SHOWN_PER_KIND);
+    // No versionId: a second id beside modelId invites an ungrounded link.
     expect(parsed.addons.items[0]).toEqual({
       modelId: 100,
-      versionId: 9000,
       name: 'Model 100',
       type: 'LORA',
       baseModel: 'SDXL 1.0',
@@ -260,13 +277,26 @@ describe('recommend — every response class is told apart', () => {
     expect(groundedIdsFromToolResult(out)).toEqual([]);
   });
 
-  it('EMPTY and NOT degraded is a real answer: the image needs no add-on', async () => {
-    const out = await render(() => json(okBody([])), { image_description: DESCRIPTION });
+  it('EMPTY, NOT degraded, stage-1 role `none`: a real answer — the image needs no add-on', async () => {
+    const out = await render(() => json(NONE_NEEDED), { image_description: DESCRIPTION });
     const parsed = JSON.parse(out);
     expect(parsed).not.toHaveProperty('error');
     expect(parsed.addons.status).toBe('none_needed');
     expect(parsed.addons.note).toMatch(/needs no add-on resource/);
     expect(parsed.addons).not.toHaveProperty('items');
+  });
+
+  it('🔴 EMPTY, NOT degraded, but the route WANTED a resource: nothing matched, NOT "none needed"', async () => {
+    // The service returns this when role !== 'none' and nothing survives its
+    // search, maturity clamp and hydration — and an absent verdict is the same.
+    for (const body of [okBody([]), okBody([], { intent: null, criteria: null })]) {
+      requests = [];
+      const out = await render(() => json(body), { image_description: DESCRIPTION });
+      const parsed = JSON.parse(out);
+      expect(parsed.addons.status).toBe('none_found');
+      expect(parsed.addons.note).toMatch(/does not mean none is needed/);
+      expect(out).not.toMatch(/none_needed/);
+    }
   });
 
   it('🔴 degraded add-ons beside working checkpoints: the add-on section says FAILED, not none_needed', async () => {
@@ -326,18 +356,18 @@ describe('recommend — every response class is told apart', () => {
     });
   }
 
-  it('🔴 an EMPTY add-on list WITH a base model names both readings (a typo filters to nothing)', async () => {
+  it('🔴 an EMPTY add-on list WITH a base model names the typo reading (a bad name filters to nothing)', async () => {
     const out = await render(
       (body) => (body?.kind === 'checkpoint' ? json(MEASURED_400, 400) : json(okBody([]))),
       { image_description: DESCRIPTION, base_model: 'Not A Base Model' },
     );
     const parsed = JSON.parse(out);
-    expect(parsed.addons.status).toBe('none_needed');
-    expect(parsed.addons.note).toMatch(/not one Civitai recognises/);
-    expect(parsed.addons.note).not.toMatch(/^The recommender judged that this image needs no add-on/);
+    expect(parsed.addons.status).toBe('none_found');
+    expect(parsed.addons.note).toMatch(/if the base model name may be wrong, ask the user or retry without base_model/);
+    expect(parsed.checkpoints.status).toBe('failed');
   });
 
-  it('400 with the checkpoint flag dark: the string error is carried verbatim', async () => {
+  it('🔴 400 with a PLAIN-STRING reason (checkpoint flag dark) is "unavailable", not a bad base model', async () => {
     const out = await render(
       (body) =>
         body?.kind === 'checkpoint'
@@ -345,7 +375,12 @@ describe('recommend — every response class is told apart', () => {
           : json(okBody([suggestion(611, 8611)])),
       { image_description: DESCRIPTION, base_model: 'SDXL 1.0' },
     );
-    expect(JSON.parse(out).checkpoints.note).toMatch(/invalid: kind 'checkpoint' is not enabled\./);
+    const note = JSON.parse(out).checkpoints.note as string;
+    expect(note).toBe(
+      "Checkpoint recommendations are not available on Civitai right now (kind 'checkpoint' is not enabled). " +
+        'This is not a problem with the arguments — do not retry with a different base model or description. ' +
+        'Say so; you may use the model search tool instead.',
+    );
   });
 
   it('404: the route is dark — says unavailable, grounds nothing', async () => {
@@ -414,6 +449,49 @@ describe('recommend — the rendered result stays sendable', () => {
     expect(parsed.imageDescription.length).toBeLessThan(MAX_IMAGE_DESCRIPTION_CHARS);
   });
 
+  // Every field at its CHARACTER bound, made of characters JSON escapes, so the
+  // serialized string far exceeds the bounded length — the gap between a
+  // per-field bound and the per-message cap. `"` escapes to 2 chars, U+0001 to 6.
+  const QUOTE = (n: number) => '"'.repeat(n);
+  const CTRL = (n: number) => '\u0001'.repeat(n);
+  const heavy = (base: number, nameOf: (n: number) => string) =>
+    Array.from({ length: 8 }, (_, i) =>
+      suggestion(base + i, base + 5000 + i, {
+        modelName: nameOf(500),
+        modelType: nameOf(500),
+        baseModel: nameOf(500),
+        trainedWords: Array.from({ length: 10 }, () => CTRL(500)),
+      }),
+    );
+
+  it('🔴 reaches the escaping backstop: trigger words dropped, every shown record whole', async () => {
+    const out = await render(
+      (body) => json(okBody(body?.kind === 'checkpoint' ? heavy(3000, QUOTE) : heavy(2000, QUOTE))),
+      { image_description: DESCRIPTION, base_model: 'SDXL 1.0' },
+    );
+    expect(out.length).toBeLessThanOrEqual(8_000);
+    const parsed = JSON.parse(out);
+    expect(parsed).not.toHaveProperty('error');
+    expect(parsed.addons.items).toHaveLength(SHOWN_PER_KIND);
+    expect(parsed.checkpoints.items).toHaveLength(SHOWN_PER_KIND);
+    // Reached: the step that drops trigger words ran (the add-ons HAD them).
+    expect(parsed.addons.items[0]).not.toHaveProperty('triggerWords');
+    expect(groundedIdsFromToolResult(out)).toHaveLength(2 * SHOWN_PER_KIND);
+  });
+
+  it('…and past every step it REFUSES, with advice not to retry, rather than send an oversized message', async () => {
+    const out = await render(
+      (body) => json(okBody(body?.kind === 'checkpoint' ? heavy(3000, CTRL) : heavy(2000, CTRL))),
+      { image_description: DESCRIPTION, base_model: 'SDXL 1.0' },
+    );
+    expect(out.length).toBeLessThanOrEqual(8_000);
+    expect(JSON.parse(out)).toEqual({
+      error:
+        'catalog lookup failed: the recommendation result was too large to include. Do not call this tool ' +
+        'again this turn; use the model search tool instead, or say the lookup failed.',
+    });
+  });
+
   it('neutralises `urn:air:` coming back in a name or trigger word', async () => {
     const out = await render(
       () => json(okBody([suggestion(901, 8901, { modelName: 'urn:air:sdxl:lora', trainedWords: ['URN:AIR:x'] })])),
@@ -432,6 +510,23 @@ describe('recommend — wiring into the tool loop', () => {
     const { declarations, local } = composeLocalTools(HOST, true);
     expect(declarations.map((d) => d.function.name)).toEqual(['search_models', RECOMMEND_TOOL_NAME]);
     expect([...(local?.keys() ?? [])]).toEqual([RECOMMEND_TOOL_NAME]);
+  });
+
+  it('🔴 a host already at its tools cap ⇒ nothing added (the array would BAD_REQUEST every submit)', () => {
+    const eight = Array.from({ length: HOST_MAX_TOOLS }, (_, i) => ({
+      type: 'function' as const,
+      function: { name: `host_tool_${i}`, parameters: {} },
+    }));
+    expect(composeLocalTools(eight, true)).toEqual({ declarations: eight, local: undefined });
+    // Boundary: one below the cap still gets it.
+    expect(composeLocalTools(eight.slice(1), true).declarations).toHaveLength(HOST_MAX_TOOLS);
+  });
+
+  it('🔴 the declaration fits the host\'s per-declaration bounds', () => {
+    const fn = RECOMMEND_TOOL_DECLARATION.function;
+    expect(fn.description!.length).toBeLessThanOrEqual(HOST_MAX_TOOL_DESCRIPTION_CHARS);
+    expect(JSON.stringify(fn.parameters).length).toBeLessThanOrEqual(HOST_MAX_TOOL_PARAMETERS_CHARS);
+    expect(fn.name).toMatch(/^[a-zA-Z0-9_-]{1,64}$/);
   });
 
   it('the switch off ⇒ no declaration and no executor', () => {
@@ -483,6 +578,10 @@ describe('recommend — wiring into the tool loop', () => {
 
   it('the viewer is shown the image description, the way a search shows its query', () => {
     expect(readQueryArgument(recommendCall({ image_description: `  ${DESCRIPTION} ` }))).toBe(DESCRIPTION);
+    // A long rewrite is cut for the one-line label, not shown whole.
+    const long = readQueryArgument(recommendCall({ image_description: 'z'.repeat(5_000) }));
+    expect(long).toHaveLength(MAX_LOOKUP_LABEL_CHARS);
+    expect(long!.endsWith('…')).toBe(true);
     // `query` still wins for search tools, unchanged.
     expect(readQueryArgument({ id: 'c', type: 'function', function: { name: 'search_models', arguments: '{"query":"anime"}' } })).toBe('anime');
   });
