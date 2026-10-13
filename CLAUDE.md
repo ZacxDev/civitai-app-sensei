@@ -151,8 +151,8 @@ Two things this block depends on live in `civitai/civitai` and nowhere else: the
 tool declarations served by `GET /api/v1/blocks/tools` (never authored here — an
 authored copy would show the model a contract the route does not enforce) and
 the maturity-clamped catalog path behind `/api/v1/blocks/models`. The one
-app-authored tool, `recommend_resources` (`src/lib/recommend.ts`), is not an
-exception to that reasoning: the app executes it itself against
+app-authored tool, `recommend_resources` (`src/lib/recommend.ts`), is declared
+here but does not break the reasoning: the app executes it itself against
 `/api/v1/blocks/resource-intent`, so its schema is enforced by the app's own
 code. Its header records the route contract it mirrors.
 

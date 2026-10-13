@@ -77,15 +77,15 @@ the block on a verdict-gated snapshot field. So the MODEL writes the query:
    route, which is backed by the maturity-clamped catalog path,
 3. each result goes back as a `role:'tool'` message and the app resubmits.
 
-One tool is the exception to steps 1 and 2: **`recommend_resources`**
+One tool is declared and executed differently from steps 1 and 2: **`recommend_resources`**
 (`src/lib/recommend.ts`) is declared and executed by the app itself, beside the
 host's tools. It asks Civitai's recommendation route
 (`POST /api/v1/blocks/resource-intent`) for add-ons — and, when a base model is
 known, checkpoints — that fit an image. That route ranks for an *image prompt*,
 so the model is told to rewrite the viewer's question into a concrete image
-description first, and the viewer sees that description while the lookup runs.
-Its schema is enforced by the app's own executor, which is why authoring it here
-does not break the rule in step 1. A degraded (failed) answer from the route is
+description first, and the viewer sees that description (cut to one line) while
+the lookup runs. Its schema is enforced by the app's own executor, so authoring
+it here does not break the reasoning behind step 1. A degraded (failed) answer from the route is
 reported as a failure, never as "no models needed".
 
 **Each round is its own submit, separately quoted and separately charged**, so a

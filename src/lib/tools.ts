@@ -802,7 +802,12 @@ export function readQueryArgument(call: ToolCall | undefined): string | null {
       const q = (args as Record<string, unknown>)[key];
       if (typeof q === 'string' && q.trim().length > 0) {
         const t = q.trim();
-        return t.length > MAX_LOOKUP_LABEL_CHARS ? `${t.slice(0, MAX_LOOKUP_LABEL_CHARS - 1)}…` : t;
+        // By code point, so the cut never splits a surrogate pair into U+FFFD.
+        // Applies to every displayed argument, a search `query` included.
+        const chars = Array.from(t);
+        return chars.length > MAX_LOOKUP_LABEL_CHARS
+          ? `${chars.slice(0, MAX_LOOKUP_LABEL_CHARS - 1).join('')}…`
+          : t;
       }
     }
     return null;

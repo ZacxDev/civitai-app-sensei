@@ -476,6 +476,8 @@ describe('recommend — the rendered result stays sendable', () => {
     expect(parsed.checkpoints.items).toHaveLength(SHOWN_PER_KIND);
     // Reached: the step that drops trigger words ran (the add-ons HAD them).
     expect(parsed.addons.items[0]).not.toHaveProperty('triggerWords');
+    expect(parsed.addons.triggerWordsOmitted).toMatch(/cut to fit/);
+    expect(parsed.checkpoints).not.toHaveProperty('triggerWordsOmitted');
     expect(groundedIdsFromToolResult(out)).toHaveLength(2 * SHOWN_PER_KIND);
   });
 
@@ -582,6 +584,11 @@ describe('recommend — wiring into the tool loop', () => {
     const long = readQueryArgument(recommendCall({ image_description: 'z'.repeat(5_000) }));
     expect(long).toHaveLength(MAX_LOOKUP_LABEL_CHARS);
     expect(long!.endsWith('…')).toBe(true);
+    // Cut by code point: an astral character at the boundary survives whole.
+    const astral = readQueryArgument(recommendCall({ image_description: '🎨'.repeat(300) }));
+    expect(Array.from(astral!)).toHaveLength(MAX_LOOKUP_LABEL_CHARS);
+    expect(astral).not.toContain('\uFFFD');
+    expect(astral!.slice(0, -1)).toBe('🎨'.repeat(MAX_LOOKUP_LABEL_CHARS - 1));
     // `query` still wins for search tools, unchanged.
     expect(readQueryArgument({ id: 'c', type: 'function', function: { name: 'search_models', arguments: '{"query":"anime"}' } })).toBe('anime');
   });

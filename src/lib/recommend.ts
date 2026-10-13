@@ -548,7 +548,14 @@ export function renderRecommendation(
     const noWords = (sec: unknown) => {
       const o = sec as { items?: ShownSuggestion[] } | undefined;
       if (!o?.items) return sec;
-      return { ...o, items: o.items.map(({ triggerWords: _drop, ...rest }) => rest) };
+      const hadWords = o.items.some((it) => it.triggerWords && it.triggerWords.length > 0);
+      return {
+        ...o,
+        items: o.items.map(({ triggerWords: _drop, ...rest }) => rest),
+        // Said, not silent: a LoRA without its words is half an answer, and a
+        // model not told they were cut may say there are none.
+        ...(hadWords ? { triggerWordsOmitted: 'Trigger words were cut to fit; tell the user to check each model page for them.' } : {}),
+      };
     };
     content = serialize({
       ...payload,
