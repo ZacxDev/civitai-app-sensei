@@ -112,9 +112,12 @@ function recommendCall(args: Record<string, unknown> | string): ToolCall {
   };
 }
 
-const LOCAL = composeLocalTools([
-  { type: 'function', function: { name: 'search_models', parameters: {} } },
-]).local!;
+// `true` explicitly: the tool ships off (`RECOMMEND_TOOL_ENABLED`), and these
+// cases test the tool itself, not the shipped default.
+const LOCAL = composeLocalTools(
+  [{ type: 'function', function: { name: 'search_models', parameters: {} } }],
+  true,
+).local!;
 
 const DESCRIPTION = 'clean commercial product photo of a perfume bottle on a marble counter, soft studio light';
 

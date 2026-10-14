@@ -32,7 +32,7 @@ import { createOrchestrator } from './lib/orchestrator.js';
 import { TextOutputWithheldError, toStepMessages } from './lib/orchestrator-bridge.js';
 import * as sessionsLib from './lib/sessions.js';
 import * as toolsLib from './lib/tools.js';
-import { composeLocalTools } from './lib/recommend.js';
+import { composeLocalTools, RECOMMEND_TOOL_ENABLED } from './lib/recommend.js';
 import * as mentionsLib from './lib/mentions.js';
 import type { ResolvedResource } from './lib/mentions.js';
 import { failureBody, generateMessageId, withSystemPrompt } from './lib/chat.js';
@@ -56,6 +56,8 @@ import { SettingsModal } from './components/SettingsModal.js';
 export interface AppDeps {
   appStorage: AppStorage;
   track: (eventName: string, properties?: Record<string, unknown>) => void;
+  /** Whether the app's own `recommend_resources` tool is offered. Defaults to `RECOMMEND_TOOL_ENABLED`. */
+  recommendToolEnabled: boolean;
 }
 
 export interface AppProps {
@@ -331,6 +333,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     () => ({
       appStorage: appStorageHook,
       track,
+      recommendToolEnabled: RECOMMEND_TOOL_ENABLED,
       ...depsOverride,
     }),
     [depsOverride],
@@ -1898,7 +1901,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // so the degraded no-tools turn below is exactly what it was; and the
       // executors it returns are for exactly the declarations it added, so a
       // call is routed by the same decision that put its contract on the wire.
-      const composed = composeLocalTools(declarations);
+      const composed = composeLocalTools(declarations, depsRef.current.recommendToolEnabled);
       declarations = composed.declarations;
       const localTools = composed.local;
 

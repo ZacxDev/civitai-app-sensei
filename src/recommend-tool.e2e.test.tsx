@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { App } from './App.js';
+import { App, type AppDeps } from './App.js';
 import { fakeAppStorage } from './test-helpers.js';
 import { clearCache } from './lib/research.js';
 import { RECOMMEND_TOOL_NAME } from './lib/recommend.js';
@@ -162,8 +162,10 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-async function startAndSend(text: string) {
-  render(<App />);
+// The tool ships OFF (`RECOMMEND_TOOL_ENABLED`), so every case here turns it on
+// explicitly — except the last, which renders the app exactly as it ships.
+async function startAndSend(text: string, deps: Partial<AppDeps> = { recommendToolEnabled: true }) {
+  render(<App deps={deps} />);
   await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
   fireEvent.click(screen.getByTestId('new-session-button'));
   await waitFor(() => expect(screen.getByTestId('chat-input')).toBeTruthy());
@@ -252,4 +254,13 @@ describe('recommend_resources through the app', () => {
     expect(Object.keys(payload)).toEqual(['error']);
     expect(payload.error).toMatch(/This is a failure, NOT a finding/);
   }, 20_000);
+
+  it('🔴 as shipped (no override): nothing of the tool on the wire, and no route request', async () => {
+    pollQueue = [textSnapshot('A plain answer.')];
+    await startAndSend('what should I use for a cyberpunk city poster?', {});
+    await waitFor(() => expect(submitted.length).toBeGreaterThanOrEqual(1), { timeout: 8000 });
+    expect(submitted[0].tools?.map((t) => t.function.name)).toEqual(['search_models']);
+    await waitFor(() => expect(screen.getByText('A plain answer.')).toBeTruthy(), { timeout: 8000 });
+    expect(intentRequests).toHaveLength(0);
+  });
 });
