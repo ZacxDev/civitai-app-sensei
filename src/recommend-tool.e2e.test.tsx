@@ -162,8 +162,8 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-// Every case turns the tool on explicitly, except the last two: one renders the
-// app exactly as it ships (`RECOMMEND_TOOL_ENABLED`, on), one with it switched off.
+// The tool ships OFF (`RECOMMEND_TOOL_ENABLED`), so every case here turns it on
+// explicitly — except the last, which renders the app exactly as it ships.
 async function startAndSend(text: string, deps: Partial<AppDeps> = { recommendToolEnabled: true }) {
   render(<App deps={deps} />);
   await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
@@ -255,19 +255,9 @@ describe('recommend_resources through the app', () => {
     expect(payload.error).toMatch(/This is a failure, NOT a finding/);
   }, 20_000);
 
-  it('🔴 as shipped (no override): the tool is declared beside the host\'s', async () => {
+  it('🔴 as shipped (no override): nothing of the tool on the wire, and no route request', async () => {
     pollQueue = [textSnapshot('A plain answer.')];
     await startAndSend('what should I use for a cyberpunk city poster?', {});
-    await waitFor(() => expect(submitted.length).toBeGreaterThanOrEqual(1), { timeout: 8000 });
-    expect(submitted[0].tools?.map((t) => t.function.name)).toEqual(['search_models', RECOMMEND_TOOL_NAME]);
-    await waitFor(() => expect(screen.getByText('A plain answer.')).toBeTruthy(), { timeout: 8000 });
-    // Declared is not called: the model answered without it, so no route request.
-    expect(intentRequests).toHaveLength(0);
-  });
-
-  it('switched off: nothing of the tool on the wire, and no route request', async () => {
-    pollQueue = [textSnapshot('A plain answer.')];
-    await startAndSend('what should I use for a cyberpunk city poster?', { recommendToolEnabled: false });
     await waitFor(() => expect(submitted.length).toBeGreaterThanOrEqual(1), { timeout: 8000 });
     expect(submitted[0].tools?.map((t) => t.function.name)).toEqual(['search_models']);
     await waitFor(() => expect(screen.getByText('A plain answer.')).toBeTruthy(), { timeout: 8000 });
