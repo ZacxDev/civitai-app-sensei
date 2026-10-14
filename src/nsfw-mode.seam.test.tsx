@@ -205,11 +205,13 @@ describe('🔴 the SFW arm — grounded, and the default', () => {
     expect(submitted[0].model).toBe(SFW_MODEL_ID);
     // The grounding half of the trade: this arm can look things up.
     expect(submitted[0].tools).toBeTruthy();
-    // The host's one declaration only: the app's own recommendation tool
-    // (`lib/recommend.ts`) ships off (`RECOMMEND_TOOL_ENABLED`), and this suite
-    // renders the app as it ships.
-    expect(submitted[0].tools?.map((t) => t.function.name)).toEqual([DECLARATIONS[0].function.name]);
-    expect(submitted[0].tools?.map((t) => t.function.name)).not.toContain(RECOMMEND_TOOL_NAME);
+    // The host's one declaration, plus the app's own recommendation tool
+    // (`lib/recommend.ts`), which ships on (`RECOMMEND_TOOL_ENABLED`) and rides
+    // beside host tools whenever there are any. This suite renders the app as it ships.
+    expect(submitted[0].tools?.map((t) => t.function.name)).toEqual([
+      DECLARATIONS[0].function.name,
+      RECOMMEND_TOOL_NAME,
+    ]);
     expect(submitted[0].toolChoice).toBe('auto');
     // …and the prompt does not tell it otherwise.
     expect(systemPromptOf(submitted[0])).not.toContain(NO_TOOLS_NOTICE.trim());
