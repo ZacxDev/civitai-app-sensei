@@ -19,6 +19,12 @@
  * must be the schema the route validates against, or the model is shown a
  * contract nobody enforces. A local copy is how those two drift, so there is no
  * local copy — {@link fetchToolDeclarations} reads them from the host.
+ *
+ * ⚠️ ONE SCOPED EXCEPTION: a tool the APP executes (`LocalToolExecutors`,
+ * today only `recommend_resources` in `./recommend.ts`). Its schema is enforced
+ * by the app's own executor, not by the host, so authoring it here is the
+ * property this rule protects rather than a breach of it — `./recommend.ts`'s
+ * header argues it in full.
  */
 import { BLOCKS_BASE_URL, type CatalogAuth } from './research.js';
 
@@ -73,7 +79,7 @@ export interface ToolCall {
 export const MAX_TOOL_RESULT_MESSAGES = 3;
 
 /** Host cap on a single message's content. A tool result is a message. */
-const MAX_MESSAGE_CHARS = 8_000;
+export const MAX_MESSAGE_CHARS = 8_000;
 
 /**
  * Neutralise `urn:air:` so a tool result cannot bounce the next submit.
@@ -285,11 +291,131 @@ function abortableSleep(ms: number, signal?: AbortSignal): Promise<boolean> {
   });
 }
 
-async function toolsFetch(
+/** How much of a non-2xx body a {@link BlocksHttpError} keeps. A reason, not a payload. */
+const MAX_ERROR_DETAIL_CHARS = 300;
+
+/**
+ * A non-2xx answer from a `/api/v1/blocks/*` route, with what a caller needs to
+ * explain it.
+ *
+ * 🔴 THE MESSAGE IS UNCHANGED FROM THE PLAIN `Error` THIS REPLACED
+ * (`Civitai tools error: <status> <statusText>`), so every existing rendering —
+ * and every test pinning one — reads exactly what it did. The extra fields exist
+ * for a caller that has to tell a 400 from a 429 from a 404 and say something
+ * different for each (`lib/recommend.ts`); sniffing the status back out of the
+ * message would be a classifier a reworded message silently blinds.
+ */
+export class BlocksHttpError extends Error {
+  readonly status: number;
+  /** The server's `Retry-After`, in seconds, on a 429 that survived the one retry. */
+  readonly retryAfterSeconds: number | null;
+  /** The route's own reason, bounded: its `{ error }` string, or the body's first characters. */
+  readonly detail: string | null;
+  /**
+   * Whether the body was a schema-VALIDATION refusal (a serialized ZodError), as
+   * opposed to a route-level refusal with a plain string reason. A 400 has both
+   * shapes on the same route — e.g. resource-intent answers an unknown base
+   * model with a ZodError and a dark checkpoint flag with
+   * `{ error: "kind 'checkpoint' is not enabled" }` — and the right advice to
+   * the model is opposite: fix the argument vs. do not retry at all.
+   */
+  readonly validation: boolean;
+
+  constructor(
+    status: number,
+    statusText: string,
+    retryAfterSeconds: number | null,
+    detail: string | null,
+    validation = false,
+  ) {
+    super(`Civitai tools error: ${status} ${statusText}`);
+    this.name = 'BlocksHttpError';
+    this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
+    this.detail = detail;
+    this.validation = validation;
+  }
+}
+
+/**
+ * The route's own reason out of an error body, bounded. Total: anything it cannot
+ * read yields `null`, because failing to DESCRIBE a failure must never become a
+ * second failure.
+ *
+ * A string `error` is taken as-is. A zod error is what a route's
+ * `res.status(400).json({ error: parsed.error })` puts on the wire, and its
+ * shape there was MEASURED, not assumed: live against the resource-intent route
+ * (2026-10-12) it arrives as
+ * `{ "error": { "name": "ZodError", "message": "<the issue list, JSON-encoded>" } }`
+ * — the `issues` array is NOT a property of the serialized object, it is a
+ * JSON STRING inside `message`. The first version of this function read
+ * `error.issues` and so passed the whole raw body through instead. Both shapes
+ * are read, the issue messages are joined, and anything else falls back to the
+ * raw text, bounded.
+ */
+function issueMessages(issues: unknown): string | null {
+  if (!Array.isArray(issues)) return null;
+  const messages = issues
+    .map((i) => (i as { message?: unknown } | null)?.message)
+    .filter((m): m is string => typeof m === 'string' && m.length > 0);
+  return messages.length > 0 ? messages.join('; ') : null;
+}
+
+/** True when an error body is a serialized validation failure (either shape above). */
+function isValidationBody(text: string): boolean {
+  try {
+    const err = (JSON.parse(text) as { error?: unknown })?.error;
+    if (!err || typeof err !== 'object') return false;
+    const e = err as { name?: unknown; issues?: unknown };
+    return e.name === 'ZodError' || Array.isArray(e.issues);
+  } catch {
+    return false;
+  }
+}
+
+function errorDetail(text: string): string | null {
+  if (!text) return null;
+  let detail: string = text;
+  try {
+    const err = (JSON.parse(text) as { error?: unknown })?.error;
+    if (typeof err === 'string') detail = err;
+    else if (err && typeof err === 'object') {
+      const e = err as { issues?: unknown; message?: unknown };
+      let fromMessage: string | null = null;
+      if (typeof e.message === 'string') {
+        try {
+          fromMessage = issueMessages(JSON.parse(e.message));
+        } catch {
+          fromMessage = e.message;
+        }
+      }
+      detail = issueMessages(e.issues) ?? fromMessage ?? detail;
+    }
+  } catch {
+    // Not JSON: keep the raw text, bounded below.
+  }
+  const trimmed = detail.trim();
+  return trimmed ? trimmed.slice(0, MAX_ERROR_DETAIL_CHARS) : null;
+}
+
+/** A `Retry-After` header in whole seconds, or `null` when absent or unreadable. */
+function retryAfterSecondsOf(res: Response): number | null {
+  const parsed = parseInt(res.headers.get('retry-after') ?? '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+/**
+ * One request to a `/api/v1/blocks/*` route: the block token, the caller's
+ * abort signal combined with the per-request deadline, one clamped 429 retry,
+ * and the PARSED body. Exported for `lib/recommend.ts`, whose route sits under
+ * the same prefix and needs exactly this transport — a second copy would be a
+ * second place for the abort and deadline fixes below to be missing from.
+ */
+export async function toolsFetch(
   init: RequestInit & { path: string },
   auth: ToolAuth,
   retries = 1,
-): Promise<Response> {
+): Promise<unknown> {
   const { path, ...rest } = init;
   // 🔴 A HUNG REQUEST IS A HUNG TURN. `callTool` never throws for a tool-level
   // failure, so without a deadline a stalled POST leaves the conversation
@@ -350,7 +476,22 @@ async function toolsFetch(
       );
     } else {
       if (!res.ok) {
-        throw new Error(`Civitai tools error: ${res.status} ${res.statusText}`);
+        // The body is read INSIDE this scope for the same reason the success
+        // body is (see above): the request signal must still be live while it
+        // streams. A body that cannot be read costs only the detail.
+        let text = '';
+        try {
+          text = await res.text();
+        } catch {
+          text = '';
+        }
+        throw new BlocksHttpError(
+          res.status,
+          res.statusText,
+          res.status === 429 ? retryAfterSecondsOf(res) : null,
+          errorDetail(text),
+          isValidationBody(text),
+        );
       }
       return await res.json();
     }
@@ -426,8 +567,41 @@ export type ToolCallOutcome =
    * round and breaks, discarding the string.
    */
   | { ok: false; kind: 'aborted'; reason: string }
-  /** Transport- or host-level failure (non-200, network error, request deadline). */
-  | { ok: false; kind: 'failed'; reason: string };
+  /**
+   * Transport- or host-level failure (non-200, network error, request deadline).
+   *
+   * `remedy` replaces the generic catalog-search advice when the failing tool
+   * knows better. The generic text ("Retry with different or fewer search
+   * terms") is right for `search_models` and WRONG for a tool with no search
+   * terms — telling the model to retry a rate-limited or degraded
+   * recommendation is advice to spend another round on the same failure.
+   */
+  | { ok: false; kind: 'failed'; reason: string; remedy?: string };
+
+/**
+ * A tool this APP executes, rather than relaying to the host's `/tools` route.
+ *
+ * Receives the already-parsed arguments object (the JSON and object-shape checks
+ * in {@link executeToolCall} run first, for every tool alike) and returns a
+ * classified outcome. It may throw: a throw is classified exactly as a relayed
+ * tool's would be, so an abort stays an abort.
+ */
+export type LocalToolExecutor = (
+  args: Record<string, unknown>,
+  auth: ToolAuth,
+) => Promise<ToolCallOutcome>;
+
+/**
+ * Which tool names the app executes itself, keyed by name.
+ *
+ * 🔴 PASSED PER ROUND, NOT LOOKED UP FROM A MODULE-LEVEL REGISTRY. The set has
+ * to be exactly the set of local declarations that went on the wire for THIS
+ * turn (`composeLocalTools` in `lib/recommend.ts` builds both together). A
+ * global lookup would route a call to the local executor even on a turn where
+ * the host declared a tool of the same name and the local one was withheld —
+ * the model would be shown the host's contract and served the app's.
+ */
+export type LocalToolExecutors = ReadonlyMap<string, LocalToolExecutor>;
 
 /** Classify one caught failure. The abort split is on the SIGNAL, not the message text. */
 function classifyToolFailure(e: unknown, auth: ToolAuth): ToolCallOutcome {
@@ -468,7 +642,11 @@ function classifyToolFailure(e: unknown, auth: ToolAuth): ToolCallOutcome {
  *
  * A transport failure is reported the same way for the same reason.
  */
-async function executeToolCall(call: ToolCall, auth: ToolAuth): Promise<ToolCallOutcome> {
+async function executeToolCall(
+  call: ToolCall,
+  auth: ToolAuth,
+  local?: LocalToolExecutors,
+): Promise<ToolCallOutcome> {
   let args: unknown;
   try {
     // The provider hands `arguments` back as a STRING; a model can emit one that
@@ -479,6 +657,15 @@ async function executeToolCall(call: ToolCall, auth: ToolAuth): Promise<ToolCall
   }
   if (args === null || typeof args !== 'object' || Array.isArray(args)) {
     return { ok: false, kind: 'arguments', reason: 'arguments must be a JSON object' };
+  }
+
+  const localExecutor = local?.get(call.function.name);
+  if (localExecutor) {
+    try {
+      return await localExecutor(args as Record<string, unknown>, auth);
+    } catch (e) {
+      return classifyToolFailure(e, auth);
+    }
   }
 
   try {
@@ -508,8 +695,12 @@ async function executeToolCall(call: ToolCall, auth: ToolAuth): Promise<ToolCall
  * becomes `{"error":"<reason>"}`. See {@link callToolWithFallback} for the
  * instructive rendering the tool loop now submits.
  */
-export async function callTool(call: ToolCall, auth: ToolAuth): Promise<string> {
-  const outcome = await executeToolCall(call, auth);
+export async function callTool(
+  call: ToolCall,
+  auth: ToolAuth,
+  local?: LocalToolExecutors,
+): Promise<string> {
+  const outcome = await executeToolCall(call, auth, local);
   if (outcome.ok) return outcome.content;
   return toolError(outcome.reason);
 }
@@ -538,8 +729,12 @@ export async function callTool(call: ToolCall, auth: ToolAuth): Promise<string> 
  * discarded before `apiMessages` is ever built. It must not be rewritten into
  * retry advice — an abort is not a failure the model should retry through.
  */
-export async function callToolWithFallback(call: ToolCall, auth: ToolAuth): Promise<string> {
-  const outcome = await executeToolCall(call, auth);
+export async function callToolWithFallback(
+  call: ToolCall,
+  auth: ToolAuth,
+  local?: LocalToolExecutors,
+): Promise<string> {
+  const outcome = await executeToolCall(call, auth, local);
   if (outcome.ok) return outcome.content;
   switch (outcome.kind) {
     case 'aborted':
@@ -555,7 +750,8 @@ export async function callToolWithFallback(call: ToolCall, auth: ToolAuth): Prom
     case 'failed':
       return toolError(
         `catalog lookup failed: ${outcome.reason}. ` +
-          'Retry with different or fewer search terms, or say plainly that the lookup failed.',
+          (outcome.remedy ??
+            'Retry with different or fewer search terms, or say plainly that the lookup failed.'),
       );
   }
 }
@@ -568,8 +764,9 @@ export async function callToolWithFallback(call: ToolCall, auth: ToolAuth): Prom
 export async function executeToolCalls(
   calls: readonly ToolCall[],
   auth: ToolAuth,
+  local?: LocalToolExecutors,
 ): Promise<string[]> {
-  return Promise.all(calls.map((c) => callToolWithFallback(c, auth)));
+  return Promise.all(calls.map((c) => callToolWithFallback(c, auth, local)));
 }
 
 /**
@@ -580,14 +777,40 @@ export async function executeToolCalls(
  * able to fail the search. The panel shows this so a bad query is visible to the
  * viewer instead of silently shaping an answer — the same reason the heuristic's
  * derived query used to be shown.
+ *
+ * `image_description` is the recommendation tool's equivalent of `query`
+ * (`lib/recommend.ts`): the model REWRITES the viewer's question into the image
+ * it is recommending for, and that rewrite is exactly the kind of model-authored
+ * input the viewer should be able to see and disagree with. `query` wins when a
+ * call carries both, which no current tool does.
  */
+const DISPLAYED_ARGUMENTS = ['query', 'image_description'] as const;
+
+/**
+ * The label is one inline line in the composer. An image description may run to
+ * 6,000 characters, so the label is cut with an ellipsis rather than letting
+ * the model's argument length decide the composer's height.
+ */
+export const MAX_LOOKUP_LABEL_CHARS = 200;
+
 export function readQueryArgument(call: ToolCall | undefined): string | null {
   if (!call) return null;
   try {
     const args: unknown = JSON.parse(call.function.arguments || '{}');
     if (args === null || typeof args !== 'object') return null;
-    const q = (args as { query?: unknown }).query;
-    return typeof q === 'string' && q.trim().length > 0 ? q.trim() : null;
+    for (const key of DISPLAYED_ARGUMENTS) {
+      const q = (args as Record<string, unknown>)[key];
+      if (typeof q === 'string' && q.trim().length > 0) {
+        const t = q.trim();
+        // By code point, so the cut never splits a surrogate pair into U+FFFD.
+        // Applies to every displayed argument, a search `query` included.
+        const chars = Array.from(t);
+        return chars.length > MAX_LOOKUP_LABEL_CHARS
+          ? `${chars.slice(0, MAX_LOOKUP_LABEL_CHARS - 1).join('')}…`
+          : t;
+      }
+    }
+    return null;
   } catch {
     return null;
   }

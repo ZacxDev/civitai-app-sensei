@@ -32,6 +32,7 @@ import { createOrchestrator } from './lib/orchestrator.js';
 import { TextOutputWithheldError, toStepMessages } from './lib/orchestrator-bridge.js';
 import * as sessionsLib from './lib/sessions.js';
 import * as toolsLib from './lib/tools.js';
+import { composeLocalTools, RECOMMEND_TOOL_ENABLED } from './lib/recommend.js';
 import * as mentionsLib from './lib/mentions.js';
 import type { ResolvedResource } from './lib/mentions.js';
 import { failureBody, generateMessageId, withSystemPrompt } from './lib/chat.js';
@@ -55,6 +56,8 @@ import { SettingsModal } from './components/SettingsModal.js';
 export interface AppDeps {
   appStorage: AppStorage;
   track: (eventName: string, properties?: Record<string, unknown>) => void;
+  /** Whether the app's own `recommend_resources` tool is offered. Defaults to `RECOMMEND_TOOL_ENABLED`. */
+  recommendToolEnabled: boolean;
 }
 
 export interface AppProps {
@@ -330,6 +333,7 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     () => ({
       appStorage: appStorageHook,
       track,
+      recommendToolEnabled: RECOMMEND_TOOL_ENABLED,
       ...depsOverride,
     }),
     [depsOverride],
@@ -1891,6 +1895,16 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // ends the REQUEST, this ends the TURN.
       if (aborted()) return;
 
+      // The app's OWN tools (today: `recommend_resources`, `lib/recommend.ts`),
+      // added beside the host's and executed by this app rather than relayed to
+      // `/tools`. `composeLocalTools` adds nothing when the host served nothing,
+      // so the degraded no-tools turn below is exactly what it was; and the
+      // executors it returns are for exactly the declarations it added, so a
+      // call is routed by the same decision that put its contract on the wire.
+      const composed = composeLocalTools(declarations, depsRef.current.recommendToolEnabled);
+      declarations = composed.declarations;
+      const localTools = composed.local;
+
       // 🔴 THE PROMPT MUST MATCH THE CAPABILITY THIS REQUEST ACTUALLY CARRIES.
       // `declarations` is the same value the `tools` key below is derived from,
       // so the claim and the wire cannot disagree — including on the degraded
@@ -2334,10 +2348,14 @@ export function App({ deps: depsOverride }: AppProps = {}) {
           // `tools.test.ts` for the instructive strings specifically. The
           // grounding below therefore admits only what a successful call
           // returned.
-          results = await toolsLib.executeToolCalls(calls, {
-            token: token_.raw,
-            signal: controller.signal,
-          });
+          results = await toolsLib.executeToolCalls(
+            calls,
+            {
+              token: token_.raw,
+              signal: controller.signal,
+            },
+            localTools,
+          );
         } finally {
           setLookupQuery(null);
         }
