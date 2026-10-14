@@ -87,8 +87,8 @@ description first, and the viewer sees that description (cut to one line) while
 the lookup runs. Its schema is enforced by the app's own executor, so authoring
 it here does not break the reasoning behind step 1. A degraded (failed) answer from the route is
 reported as a failure, never as "no models needed".
-It ships **on** since 0.1.29 (0.1.28 released it off): `RECOMMEND_TOOL_ENABLED` in
-`src/lib/recommend.ts` is the switch, and turning it off is that one line plus a release.
+It ships **off**: `RECOMMEND_TOOL_ENABLED` in `src/lib/recommend.ts` is `false`, so
+turning it on is that one line plus a release.
 
 **Each round is its own submit, separately quoted and separately charged**, so a
 question needing a lookup costs more than one completion. The loop is bounded by
