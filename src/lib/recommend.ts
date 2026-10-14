@@ -65,13 +65,13 @@ export const RECOMMEND_TOOL_NAME = 'recommend_resources';
  * reports to the model as "not available" — never as an answer, and never as a
  * bad argument to retry with.
  *
- * SHIPS OFF (operator decision, 2026-10-14): the code is released dark and
- * turning the tool on is a one-line change plus a release. Tests that exercise
- * it pass `recommendToolEnabled: true` through `AppDeps` (or `enabled` to
- * {@link composeLocalTools}); `recommend-tool.e2e.test.tsx` pins that the
- * default app puts nothing of this tool on the wire.
+ * SHIPS ON since 0.1.29 (operator decision, 2026-10-14; 0.1.28 released the
+ * code dark). Turning it off again is this one line plus a release. Tests pass
+ * `recommendToolEnabled` through `AppDeps` (or `enabled` to
+ * {@link composeLocalTools}) to pin each state; `recommend-tool.e2e.test.tsx`
+ * pins that the app AS SHIPPED declares the tool beside the host's.
  */
-export const RECOMMEND_TOOL_ENABLED = false;
+export const RECOMMEND_TOOL_ENABLED = true;
 
 /** `RESOURCE_INTENT_MAX_PROMPT_LENGTH` in the route's schema — `prompt` is `.min(1).max(6000)`. */
 export const MAX_IMAGE_DESCRIPTION_CHARS = 6_000;
