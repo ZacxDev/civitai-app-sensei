@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "name": "first-round recommend_resources `needs` expectations v1",
+  "purpose": "The expected FIRST-ROUND tool AND the expected `needs` argument of recommend_resources for every question below. Written and committed BEFORE any probe arm ran, so the expectations are not fit to results. Read by eval/tool-choice-probe.mjs (--expectations) and scored mechanically by eval/tool-choice-score.mjs (score + scoreNeeds).",
+  "labels": {
+    "recommend_resources": "Every question here is a 'which model for this kind of image' question, so the first round should call recommend_resources (same label and match rule as tool-choice-expectations.v1.json)."
+  },
+  "needsRule": {
+    "capability question": "expectedNeeds[id] is a NON-EMPTY any-of list. Met when the first round calls recommend_resources AND the union of its `needs` arguments contains at least one listed capability. Extra capabilities beside a listed one are allowed and reported separately as `extra`, not scored.",
+    "none question": "expectedNeeds[id] is []. Clean when the first round calls recommend_resources with `needs` absent or empty; NOISE when it passes any capability. A turn that does not call recommend_resources at all is a tool miss, reported in the tool-choice score and excluded from the needs denominator.",
+    "unobserved": "A turn cut off by max_tokens before any tool call is excluded and counted, as in v1."
+  },
+  "sets": [],
+  "extraQuestions": [
+    { "id": "N1", "text": "which model should I use to make a concert poster with the band name as a big headline?", "why": "Text inside the image." },
+    { "id": "N2", "text": "what's a good model for designing a logo for my coffee shop", "why": "Logo: a layout/design job that usually carries the shop's name." },
+    { "id": "N3", "text": "which model can mock up a mobile app UI screen for a fitness tracker", "why": "UI layout." },
+    { "id": "N4", "text": "best model for an infographic explaining how coffee is roasted, with labels on each step", "why": "Infographic: layout plus labels." },
+    { "id": "N5", "text": "I want to edit my photo to change the background to a beach. Which model should I use?", "why": "Editing an existing picture." },
+    { "id": "N6", "text": "which model keeps the same character consistent across all the panels of a comic?", "why": "Character consistency." },
+    { "id": "N7", "text": "what model can make a 4K product shot of a wristwatch for my online store", "why": "4K output." },
+    { "id": "N8", "text": "which model should I use for a sticker of a cartoon cat with a transparent background", "why": "Transparent background." },
+    { "id": "N9", "text": "which model is best for a photorealistic professional headshot for LinkedIn", "why": "Photorealism." },
+    { "id": "N10", "text": "I have a few reference photos of my dog. What model can generate new pictures of him from them?", "why": "Working from reference images." },
+    { "id": "N11", "text": "what model should I use for a birthday card that says 'Happy 30th Sarah' in big letters", "why": "Text inside the image." },
+    { "id": "Z1", "text": "which LoRAs are good for anime characters?", "why": "No capability implied: a style/add-on question." },
+    { "id": "Z2", "text": "what checkpoint should I use for epic fantasy landscapes", "why": "No capability implied." },
+    { "id": "Z3", "text": "recommend some LoRAs for a watercolor painting style", "why": "No capability implied." },
+    { "id": "Z4", "text": "which models are good for cyberpunk city scenes at night", "why": "No capability implied." }
+  ],
+  "expected": {
+    "N1": "recommend_resources",
+    "N2": "recommend_resources",
+    "N3": "recommend_resources",
+    "N4": "recommend_resources",
+    "N5": "recommend_resources",
+    "N6": "recommend_resources",
+    "N7": "recommend_resources",
+    "N8": "recommend_resources",
+    "N9": "recommend_resources",
+    "N10": "recommend_resources",
+    "N11": "recommend_resources",
+    "Z1": "recommend_resources",
+    "Z2": "recommend_resources",
+    "Z3": "recommend_resources",
+    "Z4": "recommend_resources"
+  },
+  "expectedNeeds": {
+    "N1": ["legible_text"],
+    "N2": ["design_layout", "legible_text"],
+    "N3": ["design_layout"],
+    "N4": ["design_layout", "legible_text"],
+    "N5": ["image_editing"],
+    "N6": ["character_consistency"],
+    "N7": ["high_resolution"],
+    "N8": ["transparent_background"],
+    "N9": ["photoreal"],
+    "N10": ["reference_images", "character_consistency"],
+    "N11": ["legible_text"],
+    "Z1": [],
+    "Z2": [],
+    "Z3": [],
+    "Z4": []
+  },
+  "notes": {
+    "N2/N4": "Two capabilities are a fair reading (a logo/infographic is a layout job that also carries text), so either one meets.",
+    "N10": "'new pictures of him from reference photos' is reference_images by the declaration's own wording; character_consistency (keep the same dog) is an equally fair reading, so either meets.",
+    "N7": "A 4K product shot may also earn photoreal; that is an allowed extra. high_resolution is the one that must be present.",
+    "Z-questions": "A capability on these is noise: it would surface hosted single-model ecosystems for a request an add-on ecosystem answers."
+  }
+}

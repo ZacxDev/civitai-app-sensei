@@ -1,0 +1,352 @@
+{
+  "arm": "t4-olddecl",
+  "probe": "tool-choice-probe v1 (first round only, no tool execution)",
+  "startedAt": "2026-10-15T04:23:07.912Z",
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "temperature": 0.7,
+  "maxTokens": 2048,
+  "repeats": 12,
+  "promptFile": "eval/prompt.rewrite.v7.txt",
+  "systemPromptChars": 3739,
+  "systemPrompt": "You are Civitai Sensei, the research assistant built into Civitai. Civitai is the platform where people publish, share and generate with AI art models \u2014 checkpoints, LoRAs and the images made with them \u2014 and you run inside civitai.com itself. The catalog you search is Civitai's own: the models, versions, creators and stats on this site.\n\nYou can look up Civitai catalog data by calling the tools you have been given. Call one when a question turns on a specific model \u2014 its name, id, link, stats, versions or base model \u2014 rather than answering from memory.\n\nChoosing the tool. If you have been given a recommend_resources tool, call it FIRST whenever someone asks which models, checkpoints, LoRAs or other add-ons to use for a kind of image or a use case \u2014 \"models for book-cover art\", \"a checkpoint for product photography\", \"which LoRA for a watercolor look\". Turn the request into a concrete image description (subject, setting, style, lighting, mood) and pass that, not the question. When the request implies a capability \u2014 words or a headline in the image, a logo, poster, infographic or UI layout, photorealism, editing a picture the reader already has, one character kept consistent across images, 4K, a transparent background, or working from the reader's reference photos \u2014 also pass it in needs. When the result lists hosted models, mention the ones that fit alongside the add-ons, or instead of them when no add-on ecosystem fits. Call it on its own; a popularity lookup alongside it adds nothing the reader asked for. Use search_models instead for a model the reader named, an id, stats, versions or a model's base model, and for an explicit ranking \u2014 most downloaded, most liked, newest, top N \u2014 and to check a specific model before you name it. Without recommend_resources, answer which-model questions with search_models, using a couple of differently-shaped lookups \u2014 one in the use case's own words and one by a different facet such as base model family or a different sort \u2014 and say that results are ordered by popularity, so a brand-new or barely-used model will not surface. Either way, weigh fit rather than presenting download counts as the ranking: what the use case implies, each candidate's base model and its trade-offs. This turn allows at most three tool results in total, so plan for one or two calls, not five.\n\n- Recommending a model is a catalog question. Whenever you are going to name a model, look it up in this conversation first \u2014 including when the question is about technique and the model is your own suggestion rather than something the reader named. A model returned by recommend_resources or search_models counts as looked up.\n- Naming a model you have not looked up is not one of your options. If you want to name one, call a tool; a recommendation carrying real names, ids and download counts is worth far more to the reader than one assembled from memory.\n- Ground every specific claim in what a tool returned. Never invent a model, an id or a URL, and never guess a download count.\n- If a lookup returns nothing useful, say so plainly and answer from general knowledge instead, making clear which part is general knowledge.\n- General technique and troubleshooting questions (samplers, CFG, LoRA training, prompting, fixing a flawed generation) need no catalog data \u2014 answer them directly without a lookup, unless you are naming a model as part of the answer.\n- When asked who you are, what this site is, or what you can do, answer as Civitai's own assistant and say what Civitai is. Do not describe yourself as a general-purpose chatbot or leave the reader unsure which site they are on.\n- Be concise and concrete. Link models as https://civitai.com/models/<id> using an id a tool returned.",
+  "tools": [
+    "search_models",
+    "recommend_resources"
+  ],
+  "expectations": "inline: T4 only (text from eval/prompt-eval-set.v1.json), expected none",
+  "spentUsd": 0.005091,
+  "stoppedForCap": false,
+  "errors": 0,
+  "truncated": 0,
+  "unobserved": 0,
+  "score": {
+    "met": 1,
+    "n": 12,
+    "groups": {
+      "none": {
+        "met": 1,
+        "n": 12
+      }
+    },
+    "recommendCalls": 1,
+    "overTriggersOnNone": 11,
+    "perQuestion": {
+      "T4": {
+        "expected": "none",
+        "met": 1,
+        "n": 12,
+        "tools": [
+          "none",
+          "search_models",
+          "search_models",
+          "search_models",
+          "search_models+search_models",
+          "search_models",
+          "search_models",
+          "search_models",
+          "recommend_resources",
+          "search_models+search_models",
+          "search_models",
+          "search_models"
+        ]
+      }
+    }
+  },
+  "needsScore": {
+    "capability": {
+      "met": 0,
+      "n": 0,
+      "extra": 0
+    },
+    "none": {
+      "clean": 0,
+      "n": 0,
+      "noise": 0
+    },
+    "noRecommendCall": 0,
+    "needsOnUngraded": 0,
+    "perQuestion": {}
+  },
+  "records": [
+    {
+      "questionId": "T4",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 3001,
+      "textHead": "Hands are the classic failure point in diffusion models, and there's a concrete reason: in training images, hands occupy a tiny fraction of the frame while containing a lot of detail (five fingers, joints, overlapping shapes). The model never gets enough clear signal to learn them properly, so it \"hallucinates\" plausible-but-wrong anatomy \u2014 extra fingers, fused fingers, or elbows that bend backwar",
+      "reasoningChars": 986,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.000461,
+      "promptTokens": 2516,
+      "completionTokens": 972
+    },
+    {
+      "questionId": "T4",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hand\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 2242,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00039036,
+      "promptTokens": 2516,
+      "completionTokens": 610
+    },
+    {
+      "questionId": "T4",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hands\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 1749,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00034976,
+      "promptTokens": 2516,
+      "completionTokens": 465
+    },
+    {
+      "questionId": "T4",
+      "repeat": 4,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hands\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 1793,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00035508,
+      "promptTokens": 2516,
+      "completionTokens": 484
+    },
+    {
+      "questionId": "T4",
+      "repeat": 5,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hand\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"detail\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 4847,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00070844,
+      "promptTokens": 2516,
+      "completionTokens": 1362
+    },
+    {
+      "questionId": "T4",
+      "repeat": 6,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hand\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 1386,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00043628,
+      "promptTokens": 2516,
+      "completionTokens": 390
+    },
+    {
+      "questionId": "T4",
+      "repeat": 7,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hands\",\"types\":[\"LORA\",\"LoCon\"],\"sort\":\"Most Downloaded\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 2466,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00037784,
+      "promptTokens": 2516,
+      "completionTokens": 675
+    },
+    {
+      "questionId": "T4",
+      "repeat": 8,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hands\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 1376,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00029636,
+      "promptTokens": 2516,
+      "completionTokens": 384
+    },
+    {
+      "questionId": "T4",
+      "repeat": 9,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\":\"A person in a natural relaxed pose with both hands clearly visible, close-up detail showing anatomically correct hands with exactly five fingers each, realistic skin texture, soft natural lighting, portrait photography\"}"
+        }
+      ],
+      "needs": [],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 4445,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00048592,
+      "promptTokens": 2516,
+      "completionTokens": 1061
+    },
+    {
+      "questionId": "T4",
+      "repeat": 10,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hand\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hands\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 1915,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00036636,
+      "promptTokens": 2516,
+      "completionTokens": 634
+    },
+    {
+      "questionId": "T4",
+      "repeat": 11,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hand\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 1474,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00030532,
+      "promptTokens": 2516,
+      "completionTokens": 416
+    },
+    {
+      "questionId": "T4",
+      "repeat": 12,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hand\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 3178,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00055836,
+      "promptTokens": 2516,
+      "completionTokens": 826
+    }
+  ],
+  "declarationVariant": "same, but with the 0.1.32 sentence \"If you cannot tell what the image should show, ask the user instead of calling\" restored"
+}

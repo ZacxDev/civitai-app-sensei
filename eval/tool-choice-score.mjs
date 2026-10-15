@@ -70,3 +70,79 @@ export function score(records, expected) {
     perQuestion,
   };
 }
+
+/**
+ * The `needs` a record's first round passed to recommend_resources: the UNION
+ * over every recommend_resources call in the round, or `null` when the round
+ * made no such call. Unparseable arguments count as no needs (and are flagged by
+ * the probe separately).
+ *
+ * @param {Array<{name: string, arguments: string}>} toolCalls
+ * @returns {string[] | null}
+ */
+export function needsOf(toolCalls) {
+  const recs = (toolCalls ?? []).filter((c) => c.name === 'recommend_resources');
+  if (recs.length === 0) return null;
+  const out = new Set();
+  for (const c of recs) {
+    let args;
+    try {
+      args = JSON.parse(c.arguments || '{}');
+    } catch {
+      continue;
+    }
+    if (Array.isArray(args?.needs)) for (const n of args.needs) if (typeof n === 'string') out.add(n);
+  }
+  return [...out];
+}
+
+/**
+ * Score `needs` against `expectedNeeds` (questionId -> any-of list; [] = none).
+ *
+ *   capability question (non-empty list): met when `needs` contains at least
+ *     one listed capability. Extra capabilities are counted in `extra`.
+ *   none question ([]): clean when `needs` is empty; NOISE otherwise.
+ *   A record with `needs === null` (no recommend_resources call) is a tool miss:
+ *     counted in `noRecommendCall`, excluded from both denominators.
+ *   A question id with no `expectedNeeds` entry is skipped (it belongs to a
+ *   set this scorer does not grade — e.g. the v1 21-question set), but its
+ *   non-empty `needs` are tallied in `needsOnUngraded` for information.
+ *
+ * @param {Array<{questionId: string, needs: string[] | null}>} records
+ * @param {Record<string, string[]>} expectedNeeds
+ */
+export function scoreNeeds(records, expectedNeeds) {
+  const capability = { met: 0, n: 0, extra: 0 };
+  const none = { clean: 0, n: 0, noise: 0 };
+  const perQuestion = {};
+  let noRecommendCall = 0;
+  let needsOnUngraded = 0;
+  for (const r of records) {
+    const want = expectedNeeds[r.questionId];
+    if (want === undefined) {
+      if (r.needs && r.needs.length > 0) needsOnUngraded += 1;
+      continue;
+    }
+    const pq = (perQuestion[r.questionId] ??= { expectedAnyOf: want, met: 0, n: 0, needs: [] });
+    pq.needs.push(r.needs === null ? 'no-call' : r.needs.length ? r.needs.join('+') : '[]');
+    if (r.needs === null) {
+      noRecommendCall += 1;
+      continue;
+    }
+    pq.n += 1;
+    if (want.length > 0) {
+      capability.n += 1;
+      const ok = r.needs.some((c) => want.includes(c));
+      capability.met += ok ? 1 : 0;
+      pq.met += ok ? 1 : 0;
+      if (r.needs.some((c) => !want.includes(c))) capability.extra += 1;
+    } else {
+      none.n += 1;
+      const clean = r.needs.length === 0;
+      none.clean += clean ? 1 : 0;
+      none.noise += clean ? 0 : 1;
+      pq.met += clean ? 1 : 0;
+    }
+  }
+  return { capability, none, noRecommendCall, needsOnUngraded, perQuestion };
+}

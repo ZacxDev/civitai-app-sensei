@@ -37,6 +37,18 @@
  * route judged the image needs no add-on. Collapsing the two would have the
  * model tell a viewer "no extra models needed" exactly when the service was
  * down. They are separate states here and render to opposite instructions.
+ *
+ * 🔴 HOSTED MODELS ARE A PROVISIONAL CONTRACT, AND EVERY WIRE NAME FOR THEM
+ * LIVES IN TWO PLACES ONLY. Single-model hosted ecosystems (GPT Image, Nano
+ * Banana, Seedream, …) have no add-ons, so the add-on/checkpoint lists can never
+ * surface them. A civitai/civitai change NOT YET DEPLOYED adds a curated catalog
+ * to the route: the request takes `needs` (capabilities), the response answers
+ * `hostedModels`. Its field names may still change, so the REQUEST side is
+ * spelled only in {@link ResourceIntentRequestBody} (`needs`) plus the
+ * capability list {@link HOSTED_MODEL_CAPABILITIES}, and the RESPONSE side only
+ * in {@link parseHostedModels}. Reconciling a rename is a change there and
+ * nowhere else. Against today's deployed route the field is simply absent, and
+ * absent renders NO hosted section and changes nothing else in the result.
  */
 import { modelUrl } from './research.js';
 import {
@@ -120,12 +132,45 @@ const MAX_ECHO_CHARS = 300;
 const BASE_MODEL_EXAMPLES = "'SD 1.5', 'SDXL 1.0', 'Pony', 'Illustrious', 'NoobAI', 'Flux.1 D'";
 
 /**
+ * The capabilities the route's hosted-model catalog is matched by — the closed
+ * enum of its `needs` field (`HOSTED_MODEL_CAPABILITIES` in the civitai PR's
+ * `hosted-model-catalog.constants.ts`). The route 400s any other value, which
+ * would cost the add-on answer too, so {@link parseRecommendArgs} drops unknown
+ * values rather than forward them.
+ */
+export const HOSTED_MODEL_CAPABILITIES = [
+  'legible_text',
+  'design_layout',
+  'photoreal',
+  'image_editing',
+  'character_consistency',
+  'high_resolution',
+  'transparent_background',
+  'reference_images',
+] as const;
+export type HostedModelCapability = (typeof HOSTED_MODEL_CAPABILITIES)[number];
+
+/** At most this many `needs` per call. The route allows all 8; a request that implies more than 4 is not a focused one. */
+export const MAX_NEEDS = 4;
+
+/** The route returns up to 3; this is the ceiling on what reaches the model, whatever it sends. */
+export const SHOWN_HOSTED = 3;
+const MAX_GOOD_AT_CHARS = 200;
+
+/**
  * The declaration the chat model is shown.
  *
  * The description is where the rewrite instruction lives — NOT the system
  * prompt, which is eval-attributed byte-for-byte (`types.ts`) and must not be
  * edited in place. A tool's own description is the documented channel for how
  * to call it, and the host's `search_models` uses it the same way.
+ *
+ * 🔴 A VAGUE REQUEST IS GUESSED, NOT BOUNCED (operator decision, 0.1.33). Until
+ * 0.1.32 this said "if you cannot tell what the image should show, ask the user
+ * instead of calling", and "what models are best for professional content" got a
+ * clarifying question and no lookup. Now the model picks one representative
+ * image, calls, and offers to narrow it down — an answer the viewer can correct
+ * beats a question they have to answer before seeing anything.
  */
 export const RECOMMEND_TOOL_DECLARATION: ToolDeclaration = {
   type: 'function',
@@ -138,8 +183,10 @@ export const RECOMMEND_TOOL_DECLARATION: ToolDeclaration = {
       'before calling, turn the request into a concrete picture — subject, setting, style, lighting, mood. For ' +
       "example, for 'sfw models to use for advertising collateral' describe an image such as 'clean commercial " +
       "product photo of a perfume bottle on a white marble counter, soft studio lighting, minimal background'. " +
-      'If you cannot tell what the image should show, ask the user instead of calling. Returns up to ' +
-      `${SHOWN_PER_KIND} suggestions per kind.`,
+      'If the request is vague (for example \'models for professional content\'), do not ask first: pick one ' +
+      'representative concrete image for it, call with that, and offer in your answer to narrow it down. Returns up to ' +
+      `${SHOWN_PER_KIND} suggestions per kind. When the request implies a capability, pass needs; the result may ` +
+      'then also list hosted models — single-model generators used directly, with no add-ons.',
     parameters: {
       type: 'object',
       properties: {
@@ -158,6 +205,18 @@ export const RECOMMEND_TOOL_DECLARATION: ToolDeclaration = {
             `${BASE_MODEL_EXAMPLES}. Only when the user named one or it is clear from the conversation; ` +
             'otherwise omit it. When present, add-ons are matched to it and checkpoints for it are returned too.',
         },
+        needs: {
+          type: 'array',
+          items: { type: 'string', enum: [...HOSTED_MODEL_CAPABILITIES] },
+          maxItems: MAX_NEEDS,
+          description:
+            'Capabilities the image clearly requires, only when the request implies them: legible_text (words, ' +
+            'a headline or a name in the image), design_layout (a logo, poster, infographic or UI mockup), ' +
+            'photoreal (a photorealistic result), image_editing (changing a picture the user already has), ' +
+            'character_consistency (the same character across several images), high_resolution (4K or larger), ' +
+            'transparent_background (a sticker or cutout), reference_images (working from photos the user ' +
+            'supplies). Omit it when nothing like that is implied — a style, subject or genre alone is not a need.',
+        },
       },
       required: ['image_description'],
       additionalProperties: false,
@@ -171,6 +230,30 @@ export interface RecommendArgs {
   imageDescription: string;
   /** `null` when the model gave none — then no checkpoint request is made. */
   baseModel: string | null;
+  /** Known capabilities only, de-duplicated, at most {@link MAX_NEEDS}. Empty ⇒ nothing is sent. */
+  needs: HostedModelCapability[];
+}
+
+const CAPABILITY_SET: ReadonlySet<string> = new Set(HOSTED_MODEL_CAPABILITIES);
+
+/**
+ * The model's `needs`, cleaned. `undefined`/`null` is absent. Anything but an
+ * array is `null` (a refusal). Unknown values are DROPPED, not refused: the
+ * route 400s the whole request on one, which would cost the add-on answer for a
+ * capability nobody can serve anyway.
+ */
+function parseNeeds(raw: unknown): HostedModelCapability[] | null {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) return null;
+  const out: HostedModelCapability[] = [];
+  for (const v of raw) {
+    if (typeof v !== 'string') continue;
+    const c = v.trim();
+    if (!CAPABILITY_SET.has(c) || out.includes(c as HostedModelCapability)) continue;
+    out.push(c as HostedModelCapability);
+    if (out.length === MAX_NEEDS) break;
+  }
+  return out;
 }
 
 export type ParsedRecommendArgs = { ok: true; value: RecommendArgs } | { ok: false; reason: string };
@@ -204,7 +287,11 @@ export function parseRecommendArgs(args: Record<string, unknown>): ParsedRecomme
       reason: `base_model is longer than ${MAX_BASE_MODEL_CHARS} characters — give the base model's name only`,
     };
   }
-  return { ok: true, value: { imageDescription, baseModel } };
+  const needs = parseNeeds(args.needs);
+  if (needs === null) {
+    return { ok: false, reason: 'needs must be a list of capability names, or omitted' };
+  }
+  return { ok: true, value: { imageDescription, baseModel, needs } };
 }
 
 export type ResourceKind = 'addon' | 'checkpoint';
@@ -214,6 +301,12 @@ export interface ResourceIntentRequestBody {
   prompt: string;
   baseModel?: string;
   kind?: 'checkpoint';
+  /**
+   * 🔴 PROVISIONAL WIRE NAME (see the file header) — the ONE place the request
+   * side of the hosted-model contract is spelled. Sent only when non-empty, and
+   * only on the add-on request.
+   */
+  needs?: HostedModelCapability[];
 }
 
 export interface ResourceIntentRequest {
@@ -231,14 +324,19 @@ export interface ResourceIntentRequest {
  * trip spent on an answer known in advance, and a refusal the model would then
  * have to be told to ignore. The add-on body carries NO `kind`: absent is the
  * route's add-on path, unchanged.
+ *
+ * `needs` rides the ADD-ON request only, and only when non-empty. The route
+ * answers it the same way whatever the `kind`, so sending it on both would
+ * return the same hosted list twice; the add-on request is the one always made.
+ * An empty `needs` is not sent at all, so a call without one produces exactly
+ * the body it produced before this field existed.
  */
 export function buildResourceIntentRequests(args: RecommendArgs): ResourceIntentRequest[] {
-  const addon: ResourceIntentRequest = {
-    kind: 'addon',
-    body: args.baseModel
-      ? { prompt: args.imageDescription, baseModel: args.baseModel }
-      : { prompt: args.imageDescription },
-  };
+  const addonBody: ResourceIntentRequestBody = args.baseModel
+    ? { prompt: args.imageDescription, baseModel: args.baseModel }
+    : { prompt: args.imageDescription };
+  if (args.needs.length > 0) addonBody.needs = [...args.needs];
+  const addon: ResourceIntentRequest = { kind: 'addon', body: addonBody };
   if (!args.baseModel) return [addon];
   return [
     addon,
@@ -364,6 +462,59 @@ export function classifyResourceIntentBody(body: unknown, kind: ResourceKind): K
   };
 }
 
+/**
+ * One hosted model as the model is shown it. `modelId` sits in an `items` array
+ * in the rendered result, which is what `lib/grounding.ts` collects — so a link
+ * to it is grounded exactly as an add-on's is.
+ */
+export interface ShownHostedModel {
+  modelId: number;
+  name: string;
+  maker: string;
+  goodAt: string;
+  url: string;
+  capabilities?: HostedModelCapability[];
+}
+
+/**
+ * The route's hosted-model list, read defensively. `null` ⇒ the field is ABSENT
+ * (or not a list) — today's deployed route — and no hosted section is rendered.
+ * An array ⇒ the field is present; items that fail validation are DROPPED, so a
+ * present-but-unusable list comes back as `[]`.
+ *
+ * 🔴 PROVISIONAL WIRE NAMES (see the file header): `hostedModels` and the item
+ * fields `modelId`, `name`, `maker`, `goodAt`, `capabilities` are spelled HERE
+ * and nowhere else. The item's own `url` and `key` are NOT read: the link is
+ * rebuilt from `modelId` with {@link modelUrl}, so the url shown can never point
+ * at an id other than the one grounding admits.
+ *
+ * Total — never throws. Exported for tests.
+ */
+export function parseHostedModels(body: unknown): ShownHostedModel[] | null {
+  if (body === null || typeof body !== 'object') return null;
+  const raw = (body as Record<string, unknown>).hostedModels;
+  if (!Array.isArray(raw)) return null;
+  const out: ShownHostedModel[] = [];
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
+    const h = item as Record<string, unknown>;
+    const modelId = positiveInt(h.modelId);
+    const name = boundedString(h.name, MAX_NAME_CHARS);
+    const maker = boundedString(h.maker, MAX_FIELD_CHARS);
+    const goodAt = boundedString(h.goodAt, MAX_GOOD_AT_CHARS);
+    if (modelId === null || !name || !maker || !goodAt) continue;
+    if (out.some((o) => o.modelId === modelId)) continue;
+    const shown: ShownHostedModel = { modelId, name, maker, goodAt, url: modelUrl(modelId) };
+    const caps = Array.isArray(h.capabilities)
+      ? HOSTED_MODEL_CAPABILITIES.filter((c) => (h.capabilities as unknown[]).includes(c))
+      : [];
+    if (caps.length > 0) shown.capabilities = caps;
+    out.push(shown);
+    if (out.length === SHOWN_HOSTED) break;
+  }
+  return out;
+}
+
 /** Classify a non-2xx answer. */
 export function classifyHttpError(e: BlocksHttpError): KindResult {
   if (e.status === 401 || e.status === 403) return { state: 'unauthorized' };
@@ -379,13 +530,34 @@ function isAbort(e: unknown, auth: ToolAuth): boolean {
   return !!auth.signal?.aborted || (e instanceof DOMException && e.name === 'AbortError');
 }
 
-async function requestKind(req: ResourceIntentRequest, auth: ToolAuth): Promise<KindResult> {
+/**
+ * One request's answer: the classified state, plus the hosted list when the
+ * request asked for one (`null` otherwise, or when the route sent none).
+ *
+ * 🔴 THE HOSTED LIST IS READ INDEPENDENTLY OF THE CLASSIFICATION. The route
+ * computes it in memory after its own pipeline and attaches it even to a
+ * `degraded` response, so a failed add-on lookup must not discard a hosted
+ * answer that did arrive.
+ */
+interface KindAnswer {
+  kind: ResourceKind;
+  result: KindResult;
+  hosted: ShownHostedModel[] | null;
+}
+
+async function requestKind(req: ResourceIntentRequest, auth: ToolAuth): Promise<KindAnswer> {
+  const answer = (result: KindResult, hosted: ShownHostedModel[] | null = null): KindAnswer => ({
+    kind: req.kind,
+    result,
+    hosted,
+  });
   try {
     const body = await toolsFetch(
       { path: '/resource-intent', method: 'POST', body: JSON.stringify(req.body) },
       auth,
     );
-    return classifyResourceIntentBody(body, req.kind);
+    const asked = (req.body.needs?.length ?? 0) > 0;
+    return answer(classifyResourceIntentBody(body, req.kind), asked ? parseHostedModels(body) : null);
   } catch (e) {
     // 🔴 AN ABORT ENDS THE WHOLE CALL. It is re-thrown so `executeToolCall`
     // classifies it as `aborted`, which the loop discards — rendering it as a
@@ -393,9 +565,9 @@ async function requestKind(req: ResourceIntentRequest, auth: ToolAuth): Promise<
     // stopped. Checked FIRST: a Stop landing while an error body is being read
     // surfaces as a `BlocksHttpError`, and is still a Stop.
     if (isAbort(e, auth)) throw e;
-    if (e instanceof BlocksHttpError) return classifyHttpError(e);
-    if (e instanceof DOMException && e.name === 'TimeoutError') return { state: 'error', reason: 'timed out' };
-    return { state: 'error', reason: e instanceof Error ? e.message : 'request failed' };
+    if (e instanceof BlocksHttpError) return answer(classifyHttpError(e));
+    if (e instanceof DOMException && e.name === 'TimeoutError') return answer({ state: 'error', reason: 'timed out' });
+    return answer({ state: 'error', reason: e instanceof Error ? e.message : 'request failed' });
   }
 }
 
@@ -495,18 +667,51 @@ const HOW_TO_PRESENT =
   'models are needed.';
 
 /**
+ * The hosted-model section, or `undefined` when the route sent no list (which
+ * keeps the serialized result byte-identical to a call made before the field
+ * existed — `JSON.stringify` omits an `undefined` key).
+ *
+ * The list sits under `items` deliberately: that is the key `lib/grounding.ts`
+ * walks for model ids, so these links are grounded like any add-on's.
+ */
+function hostedSection(hosted: ShownHostedModel[] | null): Record<string, unknown> | undefined {
+  if (hosted === null) return undefined;
+  if (hosted.length === 0) {
+    return {
+      status: 'none_matched',
+      note: 'No hosted model matched these needs. Do not suggest one from memory.',
+    };
+  }
+  return {
+    status: 'ok',
+    items: hosted,
+    note:
+      'These are hosted single-model ecosystems: each is one model generated with directly on Civitai, with no ' +
+      'add-ons or checkpoints to pick. Present them in their own short list, separate from add-ons and ' +
+      'checkpoints — name linked to its url, maker, and what it is good at — and mention the ones that fit the ' +
+      'request, alongside the add-ons or instead of them when no add-on ecosystem fits.',
+  };
+}
+
+/**
  * Render the classified results into the tool outcome.
  *
- * At least one kind answered (`ok` or a genuine `empty`) ⇒ a result the model
- * presents, with any failed kind marked `failed` beside it. NOTHING answered ⇒ a
- * `failed` outcome, so it travels the same error channel every other failed
- * lookup does and grounds nothing.
+ * At least one kind answered (`ok` or a genuine `empty`), or a non-empty hosted
+ * list arrived ⇒ a result the model presents, with any failed kind marked
+ * `failed` beside it. NOTHING answered ⇒ a `failed` outcome, so it travels the
+ * same error channel every other failed lookup does and grounds nothing.
+ *
+ * `hosted` is `null` when no hosted list was asked for or the route sent none —
+ * then the result is exactly what it was before hosted models existed.
  */
 export function renderRecommendation(
   args: RecommendArgs,
   results: ReadonlyArray<{ kind: ResourceKind; result: KindResult }>,
+  hosted: ShownHostedModel[] | null = null,
 ): ToolCallOutcome {
-  const answered = results.some((r) => r.result.state === 'ok' || r.result.state === 'empty');
+  const answered =
+    results.some((r) => r.result.state === 'ok' || r.result.state === 'empty') ||
+    (hosted !== null && hosted.length > 0);
   if (!answered) {
     const [first, ...rest] = results;
     const reason =
@@ -535,6 +740,7 @@ export function renderRecommendation(
             'No base model was given, so no checkpoints were requested. If the user wants checkpoint ' +
             'suggestions, ask which base model they use.',
         },
+    hostedModels: hostedSection(hosted),
     howToPresent: HOW_TO_PRESENT,
   };
 
@@ -592,10 +798,10 @@ export async function executeRecommend(
   const requests = buildResourceIntentRequests(parsed.value);
   // In parallel: both kinds share the route's per-block rate bucket either way,
   // and a sequential pair would double the time the viewer waits on this round.
-  const results = await Promise.all(
-    requests.map(async (req) => ({ kind: req.kind, result: await requestKind(req, auth) })),
-  );
-  return renderRecommendation(parsed.value, results);
+  const answers = await Promise.all(requests.map((req) => requestKind(req, auth)));
+  // Only the add-on request carries `needs`, so at most one answer has a list.
+  const hosted = answers.find((a) => a.hosted !== null)?.hosted ?? null;
+  return renderRecommendation(parsed.value, answers, hosted);
 }
 
 /**

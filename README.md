@@ -96,6 +96,14 @@ since the tool is not on every turn's wire — and keeps `search_models` for nam
 models, stats and explicit rankings. That routing was measured only by a
 first-round tool-choice probe (`eval/tool-choice-probe.mjs`), not by the live
 eval; the comment on `DEFAULT_SYSTEM_PROMPT` in `src/types.ts` has the numbers.
+Since 0.1.33 the tool also takes an optional `needs` list (legible text, layout,
+photorealism, editing, character consistency, high resolution, transparent
+background, reference images) and, when the route answers one, presents
+**hosted models** — single-model generators such as GPT Image or Seedream, which
+have no add-ons — in their own section. That half depends on a route change in
+civitai/civitai that is not deployed yet: against today's route the field is
+absent and the result is exactly what it was before. The wire names live in one
+type and one parse function in `src/lib/recommend.ts`.
 
 **Each round is its own submit, separately quoted and separately charged**, so a
 question needing a lookup costs more than one completion. The loop is bounded by

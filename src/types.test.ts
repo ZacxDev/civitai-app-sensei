@@ -26,6 +26,15 @@ const V5_PARAGRAPH = `When a question asks which models to use — the best, the
  */
 const V6_PARAGRAPH = `Choosing the tool. If you have been given a recommend_resources tool, call it FIRST whenever someone asks which models, checkpoints, LoRAs or other add-ons to use for a kind of image or a use case — "models for book-cover art", "a checkpoint for product photography", "which LoRA for a watercolor look". Turn the request into a concrete image description (subject, setting, style, lighting, mood) and pass that, not the question. Call it on its own; a popularity lookup alongside it adds nothing the reader asked for. Use search_models instead for a model the reader named, an id, stats, versions or a model's base model, and for an explicit ranking — most downloaded, most liked, newest, top N — and to check a specific model before you name it. Without recommend_resources, answer which-model questions with search_models, using a couple of differently-shaped lookups — one in the use case's own words and one by a different facet such as base model family or a different sort — and say that results are ordered by popularity, so a brand-new or barely-used model will not surface. Either way, weigh fit rather than presenting download counts as the ranking: what the use case implies, each candidate's base model and its trade-offs. This turn allows at most three tool results in total, so plan for one or two calls, not five.`;
 
+/**
+ * 🔴 THE V7 ROUTING PARAGRAPH'S EXACT BYTES — v6's paragraph plus the two
+ * `needs` / hosted-models sentences. Held here, not read back from `types.ts`,
+ * for the same reason as V6_PARAGRAPH. The added sentences sit INSIDE the
+ * paragraph that opens "If you have been given a recommend_resources tool", so
+ * they stay conditional on the tool being on the wire.
+ */
+const V7_PARAGRAPH = `Choosing the tool. If you have been given a recommend_resources tool, call it FIRST whenever someone asks which models, checkpoints, LoRAs or other add-ons to use for a kind of image or a use case — "models for book-cover art", "a checkpoint for product photography", "which LoRA for a watercolor look". Turn the request into a concrete image description (subject, setting, style, lighting, mood) and pass that, not the question. When the request implies a capability — words or a headline in the image, a logo, poster, infographic or UI layout, photorealism, editing a picture the reader already has, one character kept consistent across images, 4K, a transparent background, or working from the reader's reference photos — also pass it in needs. When the result lists hosted models, mention the ones that fit alongside the add-ons, or instead of them when no add-on ecosystem fits. Call it on its own; a popularity lookup alongside it adds nothing the reader asked for. Use search_models instead for a model the reader named, an id, stats, versions or a model's base model, and for an explicit ranking — most downloaded, most liked, newest, top N — and to check a specific model before you name it. Without recommend_resources, answer which-model questions with search_models, using a couple of differently-shaped lookups — one in the use case's own words and one by a different facet such as base model family or a different sort — and say that results are ordered by popularity, so a brand-new or barely-used model will not surface. Either way, weigh fit rather than presenting download counts as the ranking: what the use case implies, each candidate's base model and its trade-offs. This turn allows at most three tool results in total, so plan for one or two calls, not five.`;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 🔴 THE SYSTEM PROMPT IS A CLAIM ABOUT THE WIRE, AND IT HAS BEEN WRONG TWICE
 // IN OPPOSITE DIRECTIONS.
@@ -69,22 +78,48 @@ describe('DEFAULT_SYSTEM_PROMPT — must describe the retrieval the app actually
     expect(DEFAULT_SYSTEM_PROMPT).toMatch(/never invent/i);
   });
 
-  it('🔴 is byte-identical to eval/prompt.rewrite.v6.txt — the arm file the tool-choice probe sent', () => {
-    // 🔴 WHAT THIS PIN DOES AND DOES NOT ATTRIBUTE. v6 was scored ONLY by
-    // `eval/tool-choice-probe.mjs` (first-round tool choice, direct model call,
-    // no tool execution) — never by `run-eval.mjs`. The probe sent the bytes of
-    // `eval/prompt.rewrite.v6.txt` (`.trim()`ed), so pinning the constant to that
-    // file is what lets `eval/results/tool-choice/tool-choice-v6-iter2-2026-10-14.json`'s
-    // numbers be read as this constant's. v4's run-eval numbers are NOT its
-    // numbers; they stay pinned on v4's legacy entry below.
-    const v6 = readFileSync(new URL('../eval/prompt.rewrite.v6.txt', import.meta.url), 'utf8').trim();
-    expect(DEFAULT_SYSTEM_PROMPT).toBe(v6);
-    expect(DEFAULT_SYSTEM_PROMPT).toHaveLength(3285);
-    expect(DEFAULT_SYSTEM_PROMPT).toContain(V6_PARAGRAPH);
+  it('🔴 is byte-identical to eval/prompt.rewrite.v7.txt — the arm file the tool-choice probe sent', () => {
+    // 🔴 WHAT THIS PIN DOES AND DOES NOT ATTRIBUTE. v7, like v6, was scored ONLY
+    // by `eval/tool-choice-probe.mjs` (first-round tool choice and `needs`,
+    // direct model call, no tool execution) — never by `run-eval.mjs`. The probe
+    // sent the bytes of `eval/prompt.rewrite.v7.txt` (`.trim()`ed), so pinning the
+    // constant to that file is what lets the `needs-v7` and `tool-choice-v7`
+    // results under `eval/results/tool-choice/` be read as this constant's.
+    const v7 = readFileSync(new URL('../eval/prompt.rewrite.v7.txt', import.meta.url), 'utf8').trim();
+    expect(DEFAULT_SYSTEM_PROMPT).toBe(v7);
+    expect(DEFAULT_SYSTEM_PROMPT).toHaveLength(3739);
+    expect(DEFAULT_SYSTEM_PROMPT).toContain(V7_PARAGRAPH);
+    expect(DEFAULT_SYSTEM_PROMPT).not.toContain(V6_PARAGRAPH);
     expect(DEFAULT_SYSTEM_PROMPT).not.toContain(V5_PARAGRAPH);
 
-    // And the probe's own record of what it sent agrees — so an edit made to
-    // both the .txt and the constant still goes red against the scored arm.
+    // And the probe's own record of what it sent agrees — both arms that scored
+    // v7 — so an edit made to both the .txt and the constant still goes red.
+    for (const file of [
+      'needs-v7-2026-10-15.json',
+      'tool-choice-v7-2026-10-15.json',
+      'needs-v7-decl2-2026-10-15.json',
+      'tool-choice-v7-decl2-2026-10-15.json',
+    ]) {
+      const recorded = (
+        JSON.parse(
+          readFileSync(new URL(`../eval/results/tool-choice/${file}`, import.meta.url), 'utf8'),
+        ) as { systemPrompt: string }
+      ).systemPrompt;
+      expect(DEFAULT_SYSTEM_PROMPT, file).toBe(recorded);
+    }
+
+    // The two clauses v4 added, which its measured gains were ascribed to —
+    // v7 must not drop them while adding its own.
+    expect(DEFAULT_SYSTEM_PROMPT).toContain('Recommending a model is a catalog question');
+    expect(DEFAULT_SYSTEM_PROMPT).toMatch(/answer as Civitai's own assistant/i);
+  });
+
+  it('🔴 the v6 default is in the migration list, byte-identical to its arm file and recorded probe prompt', () => {
+    // v6 shipped 0.1.32, so viewers who opened Settings then hold it. Exactly
+    // ONE entry carries its bytes, and the migration moves it to v7.
+    const v6 = readFileSync(new URL('../eval/prompt.rewrite.v6.txt', import.meta.url), 'utf8').trim();
+    expect(v6).toHaveLength(3285);
+    expect(v6).toContain(V6_PARAGRAPH);
     const recorded = (
       JSON.parse(
         readFileSync(
@@ -93,17 +128,16 @@ describe('DEFAULT_SYSTEM_PROMPT — must describe the retrieval the app actually
         ),
       ) as { systemPrompt: string }
     ).systemPrompt;
-    expect(DEFAULT_SYSTEM_PROMPT).toBe(recorded);
-
-    // The two clauses v4 added, which its measured gains were ascribed to —
-    // v6 must not drop them while adding its own.
-    expect(DEFAULT_SYSTEM_PROMPT).toContain('Recommending a model is a catalog question');
-    expect(DEFAULT_SYSTEM_PROMPT).toMatch(/answer as Civitai's own assistant/i);
+    expect(v6).toBe(recorded);
+    expect(LEGACY_DEFAULT_SYSTEM_PROMPTS.filter((p) => p === v6)).toHaveLength(1);
+    expect(migrateSettings({ ...DEFAULT_SETTINGS, systemPrompt: v6 }).systemPrompt).toBe(
+      DEFAULT_SYSTEM_PROMPT,
+    );
   });
 
   it('🔴 the v5 default is in the migration list, byte-identical to its arm file', () => {
     // v5 shipped 0.1.27–0.1.31, so viewers who opened Settings then hold it.
-    // Exactly ONE entry carries its bytes, and the migration moves it to v6.
+    // Exactly ONE entry carries its bytes, and the migration moves it to the current default.
     const v5 = readFileSync(new URL('../eval/prompt.rewrite.v5.txt', import.meta.url), 'utf8').trim();
     expect(v5).toHaveLength(2610);
     expect(v5).toContain(V5_PARAGRAPH);
