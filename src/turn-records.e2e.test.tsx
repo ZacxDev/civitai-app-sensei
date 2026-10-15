@@ -574,8 +574,9 @@ describe('🔴 the boot sweep never deletes a record just because its session is
   // the doc does not exist yet (a viewer who sends on 0.2.0 before the cutover
   // copy), or a cross-tab last-writer-wins overwrite dropped a row. A sweep that
   // treated "not listed" as "orphaned" deleted pending, CHARGED turn records —
-  // the instrument's whole evidence. Leftovers of a bounded purge age out under
-  // the 200-record cap instead (oldest first), which needs no session list.
+  // the instrument's whole evidence. Leftovers of a bounded purge are left to
+  // the 200-record cap instead (oldest first, bounded by count, not time), which
+  // needs no session list.
   function pendingRecords(sessionId: string) {
     for (let i = 0; i < 5; i += 1) {
       const s = { sessionId, messageId: `m-${i}`, submittedAt: 1_700_000_000_000 + i };

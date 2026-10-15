@@ -9,6 +9,13 @@
 -- two of the sixteen questions that ever reached production were generated,
 -- charged, and never landed.
 --
+-- 🔴 SINCE 0.2.0 THIS READS THE LEGACY STORE. Sensei now writes its records and
+-- transcripts to the App Blocks DOCUMENT STORE (private collection `kv`, data
+-- wrapped as `{ "value": <the old value> }` — `src/lib/kv-store.ts`), not to
+-- `app_sensei.kv`. Run as-is it sees only pre-0.2.0 records (plus whatever the
+-- cutover copy left behind there); repointing it at the document store, with the
+-- `value` unwrap, is open work and not done here.
+--
 -- WHERE TO RUN IT. Against the App Blocks KV database — schema `app_sensei`,
 -- table `kv` — as a READ-ONLY query:
 --
@@ -70,19 +77,28 @@
 -- detector, a spurious row is caught the moment someone reads it, while a
 -- suppressed one is invisible by construction.
 --
--- 🔴 DELETED SESSIONS ARE ALMOST NEVER IN HERE — "BY CONSTRUCTION" WAS TOO
--- STRONG. `deleteSession` purges `sensei:turns:<sessionId>:*` alongside the
--- transcript, so a tidied-up chat normally leaves no records to reconcile. But
--- the purge is not gated on an in-flight turn, and `deleteSession` does not take
--- the write-ownership ticket, so a turn that was running keeps `ownsMessageWrite`
--- and its continuation re-creates the record after the purge. That does NOT by
--- itself manufacture a loss: the same continuation's `saveMessages` re-creates
--- `sensei:messages:<sessionId>` carrying the very `messageId` the record names,
--- so record and transcript come back together and the join still matches. It is
--- a strong tendency, not a construction — which matters only because the two
--- read the same way until they don't. If the purge ever regresses, this query's
--- (a) column climbs at the rate people delete chats — read query A2's
--- `session_transcript_exists` column before believing a spike.
+-- 🔴 DELETED SESSIONS DO LEAVE RECORDS HERE, AND QUERY A COUNTS THEM. Since
+-- 0.2.0 `deleteSession`'s purge of `sensei:turns:<sessionId>:*` is CAPPED (20
+-- deletes per call, sharing a 20/min allowance with the boot prune — the store's
+-- write rate is per viewer and a delete counts). A chat with more than 20 turns,
+-- or several chats deleted within a minute, leaves records whose transcript is
+-- gone. They are bounded by COUNT, not time: they go only when the viewer has
+-- written enough newer turns to push them past the 200-record cap, which at
+-- observed rates can take months. Until then each such record whose turn was
+-- charged reads as a loss in query A — usually `c_overwritten` (`outcome =
+-- 'saved'`), since a finished turn was saved before its chat was deleted.
+-- (Separately, an in-flight turn's continuation can re-create a record after the
+-- purge, but it re-creates the transcript with it, so that one still matches.)
+--
+-- THEY ARE NOT EXCLUDED FROM QUERY A'S COUNTS, deliberately, and this is the
+-- fallback the 2026-10-15 review allowed: the transcript-exists test lives only
+-- in query A2 (`session_transcript_exists`), and adding it to A would also have
+-- to change section B and `eval/reconcile-turns.mjs`, whose parity is what
+-- `src/reconcile-turns.seam.test.ts` pins. So: BEFORE believing a non-zero
+-- loss column, read A2 and discount every row with
+-- `session_transcript_exists = false` — those are deleted chats, not lost
+-- answers. A spike in exactly those rows after a release means the purge
+-- regressed further.
 --
 -- ⚠️ TWO COPIES OF ONE PREDICATE, AND WHAT ACTUALLY HOLDS THEM TOGETHER.
 -- `eval/reconcile-turns.mjs` is this predicate in JavaScript so the unit suite

@@ -260,7 +260,7 @@ describe('🔴 housekeeping deletes leave the viewer write-rate headroom', () =>
     ]);
   });
 
-  it('a purge of a long chat deletes at most its budget; the rest age out under the cap', async () => {
+  it('a purge of a long chat deletes at most its budget and leaves the rest in place', async () => {
     const storage = fakeAppStorage({ ...records(57, 'session-gone'), ...records(3, 'session-kept') });
     expect(await purgeSessionTurnRecords(storage.appStorage, 'session-gone')).toBe(PURGE_DELETE_BUDGET);
     expect(turnKeysOf(storage, 'session-gone')).toHaveLength(57 - PURGE_DELETE_BUDGET);

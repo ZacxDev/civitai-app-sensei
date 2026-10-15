@@ -159,7 +159,7 @@ export const HOUSEKEEPING_DELETES_PER_MINUTE = 20;
 /** How many keys one prune sweep will delete (and never more than the pacer allows). */
 export const PRUNE_DELETE_BUDGET = 20;
 
-/** How many keys one session purge will delete; the rest age out under `MAX_TURN_RECORDS`. */
+/** How many keys one session purge will delete; the rest stay until pushed past `MAX_TURN_RECORDS`. */
 export const PURGE_DELETE_BUDGET = 20;
 
 const MINUTE_MS = 60_000;
@@ -383,7 +383,8 @@ async function listKeys(appStorage: AppStorage, prefix: string): Promise<string[
  * charged, `pending` records whenever a session was merely unlisted — no list
  * document yet (a viewer sending on 0.2.0 before the cutover copy), or a
  * cross-tab last-writer-wins overwrite. Leftovers of a bounded
- * {@link purgeSessionTurnRecords} age out under the cap like any other record.
+ * {@link purgeSessionTurnRecords} are removed by the cap like any other record
+ * — bounded by count, not by time.
  * `turn-records.e2e.test.tsx` pins "unlisted is not deleted".
  */
 export async function pruneTurnRecords(
@@ -416,11 +417,14 @@ export async function pruneTurnRecords(
  *
  * 🔴 BOUNDED AND PACED like the prune ({@link PURGE_DELETE_BUDGET}, the shared
  * {@link HOUSEKEEPING_DELETES_PER_MINUTE}): a chat with hundreds of turns must
- * not spend the viewer's write rate in one click. What is left over stays until
- * it ages out under {@link MAX_TURN_RECORDS} through the ordinary oldest-first
- * prune. Until then those records can read as "lost" to the reconciliation — a
- * bounded, named cost, chosen over any sweep keyed on the session list (see
- * {@link pruneTurnRecords} for why that one deleted live records).
+ * not spend the viewer's write rate in one click. What is left over is bounded
+ * by COUNT, not by time: it goes only when the viewer has written enough newer
+ * turns to push it past {@link MAX_TURN_RECORDS}, through the ordinary
+ * oldest-first prune — at observed rates that can be months. Until then those
+ * records read as losses in `eval/reconcile-turns.sql` query A (whose header
+ * says how to discount them via A2's `session_transcript_exists`). A named cost,
+ * chosen over any sweep keyed on the session list (see {@link pruneTurnRecords}
+ * for why that one deleted live records).
  *
  * Returns how many keys it deleted.
  */
