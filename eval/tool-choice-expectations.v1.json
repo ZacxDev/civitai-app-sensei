@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "name": "first-round tool-choice expectations v1",
+  "purpose": "The expected FIRST-ROUND tool for every question eval/tool-choice-probe.mjs asks. Written and committed BEFORE any probe arm ran, so the expectations are not fit to results. Scored mechanically by eval/tool-choice-score.mjs.",
+  "labels": {
+    "recommend_resources": "An image-kind / use-case 'which models, LoRAs, add-ons or checkpoints for X' question. Met when recommend_resources is among the first round's calls.",
+    "search_models": "A named model, an id, a stat, a version, a base model of a named model, or an explicit ranking (most downloaded / most popular / newest / top N). Met when search_models is among the first round's calls.",
+    "none": "Technique or identity. Met when the first round makes NO tool call; any call is an over-trigger.",
+    "either": "Genuinely ambiguous: met by either tool. Not used in v1."
+  },
+  "groups": {
+    "imageKind": "every question labelled recommend_resources",
+    "namedOrRanking": "every question labelled search_models",
+    "none": "every question labelled none"
+  },
+  "sets": ["eval/recommend-probe.v1.json", "eval/prompt-eval-set.v1.json"],
+  "extraQuestions": [
+    {
+      "id": "PROD1",
+      "text": "what models are best for professional content",
+      "why": "The production turn on 0.1.31 that made three search_models calls sorted Most Downloaded and answered with popularity rankings. Lower-case and unpunctuated exactly as the viewer typed it."
+    }
+  ],
+  "expected": {
+    "R1": "recommend_resources",
+    "R2": "recommend_resources",
+    "P1a": "recommend_resources",
+    "P1b": "recommend_resources",
+    "P2a": "recommend_resources",
+    "P2b": "recommend_resources",
+    "P3a": "recommend_resources",
+    "P3b": "recommend_resources",
+    "PROD1": "recommend_resources",
+    "L1": "search_models",
+    "L2": "search_models",
+    "L3": "search_models",
+    "L4": "search_models",
+    "L5": "search_models",
+    "T1": "none",
+    "T2": "none",
+    "T3": "none",
+    "T4": "none",
+    "I1": "none",
+    "I2": "none",
+    "I3": "none"
+  },
+  "notes": {
+    "T4": "'Why do my generated hands look distorted' is a troubleshooting question the v1 set labels expectTool:false. A recommend_resources call there (e.g. a hand-fixing LoRA) is scored as an over-trigger, deliberately: the set's own label is the pre-registered answer.",
+    "L4": "'most downloaded anime models' is an explicit ranking, so search_models, even though it names an image kind.",
+    "PROD1": "'best' could be read as a ranking word, but the question asks for fit to a use case, not a popularity order; labelled recommend_resources as the operator's report frames it."
+  }
+}

@@ -1,0 +1,1436 @@
+{
+  "arm": "v5",
+  "probe": "tool-choice-probe v1 (first round only, no tool execution)",
+  "startedAt": "2026-10-15T02:14:00.970Z",
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "temperature": 0.7,
+  "maxTokens": 512,
+  "repeats": 3,
+  "promptFile": "eval/prompt.rewrite.v5.txt",
+  "systemPromptChars": 2610,
+  "systemPrompt": "You are Civitai Sensei, the research assistant built into Civitai. Civitai is the platform where people publish, share and generate with AI art models — checkpoints, LoRAs and the images made with them — and you run inside civitai.com itself. The catalog you search is Civitai's own: the models, versions, creators and stats on this site.\n\nYou can look up Civitai catalog data by calling the tools you have been given. Call one when a question turns on a specific model — its name, id, link, stats, versions or base model — rather than answering from memory.\n\nWhen a question asks which models to use — the best, the recommended, the top ones — do not answer from a single ranked lookup. Run at least two differently-shaped lookups before answering: one in the use case's own words, and one by a different facet, such as recency, base model family or a different sort. Weigh fit rather than presenting download counts as the ranking — what the use case implies, each candidate's base model, how recent it is, and its trade-offs. Be honest about the catalog's limits: results are ordered by popularity, so a brand-new or barely-used model will not surface in a ranked lookup — say so when it matters to the question. This turn allows at most three tool results in total, so a couple of differently-shaped lookups is the ceiling, not five.\n\n- Recommending a model is a catalog question. Whenever you are going to name a model, look it up in this conversation first — including when the question is about technique and the model is your own suggestion rather than something the reader named.\n- Naming a model you have not looked up is not one of your options. If you want to name one, call the tool; a recommendation carrying real names, ids and download counts is worth far more to the reader than one assembled from memory.\n- Ground every specific claim in what a tool returned. Never invent a model, an id or a URL, and never guess a download count.\n- If a lookup returns nothing useful, say so plainly and answer from general knowledge instead, making clear which part is general knowledge.\n- General technique questions (samplers, CFG, LoRA training, prompting) need no catalog data — answer them directly without a lookup, unless you are naming a model as part of the answer.\n- When asked who you are, what this site is, or what you can do, answer as Civitai's own assistant and say what Civitai is. Do not describe yourself as a general-purpose chatbot or leave the reader unsure which site they are on.\n- Be concise and concrete. Link models as https://civitai.com/models/<id> using an id a tool returned.",
+  "tools": [
+    "search_models",
+    "recommend_resources"
+  ],
+  "expectations": "eval/tool-choice-expectations.v1.json",
+  "spentUsd": 0.021479,
+  "stoppedForCap": false,
+  "errors": 0,
+  "truncated": 9,
+  "score": {
+    "met": 42,
+    "n": 63,
+    "groups": {
+      "imageKind": {
+        "met": 7,
+        "n": 27
+      },
+      "namedOrRanking": {
+        "met": 15,
+        "n": 15
+      },
+      "none": {
+        "met": 20,
+        "n": 21
+      }
+    },
+    "recommendCalls": 7,
+    "overTriggersOnNone": 1,
+    "perQuestion": {
+      "R1": {
+        "expected": "recommend_resources",
+        "met": 0,
+        "n": 3,
+        "tools": [
+          "search_models",
+          "search_models+search_models",
+          "search_models+search_models"
+        ]
+      },
+      "R2": {
+        "expected": "recommend_resources",
+        "met": 0,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models",
+          "search_models+search_models"
+        ]
+      },
+      "P1a": {
+        "expected": "recommend_resources",
+        "met": 1,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models+recommend_resources",
+          "search_models+search_models"
+        ]
+      },
+      "P1b": {
+        "expected": "recommend_resources",
+        "met": 1,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models",
+          "search_models+recommend_resources"
+        ]
+      },
+      "P2a": {
+        "expected": "recommend_resources",
+        "met": 2,
+        "n": 3,
+        "tools": [
+          "recommend_resources+search_models",
+          "search_models+search_models",
+          "recommend_resources+search_models"
+        ]
+      },
+      "P2b": {
+        "expected": "recommend_resources",
+        "met": 0,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models",
+          "search_models+search_models"
+        ]
+      },
+      "P3a": {
+        "expected": "recommend_resources",
+        "met": 1,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "recommend_resources",
+          "search_models+search_models"
+        ]
+      },
+      "P3b": {
+        "expected": "recommend_resources",
+        "met": 2,
+        "n": 3,
+        "tools": [
+          "none",
+          "recommend_resources+search_models",
+          "recommend_resources+search_models"
+        ]
+      },
+      "L1": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models",
+          "search_models+search_models"
+        ]
+      },
+      "L2": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models",
+          "search_models",
+          "search_models"
+        ]
+      },
+      "L3": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models",
+          "search_models",
+          "search_models"
+        ]
+      },
+      "L4": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models",
+          "search_models+search_models"
+        ]
+      },
+      "L5": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models",
+          "search_models",
+          "search_models"
+        ]
+      },
+      "T1": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "T2": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "T3": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "T4": {
+        "expected": "none",
+        "met": 2,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "search_models"
+        ]
+      },
+      "I1": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "I2": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "I3": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "PROD1": {
+        "expected": "recommend_resources",
+        "met": 0,
+        "n": 3,
+        "tools": [
+          "none",
+          "search_models+search_models",
+          "none"
+        ]
+      }
+    }
+  },
+  "records": [
+    {
+      "questionId": "R1",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"realistic portrait\", \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Cohere",
+      "costUsd": 0.00042784,
+      "promptTokens": 2032,
+      "completionTokens": 512
+    },
+    {
+      "questionId": "R1",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"photorealistic\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"], \"limit\": 10}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"realistic portrait\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"], \"limit\": 10}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Cohere",
+      "costUsd": 0.0004116,
+      "promptTokens": 2032,
+      "completionTokens": 454
+    },
+    {
+      "questionId": "R1",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"photorealistic portrait\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\", \"limit\": 8}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"realistic photo\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Liked\", \"baseModels\": [\"SDXL 1.0\"], \"limit\": 8}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Cohere",
+      "costUsd": 0.00040488,
+      "promptTokens": 2032,
+      "completionTokens": 430
+    },
+    {
+      "questionId": "R2",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"architecture\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"], \"limit\": 8}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"archviz interior building\", \"sort\": \"Highest Rated\", \"types\": [\"Checkpoint\"], \"limit\": 8}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Cohere",
+      "costUsd": 0.00038808,
+      "promptTokens": 2030,
+      "completionTokens": 371
+    },
+    {
+      "questionId": "R2",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"architecture\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"architectural render interior exterior\", \"types\": [\"Checkpoint\"], \"sort\": \"Highest Rated\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Cohere",
+      "costUsd": 0.00034888,
+      "promptTokens": 2030,
+      "completionTokens": 231
+    },
+    {
+      "questionId": "R2",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"architecture\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"architectural render\", \"types\": [\"Checkpoint\"], \"sort\": \"Highest Rated\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Cohere",
+      "costUsd": 0.0003836,
+      "promptTokens": 2030,
+      "completionTokens": 355
+    },
+    {
+      "questionId": "P1a",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"], \"limit\": 5}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime portrait\", \"sort\": \"Highest Rated\", \"types\": [\"Checkpoint\"], \"limit\": 5}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00034476,
+      "promptTokens": 1985,
+      "completionTokens": 377
+    },
+    {
+      "questionId": "P1a",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models",
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime portrait\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"], \"limit\": 5}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"], \"baseModels\": [\"Illustrious\", \"Pony\"], \"limit\": 5}"
+        },
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Close-up anime portrait of a young woman, cel-shaded 2D style, large expressive eyes, clean line art, detailed hair with highlights, soft studio lighting, vibrant colors, head-and-shoulders framing, clean background\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00039629,
+      "promptTokens": 1985,
+      "completionTokens": 640
+    },
+    {
+      "questionId": "P1a",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime portrait\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"], \"limit\": 5}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"], \"baseModels\": [\"Illustrious\", \"Pony\", \"NoobAI\"], \"limit\": 5}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00031832,
+      "promptTokens": 1985,
+      "completionTokens": 301
+    },
+    {
+      "questionId": "P1b",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"blueprint\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"]}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"technical\", \"sort\": \"Highest Rated\", \"types\": [\"Checkpoint\"]}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00038032,
+      "promptTokens": 1986,
+      "completionTokens": 570
+    },
+    {
+      "questionId": "P1b",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"blueprint\", \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"technical drawing schematic\", \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.0003058,
+      "promptTokens": 1986,
+      "completionTokens": 246
+    },
+    {
+      "questionId": "P1b",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"blueprint\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\", \"LORA\"]}"
+        },
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Technical engineering blueprint drawing: precise black line work on a white background, dimension lines with arrows, measurements and annotations, schematic cross-section of a mechanical part, clean technical drafting style, sharp crisp lines, no shading\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00033455,
+      "promptTokens": 1986,
+      "completionTokens": 371
+    },
+    {
+      "questionId": "P2a",
+      "repeat": 1,
+      "firstRoundTools": [
+        "recommend_resources",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Epic fantasy landscape, rolling misty hills with a distant castle on a cliff, floating islands with waterfalls, dramatic god rays through clouds, painterly cinematic matte painting style, rich color grading, wide establishing shot\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"fantasy landscape\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00032499,
+      "promptTokens": 1985,
+      "completionTokens": 330
+    },
+    {
+      "questionId": "P2a",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"fantasy landscape\", \"types\": [\"Checkpoint\"]}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"landscape\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00030728,
+      "promptTokens": 1985,
+      "completionTokens": 253
+    },
+    {
+      "questionId": "P2a",
+      "repeat": 3,
+      "firstRoundTools": [
+        "recommend_resources",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Epic fantasy landscape: misty mountain peaks with ancient castle ruins, a glowing magical forest in the foreground, waterfalls and floating islands, dramatic golden-hour sky with volumetric light, painterly high-detail digital art style, cinematic wide shot.\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"fantasy landscape\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"]}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00032062,
+      "promptTokens": 1985,
+      "completionTokens": 311
+    },
+    {
+      "questionId": "P2b",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"microscopy\", \"types\": [\"Checkpoint\"]}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"microscope\", \"types\": [\"Checkpoint\"]}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Cohere",
+      "costUsd": 0.00024892,
+      "promptTokens": 2030,
+      "completionTokens": 258
+    },
+    {
+      "questionId": "P2b",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"microscopy\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"microscope\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Cohere",
+      "costUsd": 0.00035476,
+      "promptTokens": 2030,
+      "completionTokens": 252
+    },
+    {
+      "questionId": "P2b",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"microscopy\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"cells scientific biology\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Cohere",
+      "costUsd": 0.00038696,
+      "promptTokens": 2030,
+      "completionTokens": 367
+    },
+    {
+      "questionId": "P3a",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"hands\", \"types\": [\"LORA\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"hand detail\", \"types\": [\"LORA\"], \"sort\": \"Highest Rated\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00036422,
+      "promptTokens": 1986,
+      "completionTokens": 500
+    },
+    {
+      "questionId": "P3a",
+      "repeat": 2,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"A person in a natural pose with detailed, anatomically correct hands in sharp focus — fingers properly proportioned, individual knuckles and nails rendered cleanly, no extra or fused fingers. Realistic rendering, neutral background, soft natural light.\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00030327,
+      "promptTokens": 1986,
+      "completionTokens": 235
+    },
+    {
+      "questionId": "P3a",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"hand\", \"types\": [\"LORA\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"hands\", \"types\": [\"LORA\"], \"sort\": \"Highest Rated\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00032305,
+      "promptTokens": 1986,
+      "completionTokens": 321
+    },
+    {
+      "questionId": "P3b",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 0,
+      "provider": "Venice",
+      "costUsd": 0.00029835,
+      "promptTokens": 2035,
+      "completionTokens": 130
+    },
+    {
+      "questionId": "P3b",
+      "repeat": 2,
+      "firstRoundTools": [
+        "recommend_resources",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Decorative Art Nouveau ornamental border and frame, flowing whiplash curves, elegant floral and botanical motifs, symmetrical vintage engraving style, muted gold and cream palette, intricate linework, turn-of-the-century poster aesthetic\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Art Nouveau border\", \"types\": [\"LORA\", \"LoCon\", \"DoRA\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Venice",
+      "costUsd": 0.000185098,
+      "promptTokens": 2035,
+      "completionTokens": 297
+    },
+    {
+      "questionId": "P3b",
+      "repeat": 3,
+      "firstRoundTools": [
+        "recommend_resources",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"An ornate Art Nouveau decorative border frame around an empty page, flowing organic curved lines, swirling botanical stems and leaves, elegant gold ink on cream paper, symmetrical floral flourishes, vintage 1900s poster style, flat decorative illustration\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"art nouveau border\", \"types\": [\"LORA\", \"LoCon\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Venice",
+      "costUsd": 0.000158466,
+      "promptTokens": 2035,
+      "completionTokens": 295
+    },
+    {
+      "questionId": "L1",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Downloaded\", \"limit\": 10}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Liked\", \"limit\": 10}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Cohere",
+      "costUsd": 0.00035364,
+      "promptTokens": 2034,
+      "completionTokens": 246
+    },
+    {
+      "questionId": "L1",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Downloaded\", \"limit\": 10}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Liked\", \"limit\": 10}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 106,
+      "provider": "Cohere",
+      "costUsd": 0.00038668,
+      "promptTokens": 2034,
+      "completionTokens": 364
+    },
+    {
+      "questionId": "L1",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Downloaded\", \"limit\": 10}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Liked\", \"limit\": 10}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Cohere",
+      "costUsd": 0.00038752,
+      "promptTokens": 2034,
+      "completionTokens": 367
+    },
+    {
+      "questionId": "L2",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Pony Diffusion V6 XL\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.0002687,
+      "promptTokens": 1989,
+      "completionTokens": 83
+    },
+    {
+      "questionId": "L2",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Pony Diffusion V6 XL\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.0002687,
+      "promptTokens": 1989,
+      "completionTokens": 83
+    },
+    {
+      "questionId": "L2",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Pony Diffusion V6 XL\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.0002687,
+      "promptTokens": 1989,
+      "completionTokens": 83
+    },
+    {
+      "questionId": "L3",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"DreamShaper\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Cohere",
+      "costUsd": 0.00021336,
+      "promptTokens": 2030,
+      "completionTokens": 131
+    },
+    {
+      "questionId": "L3",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"DreamShaper\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Cohere",
+      "costUsd": 0.00030576,
+      "promptTokens": 2030,
+      "completionTokens": 77
+    },
+    {
+      "questionId": "L3",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"DreamShaper\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Cohere",
+      "costUsd": 0.00030576,
+      "promptTokens": 2030,
+      "completionTokens": 77
+    },
+    {
+      "questionId": "L4",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Downloaded\", \"limit\": 10}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Liked\", \"limit\": 5}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00029266,
+      "promptTokens": 1984,
+      "completionTokens": 190
+    },
+    {
+      "questionId": "L4",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Downloaded\", \"limit\": 10}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"], \"limit\": 10}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00038558,
+      "promptTokens": 1984,
+      "completionTokens": 594
+    },
+    {
+      "questionId": "L4",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Downloaded\", \"limit\": 5}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Liked\", \"limit\": 5}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00032003,
+      "promptTokens": 1984,
+      "completionTokens": 309
+    },
+    {
+      "questionId": "L5",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Juggernaut XL\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00026702,
+      "promptTokens": 1992,
+      "completionTokens": 74
+    },
+    {
+      "questionId": "L5",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Juggernaut XL\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00026748,
+      "promptTokens": 1992,
+      "completionTokens": 76
+    },
+    {
+      "questionId": "L5",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Juggernaut XL\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "Wafer",
+      "costUsd": 0.00026817,
+      "promptTokens": 1992,
+      "completionTokens": 79
+    },
+    {
+      "questionId": "T1",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "length",
+      "textChars": 2065,
+      "provider": "CoreWeave",
+      "costUsd": 0.00040765,
+      "promptTokens": 2033,
+      "completionTokens": 512
+    },
+    {
+      "questionId": "T1",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "length",
+      "textChars": 1845,
+      "provider": "CoreWeave",
+      "costUsd": 0.00040765,
+      "promptTokens": 2033,
+      "completionTokens": 512
+    },
+    {
+      "questionId": "T1",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 1989,
+      "provider": "CoreWeave",
+      "costUsd": 0.00029397,
+      "promptTokens": 2033,
+      "completionTokens": 490
+    },
+    {
+      "questionId": "T2",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 2654,
+      "provider": "Wafer",
+      "costUsd": 0.00040174,
+      "promptTokens": 1988,
+      "completionTokens": 662
+    },
+    {
+      "questionId": "T2",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 3136,
+      "provider": "Wafer",
+      "costUsd": 0.00044084,
+      "promptTokens": 1988,
+      "completionTokens": 832
+    },
+    {
+      "questionId": "T2",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 2832,
+      "provider": "Wafer",
+      "costUsd": 0.00042037,
+      "promptTokens": 1988,
+      "completionTokens": 743
+    },
+    {
+      "questionId": "T3",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "length",
+      "textChars": 1926,
+      "provider": "Cohere",
+      "costUsd": 0.0004284,
+      "promptTokens": 2036,
+      "completionTokens": 512
+    },
+    {
+      "questionId": "T3",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "length",
+      "textChars": 1549,
+      "provider": "Cohere",
+      "costUsd": 0.00032088,
+      "promptTokens": 2036,
+      "completionTokens": 512
+    },
+    {
+      "questionId": "T3",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "length",
+      "textChars": 1966,
+      "provider": "Cohere",
+      "costUsd": 0.0004284,
+      "promptTokens": 2036,
+      "completionTokens": 512
+    },
+    {
+      "questionId": "T4",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "length",
+      "textChars": 0,
+      "provider": "CoreWeave",
+      "costUsd": 0.0004083,
+      "promptTokens": 2038,
+      "completionTokens": 512
+    },
+    {
+      "questionId": "T4",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "length",
+      "textChars": 0,
+      "provider": "CoreWeave",
+      "costUsd": 0.0004083,
+      "promptTokens": 2038,
+      "completionTokens": 512
+    },
+    {
+      "questionId": "T4",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hands\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "provider": "CoreWeave",
+      "costUsd": 0.00027222,
+      "promptTokens": 2038,
+      "completionTokens": 410
+    },
+    {
+      "questionId": "I1",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 699,
+      "provider": "CoreWeave",
+      "costUsd": 0.00021087,
+      "promptTokens": 2027,
+      "completionTokens": 196
+    },
+    {
+      "questionId": "I1",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 633,
+      "provider": "CoreWeave",
+      "costUsd": 0.00020779,
+      "promptTokens": 2027,
+      "completionTokens": 185
+    },
+    {
+      "questionId": "I1",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 919,
+      "provider": "CoreWeave",
+      "costUsd": 0.00023159,
+      "promptTokens": 2027,
+      "completionTokens": 270
+    },
+    {
+      "questionId": "I2",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 1246,
+      "provider": "GMICloud",
+      "costUsd": 0.000874588,
+      "promptTokens": 2035,
+      "completionTokens": 341
+    },
+    {
+      "questionId": "I2",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 1077,
+      "provider": "GMICloud",
+      "costUsd": 0.000359593,
+      "promptTokens": 2035,
+      "completionTokens": 312
+    },
+    {
+      "questionId": "I2",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 734,
+      "provider": "GMICloud",
+      "costUsd": 0.0002902159,
+      "promptTokens": 2035,
+      "completionTokens": 205
+    },
+    {
+      "questionId": "I3",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 1077,
+      "provider": "Wafer",
+      "costUsd": 0.00032013,
+      "promptTokens": 1983,
+      "completionTokens": 310
+    },
+    {
+      "questionId": "I3",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 1214,
+      "provider": "Wafer",
+      "costUsd": 0.00032703,
+      "promptTokens": 1983,
+      "completionTokens": 340
+    },
+    {
+      "questionId": "I3",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 1431,
+      "provider": "Wafer",
+      "costUsd": 0.00034382,
+      "promptTokens": 1983,
+      "completionTokens": 413
+    },
+    {
+      "questionId": "PROD1",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "length",
+      "textChars": 413,
+      "provider": "CoreWeave",
+      "costUsd": 0.00029974,
+      "promptTokens": 2030,
+      "completionTokens": 512
+    },
+    {
+      "questionId": "PROD1",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"professional\",\"types\":[\"Checkpoint\"],\"sort\":\"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"photorealistic\",\"types\":[\"Checkpoint\"],\"sort\":\"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "provider": "CoreWeave",
+      "costUsd": 0.00038654,
+      "promptTokens": 2030,
+      "completionTokens": 438
+    },
+    {
+      "questionId": "PROD1",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "length",
+      "textChars": 726,
+      "provider": "CoreWeave",
+      "costUsd": 0.00040726,
+      "promptTokens": 2030,
+      "completionTokens": 512
+    }
+  ]
+}
