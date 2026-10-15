@@ -1,22 +1,21 @@
 // 🔴 THE BOOT STORAGE READ IS GATED ON A SIGNED-IN VIEWER, AND THIS FILE IS THE
 // ONLY THING THAT SAYS SO.
 //
-// WHAT WENT WRONG. `POST /api/v1/blocks/app-storage/get` answers an ANONYMOUS
-// subject with 403 — deliberately, and civitai's own route says so at
-// `src/pages/api/v1/blocks/app-storage/get.ts`: "🔴 AN ANONYMOUS VIEWER GETS 403
-// HERE, NOT THE BRIDGE'S CLEAN `{ value: null }`, AND THAT DIVERGENCE IS
-// DELIBERATE" (`enforceContextBinding` throws
-// `forbidden('apps:storage:read requires authenticated subject')`,
-// `src/server/middleware/block-scope.middleware.ts`). The bridge hook this app
-// used before the `@civitai/sdk` port resolved an anon read CLEANLY, so the boot
-// load effect could run unconditionally. After the port it cannot: the read
-// rejects, the effect's `catch` sets `storageError`, and every anonymous viewer
-// — probably the majority of impressions of a public block — sees
+// WHAT WENT WRONG (on the legacy KV, 0.1.x). `POST /api/v1/blocks/app-storage/get`
+// answered an ANONYMOUS subject with 403 (`apps:storage:read requires
+// authenticated subject`), where the pre-SDK bridge hook had resolved an anon
+// read CLEANLY, so the boot load effect could run unconditionally. After that
+// port it could not: the read rejected, the effect's `catch` set `storageError`,
+// and every anonymous viewer — probably the majority of impressions of a public
+// block — saw "Couldn't load your saved chats — …" on first paint, about data
+// they were never going to have.
 //
-//   Couldn't load your saved chats — apps:storage:read requires authenticated
-//   subject. Anything you send now may not be saved.
-//
-// on first paint, about data they were never going to have.
+// THE SAME FOOTING ON THE DOCUMENT STORE (0.2.0+). Sensei's data lives in a
+// PRIVATE collection (`kv`), and a private collection has no anonymous reader:
+// every operation answers `sign_in_required` (401). So the gate is as necessary
+// as it was, and this file now drives it against the SDK's own contract fake
+// (`createFakeStorage`) through the production adapter, as an anonymous caller —
+// the refusal below is the platform's, not one typed into this test.
 //
 // 🔴 WHY THE ABSENCE ALONE WOULD BE A VACUOUS GUARD, and what this file does
 // instead. "No banner for an anonymous viewer" is satisfied by a broken render,
@@ -29,65 +28,57 @@
 //      rescued error — a `catch {}` in the effect would pass (1) and fail this);
 //   3. signed-in + a genuinely failing read → the banner IS shown, with the
 //      failure's own detail in it.
-//
-// The fake below refuses an anonymous read with the PLATFORM'S OWN message
-// rather than a generic one, so (1) fails with the exact string a viewer would
-// have seen and (3) cannot pass on a look-alike.
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createFakeStorage } from '@civitai/sdk/testing';
 
+import manifest from '../block.manifest.json';
 import { App } from './App.js';
+import { createKvStorage } from './lib/kv-store.js';
 import type { AppStorage } from './lib/sdk-runtime.js';
 import { fakeBlockCatalogApi } from './test-helpers.js';
-
-/** The exact refusal `block-scope.middleware.ts` throws for an anon subject. */
-const ANON_REFUSAL = 'apps:storage:read requires authenticated subject';
 
 let currentViewer: { id: number } | null = null;
 /** Every façade method call, in order — the observation seam for (2). */
 let storageCalls: string[] = [];
-/** Set to make a SIGNED-IN read fail, for (3). */
-let failSignedInReads: string | null = null;
+/** Set to make a SIGNED-IN read fail, for (3): the store answers `storage_disabled`. */
+let failSignedInReads = false;
 
 /**
- * A KV fake that models the DEPLOYED ROUTE rather than a convenient store: a
- * read issued while `currentViewer` is null rejects the way the platform
- * rejects it. A fake that resolved `null` for an anon read would reproduce the
- * pre-port BRIDGE, i.e. the exact thing the port removed, and the case would be
- * green whatever the app does.
+ * The production adapter over the SDK's document-store fake, AS WHOEVER
+ * `currentViewer` SAYS IS CALLING. Anonymous → the fake's anonymous caller, which
+ * the platform refuses `sign_in_required` on a private collection. A fake that
+ * resolved `null` for an anon read would reproduce the pre-port BRIDGE, i.e. the
+ * exact thing that hid this, and the case would be green whatever the app does.
  */
+const docStore = createFakeStorage({ manifest });
+const disabledStore = createFakeStorage({ manifest, disabled: true });
+const kv = createKvStorage(() => {
+  if (!currentViewer) return docStore.as({ viewer: null }).storage;
+  return (failSignedInReads ? disabledStore : docStore).as({ viewer: { username: 'v7' } }).storage;
+});
+
 const storage: AppStorage = {
-  async get<T = unknown>(key: string) {
+  get(key) {
     storageCalls.push(`get:${key}`);
-    if (!currentViewer) throw new Error(ANON_REFUSAL);
-    if (failSignedInReads) throw new Error(failSignedInReads);
-    return null as T | null;
+    return kv.get(key);
   },
-  async set(key: string) {
+  set(key, value) {
     storageCalls.push(`set:${key}`);
-    if (!currentViewer) throw new Error('apps:storage:write requires authenticated subject');
-    return { ok: true as const };
+    return kv.set(key, value);
   },
-  async delete(key: string) {
+  delete(key) {
     storageCalls.push(`delete:${key}`);
-    if (!currentViewer) throw new Error('apps:storage:write requires authenticated subject');
-    return { ok: true as const, deleted: false };
+    return kv.delete(key);
   },
-  async list() {
+  list(opts) {
     storageCalls.push('list');
-    if (!currentViewer) throw new Error(ANON_REFUSAL);
-    if (failSignedInReads) throw new Error(failSignedInReads);
-    return { keys: [] };
-  },
-  async getQuota() {
-    storageCalls.push('getQuota');
-    if (!currentViewer) throw new Error(ANON_REFUSAL);
-    return { usedBytes: 0, rowCount: 0, limitBytes: 50_000_000, limitRows: 1_000_000 };
+    return kv.list(opts);
   },
 };
 
 vi.mock('./lib/sdk-runtime.js', () => ({
-  useAppStorage: () => storage,
+  useKvStore: () => storage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: currentViewer, theme: 'dark' }),
   useBlockResize: () => {},
@@ -111,7 +102,7 @@ describe('boot: the anonymous viewer is not told their storage failed', () => {
     api = fakeBlockCatalogApi();
     currentViewer = null;
     storageCalls = [];
-    failSignedInReads = null;
+    failSignedInReads = false;
   });
   afterEach(() => {
     api.restore();
@@ -136,7 +127,7 @@ describe('boot: the anonymous viewer is not told their storage failed', () => {
     expect(screen.queryByTestId('storage-error')).toBeNull();
   });
 
-  it('🔴 …and it issues NO app-storage call at all, rather than rescuing a 403', async () => {
+  it('🔴 …and it issues NO app-storage call at all, rather than rescuing a refusal', async () => {
     render(<App />);
     await waitFor(() => {
       expect(screen.queryByTestId('app-loading')).toBeNull();
@@ -144,7 +135,7 @@ describe('boot: the anonymous viewer is not told their storage failed', () => {
 
     // THE DISCRIMINATOR between "gated" and "the error was swallowed". A bare
     // `catch {}` in the load effect satisfies the case above and fails this one;
-    // the platform still 403s, still writes an audit row per refused call, and
+    // the platform still refuses it, still writes an audit row per refused call, and
     // the next reader to add a `setStorageError` re-opens the defect.
     expect(storageCalls).toEqual([]);
   });
@@ -168,11 +159,11 @@ describe('boot: the anonymous viewer is not told their storage failed', () => {
     expect(screen.queryByTestId('storage-error')).toBeNull();
   });
 
-  // 🔴 THE WRITE ON THE SAME FOOTING. `apps:storage:write` refuses an anonymous
-  // subject exactly as `apps:storage:read` does, and the Settings control renders
+  // 🔴 THE WRITE ON THE SAME FOOTING. A private collection refuses an anonymous
+  // write exactly as it refuses the read, and the Settings control renders
   // for an anonymous viewer — the sign-in prompt is an inline COMPOSER notice, not
   // a replacement screen. This write's rejection is already swallowed, so the
-  // defect it left was not a banner: it was a guaranteed-403 request per settings
+  // defect it left was not a banner: it was a guaranteed-refused request per settings
   // change, an audit row for each, and a live trap for whoever decides that
   // `catch` should report. The in-memory value must still apply.
   //
@@ -235,12 +226,13 @@ describe('boot: the anonymous viewer is not told their storage failed', () => {
     // satisfies — so the gate would read as coverage while removing the
     // reporting `storageError` exists for.
     currentViewer = { id: 7 };
-    failSignedInReads = 'PAYLOAD_TOO_LARGE';
+    failSignedInReads = true;
 
     render(<App />);
 
     const banner = await screen.findByTestId('storage-error');
     expect(banner.textContent).toContain("Couldn't load your saved chats");
-    expect(banner.textContent).toContain('PAYLOAD_TOO_LARGE');
+    // The document store's own message for `storage_disabled`.
+    expect(banner.textContent).toContain('document storage is unavailable');
   });
 });

@@ -3,13 +3,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // `@civitai/blocks-react`. Same names, same shapes, different transport underneath:
 // the snapshot-derived three still read the bridge transport (so nothing about
 // `BLOCK_INIT` changes), the host-mediated four are still postMessage — through
-// `@civitai/sdk`'s `createHost` — and app storage plus the four workflow
+// `@civitai/sdk`'s `createHost` — and app storage (the document store's private
+// `kv` collection since 0.2.0, via `lib/kv-store.ts`) plus the four workflow
 // operations are HTTP against `/api/v1/blocks/*` through
 // `initialize({ transport })`. The `/ui` import BELOW deliberately stays on the
 // bridge package until starters#328; `lib/sdk-transport.ts` explains why ONE
 // transport has to serve both packages rather than two being stood up.
 import {
-  useAppStorage,
+  useKvStore,
   useBlockAnalytics,
   useBlockContext,
   useBlockResize,
@@ -313,7 +314,7 @@ export function withSettledReply(prev: Message[], reply: Message): Message[] {
 export function App({ deps: depsOverride }: AppProps = {}) {
   const { ready, viewer, theme } = useBlockContext();
   const token_ = useBlockToken();
-  const appStorageHook = useAppStorage();
+  const appStorageHook = useKvStore();
   // 🔴 NO `useBuzzBalance()` HERE ANY MORE. The in-app Buzz badge was removed in
   // 0.1.5 — the on-site header already shows the balance, so a second copy was
   // redundant chrome inside a small iframe. `buzz:read:self` DELIBERATELY STAYS
@@ -769,8 +770,11 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     // 🔴 GATED ON A SIGNED-IN VIEWER, AND WITHOUT THIS GATE EVERY ANONYMOUS
     // IMPRESSION OPENS ON A FALSE FAILURE BANNER.
     //
-    // `POST /api/v1/blocks/app-storage/get` answers an anonymous subject with
-    // 403 BY DESIGN — `enforceContextBinding` throws
+    // Since 0.2.0 storage is the document store's PRIVATE `kv` collection, which
+    // answers an anonymous caller `sign_in_required` (401) on every operation —
+    // the same footing as the legacy KV route this comment was written against:
+    // `POST /api/v1/blocks/app-storage/get` answered an anonymous subject with
+    // 403 BY DESIGN — `enforceContextBinding` threw
     // `forbidden('apps:storage:read requires authenticated subject')`
     // (civitai `src/server/middleware/block-scope.middleware.ts`), and the
     // route's own docblock says so outright: "🔴 AN ANONYMOUS VIEWER GETS 403
@@ -2989,10 +2993,10 @@ export function App({ deps: depsOverride }: AppProps = {}) {
       // 🔴 THE SAME GATE AS THE BOOT LOAD EFFECT, for the same reason and one
       // step weaker. The Settings control renders for an anonymous viewer too
       // (the sign-in prompt is an inline composer notice, not a replacement
-      // screen), and `apps:storage:write` refuses an anonymous subject exactly
-      // as `apps:storage:read` does. Unlike the loader this write's rejection is
+      // screen), and the private `kv` collection refuses an anonymous write
+      // exactly as it refuses the read. Unlike the loader this write's rejection is
       // already swallowed, so the defect it leaves is not a banner — it is a
-      // guaranteed-403 request per keystroke of a settings change, an audit row
+      // guaranteed-refused request per keystroke of a settings change, an audit row
       // for each, and a live trap for the next reader who decides this `catch`
       // should report. The in-memory `next` is returned either way, so an
       // anonymous viewer's choice still applies for the session; it simply is

@@ -1,10 +1,11 @@
 // An in-memory stand-in for the two REST families this app reaches after the
-// port: per-viewer app storage, and the four block workflow operations. Used by
+// port: per-viewer app storage (the document store's `blocks/storage/*` routes
+// since 0.2.0), and the four block workflow operations. Used by
 // the dev harness (`main.tsx`) and by the tests that used to seed those
 // conversations through a mocked hook.
 //
 // 🔴 WHY THIS IS A `fetch` FAKE AND NOT A MOCK HOST, which is the whole point.
-// Before the port, `useAppStorage` and `useBuzzWorkflow` were postMessage
+// Before the port, the bridge's storage hook and `useBuzzWorkflow` were postMessage
 // conversations and `@civitai/blocks-react/testing`'s mock host answered them.
 // After it, they are HTTP. A transport-level fake would therefore "answer a
 // conversation nobody is having" — the suite would pass while exercising none of
@@ -18,6 +19,12 @@
 // certifying its own behaviour. What it does own is the ROUTE SHAPES — path,
 // method, body, reply envelope — and those are taken from the route files, named
 // per family below.
+
+import { createFakeStorage, type FakeStorage, type FakeStorageViewer } from '@civitai/sdk/testing';
+import { ApiError } from '@civitai/sdk';
+
+import manifest from '../block.manifest.json';
+import { createKvStorage } from './lib/kv-store.js';
 
 /** A workflow snapshot as the routes' `{ snapshot }` envelope carries it. */
 export interface RestWorkflowSnapshot {
@@ -38,8 +45,15 @@ export interface RestWorkflowSnapshot {
 }
 
 export interface RestFakeOptions {
-  /** Per-viewer KV seed (key → JSON value). */
-  storage?: { seed?: Record<string, unknown>; limitBytes?: number; limitRows?: number };
+  /**
+   * The document store behind `blocks/storage/*`.
+   *
+   * `seed` is LEGACY-SHAPED (key → the value the app stores) and is written through
+   * `createKvStorage`, i.e. through the same `{ value }` mapping the app reads with,
+   * so a seed cannot disagree with the adapter about the document shape. `viewer`
+   * is the caller (default `{ username: 'viewer' }`; `null` is anonymous).
+   */
+  storage?: { seed?: Record<string, unknown>; viewer?: FakeStorageViewer | null };
   /**
    * What each workflow route answers with. A function receives the parsed request
    * body, so a test can drive a sequence (first poll `processing`, then
@@ -65,9 +79,6 @@ export type WorkflowResponder =
   | RestWorkflowSnapshot
   | ((body: Record<string, unknown>) => RestWorkflowSnapshot | { status: number; body: unknown });
 
-/** A fixed instant, so nothing here reads a clock a test cannot control. */
-const EPOCH = '2026-01-01T00:00:00.000Z';
-
 /**
  * What the four routes answer when a caller seeds nothing.
  *
@@ -89,10 +100,6 @@ const DEFAULT_WORKFLOW_REPLIES: Required<NonNullable<RestFakeOptions['workflows'
   cancel: { workflowId: 'dev-workflow-1', status: 'canceled' },
 };
 
-function bytesOf(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value) ?? '').length;
-}
-
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -109,11 +116,17 @@ function json(body: unknown, status = 200): Response {
  * introduce.
  */
 export function createRestFake(options: RestFakeOptions = {}): typeof globalThis.fetch {
-  const kv = new Map<string, { value: unknown; updatedAt: string }>(
-    Object.entries(options.storage?.seed ?? {}).map(([k, v]) => [k, { value: v, updatedAt: EPOCH }]),
-  );
-  const limitBytes = options.storage?.limitBytes ?? 50 * 1024 * 1024;
-  const limitRows = options.storage?.limitRows ?? 1_000_000;
+  const docStore: FakeStorage = createFakeStorage({
+    manifest,
+    ...(options.storage?.viewer !== undefined ? { viewer: options.storage.viewer } : {}),
+  });
+  const seeded = (async () => {
+    // Seeded as a signed-in viewer even when the caller is anonymous: a private
+    // collection has no anonymous writer, and the seed is fixture, not traffic.
+    const seedAs = options.storage?.viewer ?? { username: 'viewer' };
+    const kv = createKvStorage(() => docStore.as({ viewer: seedAs }).storage);
+    for (const [k, v] of Object.entries(options.storage?.seed ?? {})) await kv.set(k, v);
+  })();
 
   const responders = { ...DEFAULT_WORKFLOW_REPLIES, ...options.workflows };
 
@@ -125,32 +138,28 @@ export function createRestFake(options: RestFakeOptions = {}): typeof globalThis
       init?.body == null ? {} : (JSON.parse(String(init.body)) as Record<string, unknown>);
     options.onRequest?.({ path, method, body });
 
-    // --- per-viewer KV: POST blocks/app-storage/* ------------------------------
-    // Shapes from src/pages/api/v1/blocks/app-storage/{get,set,delete,list,quota}.ts
-    if (path.startsWith('blocks/app-storage/')) {
-      const op = path.slice('blocks/app-storage/'.length);
-      const key = String(body.key ?? '');
-      if (op === 'get') return json({ value: kv.get(key)?.value ?? null });
-      if (op === 'set') {
-        const size = bytesOf(body.value);
-        kv.set(key, { value: body.value, updatedAt: EPOCH });
-        // `{ ok: true, sizeBytes }`, and `sizeBytes` is REQUIRED — the SDK's client
-        // throws without it, and the route's docblock says there is "no 2xx path
-        // that means not written".
-        return json({ ok: true, sizeBytes: size });
+    // --- the document store: blocks/storage/* -----------------------------------
+    // 🔴 ANSWERED BY THE SDK's OWN CONTRACT FAKE, NOT RE-IMPLEMENTED HERE.
+    // `createFakeStorage` is the server half of the document store (scopes, the
+    // manifest's declared collections, key rules, limits, the error envelope); this
+    // branch only converts between `fetch` and its `Http` seam. So the app's real
+    // client — `initialize()`'s `app.storage` — is what talks to it.
+    if (path.startsWith('blocks/storage')) {
+      await seeded;
+      const query: Record<string, string | string[]> = {};
+      for (const name of new Set(url.searchParams.keys())) {
+        const all = url.searchParams.getAll(name);
+        query[name] = all.length === 1 ? all[0]! : all;
       }
-      if (op === 'delete') return json({ ok: true, deleted: kv.delete(key) });
-      if (op === 'list') {
-        const prefix = body.prefix === undefined ? '' : String(body.prefix);
-        const keys = [...kv.entries()]
-          .filter(([k]) => k.startsWith(prefix))
-          .map(([k, v]) => ({ key: k, updatedAt: v.updatedAt }));
-        return json({ keys });
-      }
-      if (op === 'quota') {
-        let usedBytes = 0;
-        for (const [, v] of kv) usedBytes += bytesOf(v.value);
-        return json({ usedBytes, rowCount: kv.size, limitBytes, limitRows });
+      try {
+        const reply = await docStore.http<unknown>(method, path, {
+          query,
+          ...(init?.body == null ? {} : { body }),
+        });
+        return json(reply ?? {});
+      } catch (err) {
+        if (err instanceof ApiError) return json(err.body, err.status);
+        throw err;
       }
     }
 

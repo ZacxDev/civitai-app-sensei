@@ -114,11 +114,13 @@ export const TURNS_PREFIX = 'sensei:turns:';
 /**
  * How many turn records a viewer keeps.
  *
- * 🔴 THE STORE IS SHARED AND FINITE, NOT LOCAL DISK: `appStorage` is the host's
- * KV over postMessage, backed by `app_sensei.kv`, and the host's documented
- * ceiling is 50 MB and ~1M rows PER APP — across every viewer, not each. So an
- * unbounded `sensei:turns:*` is a slow app-wide leak, and the retention has to
- * be a number rather than "prune eventually".
+ * 🔴 THE STORE IS SHARED AND FINITE, NOT LOCAL DISK: `appStorage` is the
+ * document store's private `kv` collection, which caps an app at 50 MB / 1M
+ * documents across every viewer AND each viewer at 2 MB / 1,000 documents (the
+ * SDK contract fake's defaults, `@civitai/sdk@0.14.0`; `info().limits` has the
+ * live server's figures). So an unbounded `sensei:turns:*` is a
+ * leak against a per-viewer ceiling that also holds the viewer's transcripts,
+ * and the retention has to be a number rather than "prune eventually".
  *
  * WHY 200. The record only has to outlive the operator's reconciliation
  * cadence. Production's busiest viewer produced 16 turns across the 8 days the
@@ -131,9 +133,21 @@ export const MAX_TURN_RECORDS = 200;
 /** How many keys one prune sweep will delete. Bounds the work done at mount. */
 export const PRUNE_DELETE_BUDGET = 100;
 
-/** `list()` page size, and how many pages one sweep will walk. */
-const LIST_PAGE_SIZE = 500;
-const MAX_LIST_PAGES = 4;
+/**
+ * `list()` page size, and how many pages one sweep will walk.
+ *
+ * 🔴 100, NOT THE 500 THIS USED ON THE LEGACY KV: the document store REFUSES a
+ * `limit` above 100 (`invalid_request`) rather than clamping it, and both sweeps
+ * swallow every rejection, so 500 would have made pruning a silent no-op.
+ * (`kv-store.ts` clamps too; this keeps the request honest at the source.)
+ *
+ * 20 pages × 100 = 2,000 keys — twice the per-viewer document ceiling (1,000 in
+ * the SDK contract fake), so a sweep walks a viewer's whole `kv`
+ * collection: full pagination in practice, with a bound that still terminates
+ * against a misbehaving cursor.
+ */
+const LIST_PAGE_SIZE = 100;
+const MAX_LIST_PAGES = 20;
 
 /**
  * How the turn ended, from the writer's own point of view.

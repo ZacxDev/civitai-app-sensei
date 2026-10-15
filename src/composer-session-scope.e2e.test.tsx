@@ -98,7 +98,7 @@ const cancelFn = vi.fn().mockResolvedValue(undefined);
 vi.mock('./lib/sdk-runtime.js', async () => {
   const { useState } = await import('react');
   return {
-    useAppStorage: () => storage.appStorage,
+    useKvStore: () => storage.appStorage,
     useBlockAnalytics: () => ({ track: trackFn }),
     // Real state, so a sign-out is a RENDER — see the header. The viewer VALUE
     // is still the hoisted `VIEWER` identity while signed in, so nothing here

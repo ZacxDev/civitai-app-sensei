@@ -198,7 +198,7 @@ const SEARCH_MODELS_DECLARATION = {
 };
 
 vi.mock('./lib/sdk-runtime.js', () => ({
-  useAppStorage: () => storage.appStorage,
+  useKvStore: () => storage.appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
   useBlockResize: () => {},

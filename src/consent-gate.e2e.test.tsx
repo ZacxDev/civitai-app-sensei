@@ -37,7 +37,7 @@ const requestSignIn = vi.fn();
 let currentViewer: { id: number } | null = { id: 1 };
 
 /**
- * 🔴 ONE STABLE STORE, not a fresh one per render. `useAppStorage: () =>
+ * 🔴 ONE STABLE STORE, not a fresh one per render. `useKvStore: () =>
  * fakeAppStorage().appStorage` hands back an EMPTY store on every render, so
  * nothing persists and any assertion resting on storage passes vacuously. It
  * also makes the seeded-session case below impossible to set up.
@@ -52,7 +52,7 @@ const submitSpy = vi.fn();
 let pickerResult: { versionId: number } | null = { versionId: 5678 };
 
 vi.mock('./lib/sdk-runtime.js', () => ({
-  useAppStorage: () => storage.appStorage,
+  useKvStore: () => storage.appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: currentViewer, theme: 'dark' }),
   useBlockResize: () => {},

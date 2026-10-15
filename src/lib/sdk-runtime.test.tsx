@@ -10,7 +10,7 @@
 // The two halves are driven at their real boundaries, which are different:
 //   - the handshake half (snapshot, host UI, analytics) through
 //     `@civitai/sdk/testing`'s `createFakeTransport()`;
-//   - the data half (app storage, the four workflow ops) through a `fetch` fake,
+//   - the data half (the document store, the four workflow ops) through a `fetch` fake,
 //     `../dev-rest.ts`, because after the port those are HTTP and a transport-level
 //     fake would answer a conversation nobody is having.
 import { act, render, renderHook, waitFor } from '@testing-library/react';
@@ -32,7 +32,7 @@ import { nsfwModeAllowed } from './maturity.js';
 import {
   configureSdkRuntime,
   resetSdkRuntime,
-  useAppStorage,
+  useKvStore,
   useBlockAnalytics,
   useBlockContext,
   useBlockResize,
@@ -324,36 +324,50 @@ describe('host-mediated bindings', () => {
 // Group 3 — REST
 // ---------------------------------------------------------------------------
 
-describe('useAppStorage over /api/v1/blocks/app-storage', () => {
-  it('reads a seeded key', async () => {
+describe('useKvStore over the document store (blocks/storage/*)', () => {
+  // These go through the REAL path: `initialize()`'s AppClient → its document-store
+  // client → `fetch` → `dev-rest.ts`, which hands the request to the SDK's own
+  // contract fake. So a wrong route, a missing manifest declaration or a lost
+  // `{ value }` wrapper fails here, not in production.
+
+  it('reads a seeded key from the private `kv` collection', async () => {
     install({}, { storage: { seed: { 'sensei:sessions': [{ id: 's1' }] } } });
-    const { result } = renderHook(() => useAppStorage());
+    const { result } = renderHook(() => useKvStore());
 
     await expect(result.current.get('sensei:sessions')).resolves.toEqual([{ id: 's1' }]);
     expect(calls).toEqual([
-      { path: 'blocks/app-storage/get', method: 'POST', body: { key: 'sensei:sessions' } },
+      { path: 'blocks/storage/kv/sensei%3Asessions', method: 'GET', body: {} },
     ]);
   });
 
-  it('writes through POST blocks/app-storage/set and reads its own write back', async () => {
+  it('a missing key reads as null, as the legacy KV answered', async () => {
     install();
-    const { result } = renderHook(() => useAppStorage());
+    const { result } = renderHook(() => useKvStore());
+    await expect(result.current.get('sensei:settings')).resolves.toBeNull();
+  });
 
-    await expect(result.current.set('k', { a: 1 })).resolves.toMatchObject({ ok: true });
+  it('writes with PUT and reads its own write back', async () => {
+    install();
+    const { result } = renderHook(() => useKvStore());
+
+    await expect(result.current.set('k', { a: 1 })).resolves.toEqual({ ok: true });
     await expect(result.current.get('k')).resolves.toEqual({ a: 1 });
-    expect(calls.map((c) => c.path)).toEqual([
-      'blocks/app-storage/set',
-      'blocks/app-storage/get',
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      'PUT blocks/storage/kv/k',
+      'GET blocks/storage/kv/k',
     ]);
+    // The wire body IS the document data: the legacy value, wrapped.
+    expect(calls[0]!.body).toEqual({ data: { value: { a: 1 } } });
   });
 
   it('lists by prefix and deletes idempotently', async () => {
     install({}, { storage: { seed: { 'sensei:turns:1': 1, 'sensei:turns:2': 2, other: 3 } } });
-    const { result } = renderHook(() => useAppStorage());
+    const { result } = renderHook(() => useKvStore());
 
     const listed = await result.current.list({ prefix: 'sensei:turns:' });
     expect(listed.keys.map((k) => k.key)).toEqual(['sensei:turns:1', 'sensei:turns:2']);
-    // `updatedAt` is revived to a real Date by the SDK client, as the bridge hook did.
+    expect(listed.nextCursor).toBeUndefined();
+    // `updatedAt` is revived to a real Date by the SDK client.
     expect(listed.keys[0]!.updatedAt).toBeInstanceOf(Date);
 
     await expect(result.current.delete('sensei:turns:1')).resolves.toEqual({
@@ -366,14 +380,11 @@ describe('useAppStorage over /api/v1/blocks/app-storage', () => {
     });
   });
 
-  it('reports quota with both ceilings', async () => {
-    install({}, { storage: { seed: { a: 1 }, limitBytes: 999, limitRows: 7 } });
-    const { result } = renderHook(() => useAppStorage());
-    await expect(result.current.getQuota()).resolves.toEqual({
-      usedBytes: 1,
-      rowCount: 1,
-      limitBytes: 999,
-      limitRows: 7,
+  it('an anonymous viewer is REFUSED, not answered empty', async () => {
+    install({}, { storage: { viewer: null } });
+    const { result } = renderHook(() => useKvStore());
+    await expect(result.current.get('sensei:sessions')).rejects.toMatchObject({
+      code: 'sign_in_required',
     });
   });
 
@@ -381,7 +392,7 @@ describe('useAppStorage over /api/v1/blocks/app-storage', () => {
   // itself as stable. A fresh object per render would rebuild `deps` every render.
   it('returns a STABLE identity across renders', () => {
     install();
-    const { result, rerender } = renderHook(() => useAppStorage());
+    const { result, rerender } = renderHook(() => useKvStore());
     const first = result.current;
     rerender();
     expect(result.current).toBe(first);
@@ -620,11 +631,11 @@ describe('configureSdkRuntime / resetSdkRuntime', () => {
   // answer from the first case's store.
   it('a re-configure drops the AppClient built under the previous fetch', async () => {
     install({}, { storage: { seed: { k: 'first' } } });
-    const first = renderHook(() => useAppStorage());
+    const first = renderHook(() => useKvStore());
     await expect(first.result.current.get('k')).resolves.toBe('first');
 
     install({}, { storage: { seed: { k: 'second' } } });
-    const second = renderHook(() => useAppStorage());
+    const second = renderHook(() => useKvStore());
     await expect(second.result.current.get('k')).resolves.toBe('second');
   });
 
@@ -667,7 +678,7 @@ describe('configureSdkRuntime / resetSdkRuntime', () => {
       }),
     });
 
-    const { result } = renderHook(() => useAppStorage());
+    const { result } = renderHook(() => useKvStore());
 
     await expect(result.current.get('k')).rejects.toThrow(/host never answered BLOCK_INIT/);
     // The boot failed, so nothing reached the wire — without this, a green second
@@ -679,7 +690,7 @@ describe('configureSdkRuntime / resetSdkRuntime', () => {
     // error, which is the defect's signature.
     boom = null;
     await expect(result.current.get('k')).resolves.toBe('after-recovery');
-    expect(calls.map((c) => c.path)).toEqual(['blocks/app-storage/get']);
+    expect(calls.map((c) => c.path)).toEqual(['blocks/storage/kv/k']);
   });
 
   // 🔴 THE OTHER DIRECTION, because the obvious over-correction is to drop the
@@ -722,7 +733,7 @@ describe('configureSdkRuntime / resetSdkRuntime', () => {
       fetch: createRestFake({ storage: { seed: { k: 1 } }, onRequest: (c) => calls.push(c) }),
     });
 
-    const { result, rerender } = renderHook(() => useAppStorage());
+    const { result, rerender } = renderHook(() => useKvStore());
 
     const before1 = gets;
     await result.current.get('k');

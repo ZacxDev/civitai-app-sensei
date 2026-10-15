@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import type { AppStorage } from './lib/sdk-runtime.js';
+import { fakeAppStorage } from './test-helpers.js';
 import { App } from './App.js';
 import { MAX_TURN_RECORDS, TURNS_PREFIX, turnRecordKey } from './lib/turn-records.js';
 import { claimMessageWrite } from './lib/write-ownership.js';
@@ -29,65 +29,31 @@ import { reconcileTurns } from '../eval/reconcile-turns.mjs';
 // storage banner on screen.
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface Recorded {
-  key: string;
-  value: unknown;
-}
-
 /**
- * A read-your-writes KV fake with INJECTABLE WRITE FAILURE.
+ * A read-your-writes store with INJECTABLE WRITE FAILURE — `fakeAppStorage`,
+ * i.e. the production `kv` adapter over the SDK's document-store fake.
  *
- * `failSet` decides per (key, value) whether `set` rejects — the only way to
+ * `setFailSet` decides per (key, value) whether `set` rejects — the only way to
  * drive the "the storage write was issued and rejected" arm, which is one of the
  * three mechanisms the record has to tell apart.
+ *
+ * 🔴 `attempts` IS EVERY `set` CALL, including the ones that reject, projected to
+ * its key. `sets` ALONE CANNOT SEE AN ATTEMPT THAT FAILED, and that is exactly
+ * what the money-path case has to assert: with the instrument absent, "no record
+ * was written" and "the record write was rejected" produce an identical `sets`,
+ * so a case built on `sets` would pass vacuously against code that has no
+ * instrument at all.
  */
 function makeStorage() {
-  const store = new Map<string, unknown>();
-  const sets: Recorded[] = [];
-  /**
-   * Every `set` CALL, including the ones that reject.
-   *
-   * 🔴 `sets` ALONE CANNOT SEE AN ATTEMPT THAT FAILED, and that is exactly what
-   * the money-path case has to assert: with the instrument absent, "no record
-   * was written" and "the record write was rejected" produce an identical
-   * `sets`, so a case built on `sets` would pass vacuously against code that has
-   * no instrument at all.
-   */
-  const attempts: string[] = [];
-  let failSet: (key: string, value: unknown) => boolean = () => false;
-
-  const appStorage: AppStorage = {
-    async get<T = unknown>(key: string) {
-      return (store.has(key) ? (store.get(key) as T) : null) as T | null;
-    },
-    async set<T = unknown>(key: string, value: T) {
-      attempts.push(key);
-      if (failSet(key, value)) throw new Error('kv rejected');
-      store.set(key, value);
-      sets.push({ key, value });
-      return { ok: true as const };
-    },
-    async delete(key: string) {
-      return { ok: true as const, deleted: store.delete(key) };
-    },
-    async list(opts?: { prefix?: string; limit?: number; cursor?: string }) {
-      const prefix = opts?.prefix;
-      const keys = [...store.keys()].filter((k) => !prefix || k.startsWith(prefix));
-      return { keys: keys.map((key) => ({ key, updatedAt: new Date() })) };
-    },
-    async getQuota() {
-      return { usedBytes: 0, rowCount: store.size, limitBytes: 50_000_000, limitRows: 1_000_000 };
-    },
-  };
-
+  const base = fakeAppStorage();
   return {
-    appStorage,
-    store,
-    sets,
-    attempts,
-    setFailSet(f: (key: string, value: unknown) => boolean) {
-      failSet = f;
+    appStorage: base.appStorage,
+    store: base.store,
+    sets: base.sets,
+    get attempts(): string[] {
+      return base.attempts.map((a) => a.key);
     },
+    setFailSet: base.setFailSet,
   };
 }
 
@@ -171,7 +137,7 @@ const estimateFn = vi
 const cancelFn = vi.fn(async () => undefined);
 
 vi.mock('./lib/sdk-runtime.js', () => ({
-  useAppStorage: () => h.storage!.appStorage,
+  useKvStore: () => h.storage!.appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
   useBlockResize: () => {},

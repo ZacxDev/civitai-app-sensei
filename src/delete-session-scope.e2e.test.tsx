@@ -68,7 +68,7 @@ vi.mock('./lib/sdk-runtime.js', () => ({
   // One instance, resolved at call time — a factory call here would hand every
   // render a fresh empty store and the switch/delete cases would be measuring
   // the fake rather than the app.
-  useAppStorage: () => h.storage!.appStorage,
+  useKvStore: () => h.storage!.appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
   useBlockResize: () => {},

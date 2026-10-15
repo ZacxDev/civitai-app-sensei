@@ -34,9 +34,12 @@ describe('startTurnRecord writes on the caller`s own stack', () => {
     startTurnRecord(storage.appStorage, seed);
     // 🔴 NO `await` ANYWHERE ABOVE THIS LINE. If the write were deferred into a
     // `.then` — which is what "record it in the completion continuation" looks
-    // like — `sets` would still be empty here.
-    expect(storage.sets.map((s) => s.key)).toEqual([turnRecordKey(seed)]);
-    expect(storage.sets[0].value).toEqual({ ...seed, workflowIds: [], outcome: 'pending' });
+    // like — `attempts` would still be empty here. (`attempts`, not `sets`: the
+    // document store commits a few microtasks later, so `sets` — commits only —
+    // cannot see the CALL, which is the thing this pins. Before 0.2.0 the fake
+    // committed synchronously and the two were indistinguishable.)
+    expect(storage.attempts.map((s) => s.key)).toEqual([turnRecordKey(seed)]);
+    expect(storage.attempts[0]!.value).toEqual({ ...seed, workflowIds: [], outcome: 'pending' });
   });
 
   it('appends workflow ids as they arrive, ignoring blanks and repeats', async () => {

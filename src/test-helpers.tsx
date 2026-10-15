@@ -1,60 +1,151 @@
-import type { AppStorage } from './lib/sdk-runtime.js';
+import { createFakeStorage, type FakeStorage } from '@civitai/sdk/testing';
+
+import manifest from '../block.manifest.json';
+import { createKvStorage, KV_COLLECTION, KV_LIST_LIMIT_MAX, type AppStorage } from './lib/kv-store.js';
+
+/** A stored document, as the document store holds it — what a cutover copy must produce. */
+export interface RawKvDocument {
+  key: string;
+  data: unknown;
+}
 
 /**
- * A READ-YOUR-WRITES KV fake.
+ * A storage fake that IS the production adapter over the SDK's document-store fake.
  *
- * 🔴 THIS IS NOT WHAT THE DEPLOYED HOST DOES, and believing it was is how the
- * lost-user-message defect survived a green suite. Use it for anything that does
- * not depend on read-after-write ordering; use `staleReadAppStorage` below for
- * anything that does.
+ * 🔴 NOT A HAND-ROLLED MAP. `appStorage` is `createKvStorage` — the module the
+ * app ships — over `createFakeStorage` from `@civitai/sdk/testing`, i.e. the
+ * SDK's real document-store client talking to an in-memory server that enforces
+ * the platform contract against THIS repo's `block.manifest.json`: the `kv`
+ * collection must be declared, the token must carry `apps:storage`, keys must be
+ * legal, a document is capped, a list page is capped at 100. So every test that
+ * uses this exercises the `{ value }` mapping and the manifest declaration, and a
+ * manifest that stopped declaring `kv` fails every one of them.
+ *
+ * WHAT THE OTHER FIELDS ARE — instruments, not the store:
+ *  - `store` is a synchronous MIRROR of what has COMMITTED through `appStorage`
+ *    (updated only after the document store accepted the write or delete), so the
+ *    existing assertions can read it without awaiting. Writing to it from a test
+ *    (`store.set`, `store.delete`, `store.clear`) is FORWARDED to the document
+ *    store, and every `appStorage` call waits for those forwards to land first —
+ *    so a test that seeds through `store` is seeding the real store the app reads.
+ *  - `sets` records committed writes in landing order; `attempts` records every
+ *    `set` CALL, including ones that reject (see below).
+ *  - `rawDocs()` reads the document store DIRECTLY, bypassing the adapter — the
+ *    instrument for "what would the copy script / a reload see".
+ *
+ * 🔴 IT IS READ-YOUR-WRITES, WHICH THE DEPLOYED HOST HISTORICALLY WAS NOT. Use it
+ * for anything that does not depend on read-after-write ordering; use
+ * `staleReadAppStorage` below for anything that does.
  */
 export function fakeAppStorage(seed: Record<string, unknown> = {}) {
-  const store = new Map<string, unknown>(Object.entries(seed));
+  const docStore: FakeStorage = createFakeStorage({ manifest });
+  const kv = createKvStorage(() => docStore.storage);
+
+  /**
+   * Test-side seeding and clearing, chained so they land in issue order. Every
+   * adapter call awaits it first. A forward that FAILS (an illegal key, say)
+   * rejects every later call with that error — loud, rather than a test running
+   * against a store it did not seed.
+   */
+  let pending: Promise<unknown> = Promise.resolve();
+  const forward = (op: () => Promise<unknown>) => {
+    pending = pending.then(op);
+  };
+
+  class StoreMirror extends Map<string, unknown> {
+    override set(key: string, value: unknown): this {
+      super.set(key, value);
+      forward(() => kv.set(key, value));
+      return this;
+    }
+    override delete(key: string): boolean {
+      const had = super.delete(key);
+      forward(() => kv.delete(key));
+      return had;
+    }
+    override clear(): void {
+      super.clear();
+      // Clear what the STORE holds, not what the mirror happens to know about.
+      forward(async () => {
+        for (const doc of await rawDocs()) await kv.delete(doc.key);
+      });
+    }
+    /** Mirror-only updates, after the store accepted the operation. */
+    commitSet(key: string, value: unknown): void {
+      super.set(key, value);
+    }
+    commitDelete(key: string): void {
+      super.delete(key);
+    }
+  }
+  const store = new StoreMirror();
+  for (const [key, value] of Object.entries(seed)) store.set(key, value);
+
   const sets: Array<{ key: string; value: unknown }> = [];
   /**
    * Every `set` CALL, including the ones that reject.
    *
    * `sets` records only what COMMITTED, so it cannot distinguish a write that
    * was never issued from one that was issued and refused — and that is exactly
-   * the pair a test driving `setFailSet` has to tell apart. Same instrument, and
-   * same reason for it, as `turn-records.e2e.test.tsx`'s own fake.
+   * the pair a test driving `setFailSet` has to tell apart.
    */
   const attempts: Array<{ key: string; value: unknown }> = [];
   /**
-   * Per-(key, value) injected write failure. OFF by default, so every existing
-   * caller gets byte-for-byte the previous behaviour; a test opts in with
-   * `setFailSet`.
+   * Per-(key, value) injected write failure. OFF by default; a test opts in with
+   * `setFailSet`. Checked on the caller's own stack, before anything is sent, as
+   * the previous fake did.
    */
   let failSet: (key: string, value: unknown) => boolean = () => false;
+
+  /** Every document in the store, read directly (full pagination), key order. */
+  async function rawDocs(): Promise<RawKvDocument[]> {
+    const out: RawKvDocument[] = [];
+    const coll = docStore.storage.collection(KV_COLLECTION);
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await coll.list({ limit: KV_LIST_LIMIT_MAX, ...(cursor ? { cursor } : {}) });
+      for (const d of page.items) out.push({ key: d.key, data: d.data });
+      if (page.nextCursor === null) return out;
+      cursor = page.nextCursor;
+    }
+  }
+
   const appStorage: AppStorage = {
     async get<T = unknown>(key: string) {
-      return (store.has(key) ? (store.get(key) as T) : null) as T | null;
+      await pending;
+      return kv.get<T>(key);
     },
     async set<T = unknown>(key: string, value: T) {
       attempts.push({ key, value });
       if (failSet(key, value)) throw new Error('kv rejected');
-      store.set(key, value);
+      await pending;
+      const result = await kv.set(key, value);
+      store.commitSet(key, value);
       sets.push({ key, value });
-      return { ok: true as const };
+      return result;
     },
     async delete(key: string) {
-      const deleted = store.delete(key);
-      return { ok: true as const, deleted };
+      await pending;
+      const result = await kv.delete(key);
+      store.commitDelete(key);
+      return result;
     },
-    async list(opts?: { prefix?: string; limit?: number; cursor?: string }) {
-      const prefix = opts?.prefix;
-      const keys = [...store.keys()].filter((k) => !prefix || k.startsWith(prefix));
-      return { keys: keys.map((key) => ({ key, updatedAt: new Date() })) };
-    },
-    async getQuota() {
-      return { usedBytes: 0, rowCount: store.size, limitBytes: 50_000_000, limitRows: 1_000_000 };
+    async list(opts) {
+      await pending;
+      return kv.list(opts);
     },
   };
+
   return {
     appStorage,
     sets,
     store,
     attempts,
+    /** The SDK fake itself, e.g. to read `calls` or act as another caller. */
+    docStore,
+    rawDocs,
+    /** Resolves once every test-side forward (`store.set/delete/clear`) has landed. */
+    settled: () => pending.then(() => undefined),
     setFailSet(f: (key: string, value: unknown) => boolean) {
       failSet = f;
     },
@@ -62,69 +153,54 @@ export function fakeAppStorage(seed: Record<string, unknown> = {}) {
 }
 
 /**
- * A KV fake that MODELS THE DEPLOYED HOST: a block cannot see its own write.
+ * A storage fake that MODELS THE HOST AS IT WAS DEPLOYED: a block could not see
+ * its own write.
  *
  * 🔴 COPIED FROM THE HOST'S BEHAVIOUR, NOT INVENTED TO MAKE A TEST FAIL.
  * civitai's QueryClient sets `staleTime: Infinity` globally (`~/utils/trpc`) and
- * `IframeHost`'s `APP_STORAGE_GET` resolves through
+ * `IframeHost`'s `APP_STORAGE_GET` resolved through
  * `trpcUtils.apps.storage.get.fetch` — React Query's `fetchQuery`, which serves
- * from cache while the entry is not stale. On the branch prod deploys from, that
- * call passes NO staleTime override and `APP_STORAGE_SET` performs NO
- * invalidation, so the first read of a key is cached forever and every later
- * read returns it, whatever has been written since. (Fixed on `main` by civitai
- * #4456 — `blockStorageCache.ts` — which is absent from the release branch and
- * therefore not running in production.)
+ * from cache while the entry is not stale. On the branch prod deployed from, that
+ * call passed NO staleTime override and `APP_STORAGE_SET` performed NO
+ * invalidation, so the first read of a key was cached forever. (Fixed on `main`
+ * by civitai #4456 — `blockStorageCache.ts`.) The document store is a REST route
+ * with no such cache, but the persistence layer's "never read during a mutation"
+ * rule (`lib/sessions.ts`) is kept, and this fixture is what keeps it honest.
  *
- * SEMANTICS, deliberately the pessimistic end of that behaviour:
- *  - `set` commits to the backing store and does NOT touch the read cache.
+ * Built ON `fakeAppStorage` — the same adapter over the same SDK fake — with a
+ * read cache in front of `get`:
+ *  - `set` commits to the document store and does NOT touch the read cache.
  *  - `get` returns the cached value if this key has been read before; otherwise
  *    it reads the store and caches that value.
- *  - `expireReads()` models the one thing that DOES drop the cache in practice —
- *    a token re-mint changing the query key — so a test can reproduce the
- *    "sometimes it works" timing the production symptom actually showed.
+ *  - `expireReads()` models a token re-mint changing the query key.
  *
- * `committed(key)` reads the backing store DIRECTLY, bypassing the cache: it is
- * what a page reload would load, i.e. the only thing that says whether data
- * survived.
+ * `committed(key)` reads the commit mirror, bypassing the cache: it is what a
+ * page reload would load.
  */
 export function staleReadAppStorage(seed: Record<string, unknown> = {}) {
-  const store = new Map<string, unknown>(Object.entries(seed));
-  const readCache = new Map<string, unknown>();
-  const sets: Array<{ key: string; value: unknown }> = [];
+  const base = fakeAppStorage(seed);
+  const readCache = new Map<string, Promise<unknown>>();
 
   const appStorage: AppStorage = {
     async get<T = unknown>(key: string) {
-      if (!readCache.has(key)) {
-        readCache.set(key, store.has(key) ? store.get(key) : null);
-      }
-      return (readCache.get(key) ?? null) as T | null;
+      if (!readCache.has(key)) readCache.set(key, base.appStorage.get(key));
+      return ((await readCache.get(key)) ?? null) as T | null;
     },
-    async set<T = unknown>(key: string, value: T) {
-      store.set(key, value);
-      sets.push({ key, value });
-      return { ok: true as const };
-    },
+    set: base.appStorage.set,
     async delete(key: string) {
-      const deleted = store.delete(key);
       readCache.delete(key);
-      return { ok: true as const, deleted };
+      return base.appStorage.delete(key);
     },
-    async list(opts?: { prefix?: string; limit?: number; cursor?: string }) {
-      const prefix = opts?.prefix;
-      const keys = [...store.keys()].filter((k) => !prefix || k.startsWith(prefix));
-      return { keys: keys.map((key) => ({ key, updatedAt: new Date() })) };
-    },
-    async getQuota() {
-      return { usedBytes: 0, rowCount: store.size, limitBytes: 50_000_000, limitRows: 1_000_000 };
-    },
+    list: base.appStorage.list,
   };
 
   return {
     appStorage,
-    sets,
-    store,
+    sets: base.sets,
+    store: base.store,
+    rawDocs: base.rawDocs,
     /** What a reload would see. Bypasses the read cache on purpose. */
-    committed: (key: string) => store.get(key) ?? null,
+    committed: (key: string) => base.store.get(key) ?? null,
     /** Model a token re-mint: the query key changes, so the cache misses. */
     expireReads: () => readCache.clear(),
   };
