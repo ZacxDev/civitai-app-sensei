@@ -16,7 +16,8 @@
 //   2. HOST-MEDIATED (resize, sign-in, consent, the resource picker, analytics) —
 //      still postMessage. `createHost(transport)` is synchronous, so only consent
 //      needs the AppClient at all.
-//   3. REST (app storage, the four workflow operations) — these moved off the
+//   3. REST (app storage — the document store's private `kv` collection since
+//      0.2.0, see `./kv-store.ts` — and the four workflow operations) — these moved off the
 //      bridge onto `/api/v1/blocks/*`, and they are the only group that must wait
 //      for `initialize({ transport })` to resolve, because only the AppClient
 //      carries the http client bound to the token session.
@@ -81,6 +82,7 @@ import type {
   ViewerInfo,
 } from '@civitai/sdk';
 
+import { createKvStorage, type AppStorage } from './kv-store.js';
 import { createSdkTransportAdapter, HUMAN_INTERACTION_TIMEOUT_MS } from './sdk-transport.js';
 
 export interface SdkRuntimeOptions {
@@ -495,84 +497,38 @@ export function useBlockAnalytics(): {
 // Group 3 — REST
 // ---------------------------------------------------------------------------
 
-/** One row of a key listing. `updatedAt` is revived to a `Date` by the SDK client. */
-export interface AppStorageKeyEntry {
-  key: string;
-  updatedAt: Date;
-}
-
-export interface AppStorageListResult {
-  keys: AppStorageKeyEntry[];
-  nextCursor?: string;
-}
-
-export interface AppStorageQuota {
-  usedBytes: number;
-  rowCount: number;
-  limitBytes: number;
-  limitRows: number;
-}
+export type { AppStorage, AppStorageKeyEntry, AppStorageListResult } from './kv-store.js';
 
 /**
- * The per-(block instance, viewer) KV surface this app consumes.
+ * Per-viewer key/value, over the App Blocks DOCUMENT STORE's private `kv`
+ * collection (`./kv-store.ts` owns the mapping, which a cutover copy script
+ * depends on byte-for-byte — read its header before touching it).
  *
- * 🔴 DECLARED HERE RATHER THAN ALIASED TO THE SDK's `StorageClient`, and the
- * reason is `set`. The SDK's client promises `{ ok: true; sizeBytes: number }`
- * where the bridge promised `sizeBytes?: number`, and this repo's fakes
- * (`test-helpers.tsx`'s two, plus the per-file ones) return `{ ok: true }` with no
- * size. Aliasing would make every one of them a type error and turn a transport
- * port into a rewrite of the test fakes — for a field no consumer reads. So the
- * app keeps the contract it was written against; the façade below simply satisfies
- * it, and the SDK's stricter promise is compatible with the looser declaration.
- */
-export interface AppStorage {
-  get<T = unknown>(key: string): Promise<T | null>;
-  set<T = unknown>(key: string, value: T): Promise<{ ok: true; sizeBytes?: number }>;
-  delete(key: string): Promise<{ ok: true; deleted: boolean }>;
-  list(opts?: { prefix?: string; limit?: number; cursor?: string }): Promise<AppStorageListResult>;
-  getQuota(): Promise<AppStorageQuota>;
-}
-
-/**
- * Per-(block instance, viewer) KV, over `POST /api/v1/blocks/app-storage/*`.
+ * Until 0.2.0 this was the legacy KV (`app.storage.get/set/delete/list`, POST
+ * `/api/v1/blocks/app-storage/*`, scopes `apps:storage:read` +
+ * `apps:storage:write`). Nothing is copied between the two stores by the
+ * platform; existing data moves by a separate hand-run step.
  *
  * Returns a STABLE façade whose methods await the AppClient internally, rather
  * than `AppStorage | null`. Two reasons, both load-bearing:
- *   - the object goes into `useMemo` dependency arrays (`App.tsx`'s `deps`) and
- *     the bridge hook documented itself as stable;
+ *   - the object goes into `useMemo` dependency arrays (`App.tsx`'s `deps`);
  *   - a `null` would make every call site grow a branch for a state that lasts
  *     milliseconds and that the app already gates on `ready`.
  *
- * 🔴 ONE MIGRATION DELTA THE PORT INHERITS, AND IT IS A BEHAVIOUR CHANGE THE
- * CALLER HAS TO GATE ON. An ANONYMOUS viewer gets 403 here — `forbidden(
- * 'apps:storage:read requires authenticated subject')` from civitai's
- * `enforceContextBinding` — where the bridge hook resolved an anonymous read to
- * `null` and an anonymous `list` to an empty page. The route says so itself
- * (`src/pages/api/v1/blocks/app-storage/get.ts`): "🔴 AN ANONYMOUS VIEWER GETS
- * 403 HERE, NOT THE BRIDGE'S CLEAN `{ value: null }`, AND THAT DIVERGENCE IS
- * DELIBERATE."
- *
- * ⚠ SO A CALLER MUST CHECK `viewer` ITSELF. There is no screen-level gate in this
- * app to inherit: `App.tsx`'s three top-level returns are the boot skeleton, the
- * session-loading skeleton and the chat, and an anonymous viewer reaches the
- * third — `sendGate` renders an inline sign-in notice on the COMPOSER, never a
- * replacement screen. What does the gating is the boot load effect's own
- * `if (!signedIn)` early return (and the matching one in
- * `handleSettingsChange`); `src/anon-boot-storage.e2e.test.tsx` is what pins it,
- * including that a signed-in viewer's real failure is still reported. Any NEW
- * call site is unguarded until it adds that check — and a 403 here surfaces as a
- * rejection, not as an empty result, so it cannot be mistaken for
- * "nothing stored".
+ * 🔴 AN ANONYMOUS VIEWER IS REFUSED, AND THE CALLER HAS TO GATE ON IT. A private
+ * collection has no anonymous reader: the store answers `sign_in_required`
+ * (401) for every operation. That is the same footing the legacy KV was on (it
+ * answered 403), so the guards that already exist still do the work — the boot
+ * load effect's own `if (!signedIn)` early return and the matching one in
+ * `handleSettingsChange`. `src/anon-boot-storage.e2e.test.tsx` pins both against
+ * the SDK's fake store as an anonymous caller, including that a signed-in
+ * viewer's real failure is still reported. Any NEW call site is unguarded until
+ * it adds that check — and the refusal surfaces as a rejection, not as an empty
+ * result, so it cannot be mistaken for "nothing stored".
  */
-export function useAppStorage(): AppStorage {
+export function useKvStore(): AppStorage {
   return useMemo<AppStorage>(
-    () => ({
-      get: async (key) => (await app()).storage.get(key),
-      set: async (key, value) => (await app()).storage.set(key, value),
-      delete: async (key) => (await app()).storage.delete(key),
-      list: async (opts) => (await app()).storage.list(opts),
-      getQuota: async () => (await app()).storage.getQuota(),
-    }),
+    () => createKvStorage(async () => (await app()).storage),
     [],
   );
 }

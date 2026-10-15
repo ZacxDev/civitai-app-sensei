@@ -1,14 +1,12 @@
-# 🔴 THE `minimumReleaseAgeExclude` BLOCK HAS FOUR LIVE ENTRIES AND EVERY ONE OF
-# THEM IS LOAD-BEARING RIGHT NOW, until roughly 2026-10-03T17:38Z. The
-# blocks-react ^0.63.0 / app-sdk ^0.55.0 bump put them there. Publish instants, as
-# named by pnpm's OWN refusal (which is the figure the gate compares against):
+# THE `minimumReleaseAgeExclude` BLOCK HAS ONE LIVE ENTRY: `@civitai/sdk@0.14.0`
+# (the 0.2.0 document-store port; see its own note above the list). Delete it
+# after 2026-10-16T06:03Z.
 #
-#   @civitai/blocks-react@0.63.0   2026-10-02T17:38:43.000Z   direct
-#   @civitai/app-sdk@0.55.0        2026-10-02T17:38:42.000Z   direct
-#   @civitai/components@0.9.1      2026-10-02T17:38:43.000Z   🔴 TRANSITIVE
-#   @civitai/theme@0.5.0           2026-10-02T17:38:43.000Z   direct (bumped here)
+# The paragraphs below were written on the blocks-react ^0.63.0 / app-sdk ^0.55.0
+# bump (all four of its entries published 2026-10-02 and aged out on 2026-10-03,
+# and were removed in 0.2.0). Their LESSONS still hold; their entries are gone.
 #
-# 🔴 FOUR TOKENS FOR TWO EDITED RANGES, BECAUSE THE GATE SCORES EVERY LOCKFILE
+# 🔴 FOUR TOKENS FOR TWO EDITED RANGES (that bump), BECAUSE THE GATE SCORES EVERY LOCKFILE
 # ENTRY AND NOT ONLY THE RANGES YOU TOUCHED. `@civitai/components` is not a direct
 # dependency of this app at all — `package.json` pins `@civitai/components-react`,
 # a DIFFERENT package — and 0.9.1 enters the lockfile only underneath
@@ -26,7 +24,7 @@
 #     @civitai/components@0.9.1 was published at 2026-10-02T17:38:43.000Z,
 #     within the minimumReleaseAge cutoff (2026-10-01T19:20:48.392Z)
 #
-# — with all four present the same command exits 0 over 205 entries.
+# — with all four present the same command exited 0 over 205 entries.
 # 🔴 `rm -rf node_modules` BEFORE EACH ARM OR THE CONTROL IS WORTHLESS: against a
 # warm tree the command short-circuits to `Already up to date` and returns 0
 # whether or not the exclusion is there. `.github/workflows/ci.yml` line 40 runs
@@ -53,7 +51,9 @@
 #
 # Entries this file carried before and no longer does — `@civitai/app-sdk@0.45.0`,
 # `@civitai/blocks-react@0.53.1`, `@civitai/blocks-react@0.62.0`,
-# `@civitai/sdk@0.8.0` — have all aged out or been bumped past, correctly.
+# `@civitai/sdk@0.8.0`, and (removed in 0.2.0) `@civitai/blocks-react@0.63.0`,
+# `@civitai/components@0.9.1`, `@civitai/theme@0.5.0`, `@civitai/app-sdk@0.55.0`
+# — have all aged out or been bumped past, correctly.
 # Re-measure a publish time with `npm view <pkg> time --json`, which is the only
 # authority on one; do not trust a timestamp written into a comment, including
 # these. ⚠️ `npm view` and pnpm disagree by minutes on the same version (npm says
@@ -109,10 +109,15 @@
 # Guarded by `src/toolchain-lockstep.test.ts`, which fails if this file exists
 # without a non-empty `packages`. Read that guard's own comment before trusting
 # this one — it carries the same two dead drafts.
+# ⏳ `@civitai/sdk@0.14.0` (document-store port, 0.2.0) — the first release whose
+# `app.storage` carries the document-store client this app now runs on.
+# Measured both ways on a cold tree: without this line `pnpm install
+# --frozen-lockfile` exits with ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION naming
+# `@civitai/sdk@0.14.0 was published at 2026-10-15T05:57:25.000Z`; with it, rc=0.
+# npm view gives the publish as 2026-10-15T06:02:36.727Z (pnpm's refusal names
+# 05:57:25Z, an earlier registry field). Taking the later figure, the exclude is
+# needed until ~2026-10-16T06:03Z; after that it does nothing: DELETE IT.
 packages:
   - '.'
 minimumReleaseAgeExclude:
-  - '@civitai/blocks-react@0.63.0'
-  - '@civitai/components@0.9.1'
-  - '@civitai/theme@0.5.0'
-  - '@civitai/app-sdk@0.55.0'
+  - '@civitai/sdk@0.14.0'

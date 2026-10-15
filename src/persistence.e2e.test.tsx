@@ -16,7 +16,7 @@ import { clearCache } from './lib/research.js';
 // only.
 //
 // 🔴 WHY THE EXISTING SUITE COULD NOT SEE ANY OF THIS, and why that is a defect
-// in its own right: `e2e.test.tsx` mocks `useAppStorage: () => fakeAppStorage()
+// in its own right: `e2e.test.tsx` mocks `useKvStore: () => fakeAppStorage()
 // .appStorage` — a factory call, so EVERY invocation of the hook returns a
 // BRAND-NEW EMPTY STORE. Nothing those tests write is ever read back by
 // anything, so 198 green tests said precisely nothing about persistence. A fake
@@ -37,7 +37,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('./lib/sdk-runtime.js', () => ({
   // 🔴 ONE instance, resolved at call time — not a fresh store per render.
-  useAppStorage: () => h.storage!.appStorage,
+  useKvStore: () => h.storage!.appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
   useBlockResize: () => {},

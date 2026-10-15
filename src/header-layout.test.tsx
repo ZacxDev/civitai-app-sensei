@@ -28,7 +28,7 @@ import { clearCache } from './lib/research.js';
 // ─────────────────────────────────────────────────────────────────────────────
 
 vi.mock('./lib/sdk-runtime.js', () => ({
-  useAppStorage: () => fakeAppStorage().appStorage,
+  useKvStore: () => fakeAppStorage().appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
   useBlockResize: () => {},

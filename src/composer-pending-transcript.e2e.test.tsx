@@ -82,7 +82,7 @@ vi.mock('./lib/sdk-runtime.js', () => ({
   // Resolved at CALL time, so the object identity is stable for a whole test —
   // a fake handing back a fresh identity per render silently repairs a missing
   // dependency-array entry (see `mention-grounding.e2e.test.tsx`).
-  useAppStorage: () => appStorage,
+  useKvStore: () => appStorage,
   useBlockAnalytics: () => ({ track: trackFn }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
   useBlockResize: () => {},

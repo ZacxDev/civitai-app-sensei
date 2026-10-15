@@ -93,7 +93,7 @@ const pollFn = vi.fn(async () => {
 });
 
 vi.mock('./lib/sdk-runtime.js', () => ({
-  useAppStorage: () => storage.appStorage,
+  useKvStore: () => storage.appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: VIEWER, theme: 'dark' }),
   useBlockResize: () => {},

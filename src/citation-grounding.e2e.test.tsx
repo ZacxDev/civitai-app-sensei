@@ -80,7 +80,7 @@ vi.mock('./lib/sdk-runtime.js', () => ({
   // 🔴 ONE instance, resolved at call time. A `fakeAppStorage()` factory call
   // here would hand every render a brand-new empty store, and the
   // session-switch and reload cases below would then be measuring the fake.
-  useAppStorage: () => h.storage!.appStorage,
+  useKvStore: () => h.storage!.appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
   useBlockResize: () => {},

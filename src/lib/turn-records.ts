@@ -27,7 +27,8 @@ import type { AppStorage } from './sdk-runtime.js';
 // not an instrument.
 //
 // WHAT THE RECORD DISCRIMINATES, given a reconciliation that joins each record
-// to the message array of its own session (`eval/reconcile-turns.sql`):
+// to the message array of its own session (`eval/reconcile-turns.sql` — which,
+// as its header says, still reads the legacy store and so sees no 0.2.0 record):
 //   - record present, no matching message, `workflowIds` NON-EMPTY, outcome
 //     `pending`      ⇒ (a) the continuation never ran — tab closed / unmount /
 //                          superseded turn. Buzz was spent.
@@ -114,11 +115,13 @@ export const TURNS_PREFIX = 'sensei:turns:';
 /**
  * How many turn records a viewer keeps.
  *
- * 🔴 THE STORE IS SHARED AND FINITE, NOT LOCAL DISK: `appStorage` is the host's
- * KV over postMessage, backed by `app_sensei.kv`, and the host's documented
- * ceiling is 50 MB and ~1M rows PER APP — across every viewer, not each. So an
- * unbounded `sensei:turns:*` is a slow app-wide leak, and the retention has to
- * be a number rather than "prune eventually".
+ * 🔴 THE STORE IS SHARED AND FINITE, NOT LOCAL DISK: `appStorage` is the
+ * document store's private `kv` collection, which caps an app at 50 MB / 1M
+ * documents across every viewer AND each viewer at 2 MB / 1,000 documents (the
+ * SDK contract fake's defaults, `@civitai/sdk@0.14.0`; `info().limits` has the
+ * live server's figures). So an unbounded `sensei:turns:*` is a
+ * leak against a per-viewer ceiling that also holds the viewer's transcripts,
+ * and the retention has to be a number rather than "prune eventually".
  *
  * WHY 200. The record only has to outlive the operator's reconciliation
  * cadence. Production's busiest viewer produced 16 turns across the 8 days the
@@ -128,12 +131,93 @@ export const TURNS_PREFIX = 'sensei:turns:';
  */
 export const MAX_TURN_RECORDS = 200;
 
-/** How many keys one prune sweep will delete. Bounds the work done at mount. */
-export const PRUNE_DELETE_BUDGET = 100;
+/**
+ * 🔴 THE HOUSEKEEPING SHARE OF THE VIEWER'S WRITE RATE, and why it is small.
+ *
+ * The document store allows a viewer 120 private writes per minute per app (the
+ * contract's `rate.privateWritesPerMinute`; `info().limits` has the live figure),
+ * and a DELETE COUNTS AS A WRITE. Every write of the viewer's own turn — the
+ * transcript, the session list, this module's records — draws on the same 120.
+ * A sweep that spends 100 of them at boot left ~20 for the next minute, i.e.
+ * about three questions: the fourth was CHARGED and then its saves were refused
+ * `rate_limited`, losing a paid reply. Reproduced against the SDK fake with rate
+ * limits on; `src/turn-records-rate-limit.e2e.test.tsx` pins it.
+ *
+ * So both sweeps share ONE rolling-minute allowance of
+ * {@link HOUSEKEEPING_DELETES_PER_MINUTE}. What a sweep cannot afford now it
+ * leaves for a later mount: retention is eventual, a lost answer is not.
+ *
+ * ⚠ WHAT THE ALLOWANCE DOES AND DOES NOT BOUND, stated honestly. It is MODULE
+ * STATE: per tab (per page load), reset on every reload, and NOT shared across
+ * tabs. The server's 120/min is per VIEWER. So within one tab housekeeping takes
+ * at most 20 deletes a minute and leaves ≥100 for that tab's turns; a viewer
+ * reloading repeatedly, or with several tabs open, can spend 20 per load/tab
+ * against the same 120. The budgets make that a slow drain rather than the
+ * single-mount 100 that lost a reply; they are not a cross-tab guarantee.
+ */
+export const HOUSEKEEPING_DELETES_PER_MINUTE = 20;
 
-/** `list()` page size, and how many pages one sweep will walk. */
-const LIST_PAGE_SIZE = 500;
-const MAX_LIST_PAGES = 4;
+/** How many keys one prune sweep will delete (and never more than the pacer allows). */
+export const PRUNE_DELETE_BUDGET = 20;
+
+/** How many keys one session purge will delete; the rest stay until pushed past `MAX_TURN_RECORDS`. */
+export const PURGE_DELETE_BUDGET = 20;
+
+const MINUTE_MS = 60_000;
+let housekeepingDeletes: number[] = [];
+
+/** Housekeeping deletes still allowed in the current rolling minute. */
+function housekeepingSlots(now: number): number {
+  housekeepingDeletes = housekeepingDeletes.filter((t) => now - t < MINUTE_MS);
+  return Math.max(0, HOUSEKEEPING_DELETES_PER_MINUTE - housekeepingDeletes.length);
+}
+
+/** Test seam: forget every delete the pacer has counted. */
+export function __resetHousekeepingPacer(): void {
+  housekeepingDeletes = [];
+}
+
+/**
+ * Delete `keys` in order, spending at most `budget` and never more than the
+ * pacer has left. A slot is taken BEFORE the call, so a delete that fails still
+ * counts — the server charged it either way. Returns how many succeeded.
+ */
+async function pacedDelete(appStorage: AppStorage, keys: string[], budget: number): Promise<number> {
+  let deleted = 0;
+  let spent = 0;
+  for (const key of keys) {
+    if (spent >= budget) break;
+    const now = Date.now();
+    if (housekeepingSlots(now) === 0) break;
+    housekeepingDeletes.push(now);
+    spent += 1;
+    try {
+      await appStorage.delete(key);
+      deleted += 1;
+    } catch {
+      // A key that will not delete must not stop the rest of the sweep.
+    }
+  }
+  return deleted;
+}
+
+/**
+ * `list()` page size, and how many pages one sweep will walk.
+ *
+ * 🔴 100, NOT THE 500 THIS USED BEFORE 0.2.0. The document store REFUSES a
+ * `limit` above 100 (`invalid_request`) rather than clamping it. The 500 was
+ * already wrong on the legacy KV: its list route has capped `limit` at 200 since
+ * 2026-06-13, so every legacy `list` was refused and — both sweeps swallowing
+ * rejections — pruning and purging NEVER ran there. (`kv-store.ts` clamps too;
+ * this keeps the request honest at the source.)
+ *
+ * 20 pages × 100 = 2,000 keys — twice the per-viewer document ceiling (1,000 in
+ * the SDK contract fake), so a sweep walks a viewer's whole `kv`
+ * collection: full pagination in practice, with a bound that still terminates
+ * against a misbehaving cursor.
+ */
+const LIST_PAGE_SIZE = 100;
+const MAX_LIST_PAGES = 20;
 
 /**
  * How the turn ended, from the writer's own point of view.
@@ -291,9 +375,18 @@ async function listKeys(appStorage: AppStorage, prefix: string): Promise<string[
  * Drop the oldest turn records beyond {@link MAX_TURN_RECORDS}.
  *
  * Returns how many keys it deleted. Deletes at most {@link PRUNE_DELETE_BUDGET}
- * per call, so one mount cannot spend an unbounded number of postMessage round
- * trips clearing a backlog; a backlog larger than the budget converges over
- * successive mounts instead.
+ * per call and never more than the housekeeping pacer allows, so one mount
+ * cannot spend the viewer's write rate clearing a backlog; a larger backlog
+ * converges over successive mounts instead.
+ *
+ * 🔴 IT DOES NOT CONSULT THE SESSION LIST, ON PURPOSE. A version that also swept
+ * "orphans" (records whose session was not in `sensei:sessions`) deleted LIVE,
+ * charged, `pending` records whenever a session was merely unlisted — no list
+ * document yet (a viewer sending on 0.2.0 before the cutover copy), or a
+ * cross-tab last-writer-wins overwrite. Leftovers of a bounded
+ * {@link purgeSessionTurnRecords} are removed by the cap like any other record
+ * — bounded by count, not by time.
+ * `turn-records.e2e.test.tsx` pins "unlisted is not deleted".
  */
 export async function pruneTurnRecords(
   appStorage: AppStorage,
@@ -303,18 +396,7 @@ export async function pruneTurnRecords(
   if (keys.length <= max) return 0;
 
   const oldestFirst = [...keys].sort((a, b) => submittedAtFromKey(a) - submittedAtFromKey(b));
-  const doomed = oldestFirst.slice(0, Math.min(keys.length - max, PRUNE_DELETE_BUDGET));
-
-  let deleted = 0;
-  for (const key of doomed) {
-    try {
-      await appStorage.delete(key);
-      deleted += 1;
-    } catch {
-      // A key that will not delete must not stop the rest of the sweep.
-    }
-  }
-  return deleted;
+  return pacedDelete(appStorage, oldestFirst.slice(0, keys.length - max), PRUNE_DELETE_BUDGET);
 }
 
 /**
@@ -328,11 +410,22 @@ export async function pruneTurnRecords(
  *
  * PURGE RATHER THAN TOMBSTONE, deliberately. Marking the records instead would
  * keep a deleted conversation's history readable, but it needs the
- * reconciliation to carry and trust a second piece of state; purging makes the
- * predicate true by construction with nothing extra to keep in step. The cost is
+ * reconciliation to carry and trust a second piece of state; a completed purge
+ * removes the false positive with nothing extra to keep in step. The cost is
  * named: a genuine loss inside a conversation that is later deleted becomes
  * undetectable. That is accepted because the transcript it would have been
  * reconciled against is gone too, so nothing could be recovered from knowing.
+ *
+ * 🔴 BOUNDED AND PACED like the prune ({@link PURGE_DELETE_BUDGET}, the shared
+ * {@link HOUSEKEEPING_DELETES_PER_MINUTE}): a chat with hundreds of turns must
+ * not spend the viewer's write rate in one click. What is left over is bounded
+ * by COUNT, not by time: it goes only when the viewer has written enough newer
+ * turns to push it past {@link MAX_TURN_RECORDS}, through the ordinary
+ * oldest-first prune — at observed rates that can be months. Until then a
+ * reconciliation of these records against transcripts counts them as losses. A
+ * named cost,
+ * chosen over any sweep keyed on the session list (see {@link pruneTurnRecords}
+ * for why that one deleted live records).
  *
  * Returns how many keys it deleted.
  */
@@ -341,14 +434,5 @@ export async function purgeSessionTurnRecords(
   sessionId: string,
 ): Promise<number> {
   const keys = await listKeys(appStorage, sessionTurnsPrefix(sessionId));
-  let deleted = 0;
-  for (const key of keys) {
-    try {
-      await appStorage.delete(key);
-      deleted += 1;
-    } catch {
-      // Same reason as the prune sweep: one bad key must not strand the rest.
-    }
-  }
-  return deleted;
+  return pacedDelete(appStorage, keys, PURGE_DELETE_BUDGET);
 }

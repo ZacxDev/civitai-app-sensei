@@ -42,11 +42,11 @@ No nix? Read those two files for the versions and bring your own node + pnpm.
 
 | Capability | Hooks / modules | Files |
 |---|---|---|
-| Chat sessions with LLM | `useAppStorage` (KV), `useBuzzWorkflow` bridge | `src/lib/chat.ts`, `src/lib/orchestrator-bridge.ts` |
+| Chat sessions with LLM | `useKvStore` (document store), `useBuzzWorkflow` | `src/lib/chat.ts`, `src/lib/orchestrator-bridge.ts` |
 | Retrieval-grounded answers | Search → compact → inject as a `system` message | `src/lib/research.ts`, `src/App.tsx` |
 | Civitai catalog search | Block catalog API (`/api/v1/blocks/models`), `useBlockToken` | `src/lib/research.ts` |
 | Uncensored model | Selected explicitly in Settings, not delegated behind your back | `src/lib/models.ts` |
-| Multi-session management | Per-user KV storage | `src/lib/sessions.ts` |
+| Multi-session management | Private `kv` collection of the App Blocks document store | `src/lib/sessions.ts`, `src/lib/kv-store.ts` |
 | Buzz spending | `useBuzzWorkflow` (estimate → consent → submit) | `src/App.tsx` |
 | Design system | `@civitai/blocks-react/ui` components | `src/components/` |
 
@@ -58,7 +58,13 @@ The app is a single-page React application with three panels:
 - **Chat area** — message history with replayed streaming responses
 - **Research panel** — collapsible right panel showing civitai search results
 
-State is persisted per-user via `useAppStorage` (KV). Chat completions go
+State is persisted per-viewer in the App Blocks **document store** — one
+private collection, `kv`, declared under `storage` in `block.manifest.json` and
+reached only through `src/lib/kv-store.ts` (scope `apps:storage`). Since 0.2.0;
+before that it was the legacy per-viewer KV (`apps:storage:read` +
+`apps:storage:write`). The mapping is fixed because a cutover copy script
+depends on it: document key = the legacy KV key unchanged, document data =
+`{ value: <the legacy value> }` for every key. Chat completions go
 through the real host bridge (`useBuzzWorkflow` → the orchestrator's
 `chat-completion` step). A reply costs Buzz at the model's live rate, and a
 question that needs a catalog lookup spends it once per round — see below.

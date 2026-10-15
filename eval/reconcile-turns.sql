@@ -9,6 +9,11 @@
 -- two of the sixteen questions that ever reached production were generated,
 -- charged, and never landed.
 --
+-- 🔴 This query reads the legacy `app_sensei.kv` table, which 0.2.0 no longer
+-- writes, and because prune/purge never ran there its loss counts include the
+-- records of every chat deleted since 2026-09-04; it has not been repointed at
+-- the document store.
+--
 -- WHERE TO RUN IT. Against the App Blocks KV database — schema `app_sensei`,
 -- table `kv` — as a READ-ONLY query:
 --
@@ -69,20 +74,6 @@
 -- treats a non-finite `submittedAt` as old for the same stated reason: for a
 -- detector, a spurious row is caught the moment someone reads it, while a
 -- suppressed one is invisible by construction.
---
--- 🔴 DELETED SESSIONS ARE ALMOST NEVER IN HERE — "BY CONSTRUCTION" WAS TOO
--- STRONG. `deleteSession` purges `sensei:turns:<sessionId>:*` alongside the
--- transcript, so a tidied-up chat normally leaves no records to reconcile. But
--- the purge is not gated on an in-flight turn, and `deleteSession` does not take
--- the write-ownership ticket, so a turn that was running keeps `ownsMessageWrite`
--- and its continuation re-creates the record after the purge. That does NOT by
--- itself manufacture a loss: the same continuation's `saveMessages` re-creates
--- `sensei:messages:<sessionId>` carrying the very `messageId` the record names,
--- so record and transcript come back together and the join still matches. It is
--- a strong tendency, not a construction — which matters only because the two
--- read the same way until they don't. If the purge ever regresses, this query's
--- (a) column climbs at the rate people delete chats — read query A2's
--- `session_transcript_exists` column before believing a spike.
 --
 -- ⚠️ TWO COPIES OF ONE PREDICATE, AND WHAT ACTUALLY HOLDS THEM TOGETHER.
 -- `eval/reconcile-turns.mjs` is this predicate in JavaScript so the unit suite
@@ -209,8 +200,10 @@ SELECT
   t.outcome,
   t.workflow_ids,
   -- Distinguishes "the transcript exists and this message is not in it" from
-  -- "there is no transcript at all", which is what a regressed delete-purge
-  -- would look like.
+  -- "there is no transcript at all". In this (legacy) table no transcript is
+  -- the normal state of every chat deleted since 2026-09-04 (purge never ran
+  -- here), and also of a turn whose first save failed — so `false` alone is
+  -- neither a regression signal nor grounds to discount the row.
   EXISTS (
     SELECT 1 FROM app_sensei.kv s
     WHERE s.block_instance_id = t.block_instance_id

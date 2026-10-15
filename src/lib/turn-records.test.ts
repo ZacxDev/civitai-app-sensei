@@ -1,9 +1,12 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import type { AppStorage } from './sdk-runtime.js';
 import { fakeAppStorage } from '../test-helpers.js';
 import {
+  HOUSEKEEPING_DELETES_PER_MINUTE,
   MAX_TURN_RECORDS,
   PRUNE_DELETE_BUDGET,
+  PURGE_DELETE_BUDGET,
+  __resetHousekeepingPacer,
   TURNS_PREFIX,
   pruneTurnRecords,
   purgeSessionTurnRecords,
@@ -12,6 +15,10 @@ import {
   submittedAtFromKey,
   turnRecordKey,
 } from './turn-records.js';
+
+beforeEach(() => {
+  __resetHousekeepingPacer();
+});
 
 const seed = { sessionId: 'session-1', messageId: 'msg-1', submittedAt: 1_700_000_000_000 };
 
@@ -34,9 +41,12 @@ describe('startTurnRecord writes on the caller`s own stack', () => {
     startTurnRecord(storage.appStorage, seed);
     // 🔴 NO `await` ANYWHERE ABOVE THIS LINE. If the write were deferred into a
     // `.then` — which is what "record it in the completion continuation" looks
-    // like — `sets` would still be empty here.
-    expect(storage.sets.map((s) => s.key)).toEqual([turnRecordKey(seed)]);
-    expect(storage.sets[0].value).toEqual({ ...seed, workflowIds: [], outcome: 'pending' });
+    // like — `attempts` would still be empty here. (`attempts`, not `sets`: the
+    // document store commits a few microtasks later, so `sets` — commits only —
+    // cannot see the CALL, which is the thing this pins. Before 0.2.0 the fake
+    // committed synchronously and the two were indistinguishable.)
+    expect(storage.attempts.map((s) => s.key)).toEqual([turnRecordKey(seed)]);
+    expect(storage.attempts[0]!.value).toEqual({ ...seed, workflowIds: [], outcome: 'pending' });
   });
 
   it('appends workflow ids as they arrive, ignoring blanks and repeats', async () => {
@@ -228,5 +238,46 @@ describe('purgeSessionTurnRecords is scoped to one conversation', () => {
     });
     expect(await purgeSessionTurnRecords(storage.appStorage, 'session-1')).toBe(1);
     expect([...storage.store.keys()]).toEqual([turnRecordKey(ten)]);
+  });
+});
+
+describe('🔴 housekeeping deletes leave the viewer write-rate headroom', () => {
+  function records(count: number, sessionId: string, from = 1_700_000_000_000) {
+    const out: Record<string, unknown> = {};
+    for (let i = 0; i < count; i += 1) {
+      const s = { sessionId, messageId: `msg-${i}`, submittedAt: from + i };
+      out[turnRecordKey(s)] = { ...s, workflowIds: [], outcome: 'saved' };
+    }
+    return out;
+  }
+  const turnKeysOf = (storage: ReturnType<typeof fakeAppStorage>, sessionId: string) =>
+    [...storage.store.keys()].filter((k) => k.startsWith(sessionTurnsPrefix(sessionId)));
+
+  it('the budgets are the small, literal figures the rate argument rests on', () => {
+    // 120 private writes/min/viewer on the store; 20 for housekeeping leaves 100.
+    expect([HOUSEKEEPING_DELETES_PER_MINUTE, PRUNE_DELETE_BUDGET, PURGE_DELETE_BUDGET]).toEqual([
+      20, 20, 20,
+    ]);
+  });
+
+  it('a purge of a long chat deletes at most its budget and leaves the rest in place', async () => {
+    const storage = fakeAppStorage({ ...records(57, 'session-gone'), ...records(3, 'session-kept') });
+    expect(await purgeSessionTurnRecords(storage.appStorage, 'session-gone')).toBe(PURGE_DELETE_BUDGET);
+    expect(turnKeysOf(storage, 'session-gone')).toHaveLength(57 - PURGE_DELETE_BUDGET);
+    expect(turnKeysOf(storage, 'session-kept')).toHaveLength(3);
+  });
+
+  it('prune and purge SHARE one per-minute allowance', async () => {
+    const storage = fakeAppStorage({
+      // 15 over the cap in total, across both sessions.
+      ...records(MAX_TURN_RECORDS + 15 - 30, 'session-a'),
+      ...records(30, 'session-b', 1_800_000_000_000),
+    });
+    expect(await pruneTurnRecords(storage.appStorage)).toBe(15);
+    // 15 spent this minute, so the purge gets the remaining 5 and no more.
+    expect(await purgeSessionTurnRecords(storage.appStorage, 'session-b')).toBe(
+      HOUSEKEEPING_DELETES_PER_MINUTE - 15,
+    );
+    expect(await pruneTurnRecords(storage.appStorage)).toBe(0);
   });
 });

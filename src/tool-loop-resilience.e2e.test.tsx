@@ -54,7 +54,7 @@ const submitFn = vi.fn(async (body: unknown) => {
 });
 
 vi.mock('./lib/sdk-runtime.js', () => ({
-  useAppStorage: () => h.storage!.appStorage,
+  useKvStore: () => h.storage!.appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
   useBlockResize: () => {},

@@ -1,14 +1,13 @@
 // Block-scope constants used by the app. All are declared in the manifest.
 export const AI_WRITE_BUDGETED = 'ai:write:budgeted';
 export const BUZZ_READ_SELF = 'buzz:read:self';
-export const APPS_STORAGE_READ = 'apps:storage:read';
-export const APPS_STORAGE_WRITE = 'apps:storage:write';
+/** The document store (private `kv` collection, see `lib/kv-store.ts`). Not consent-gated. */
+export const APPS_STORAGE = 'apps:storage';
 
 export const DECLARED_SCOPES = [
   AI_WRITE_BUDGETED,
   BUZZ_READ_SELF,
-  APPS_STORAGE_READ,
-  APPS_STORAGE_WRITE,
+  APPS_STORAGE,
 ] as const;
 
 export function hasGenerateScope(tokenScopes: readonly string[] | undefined): boolean {

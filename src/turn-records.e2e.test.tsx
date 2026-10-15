@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import type { AppStorage } from './lib/sdk-runtime.js';
+import { fakeAppStorage } from './test-helpers.js';
 import { App } from './App.js';
 import { MAX_TURN_RECORDS, TURNS_PREFIX, turnRecordKey } from './lib/turn-records.js';
 import { claimMessageWrite } from './lib/write-ownership.js';
@@ -29,65 +29,33 @@ import { reconcileTurns } from '../eval/reconcile-turns.mjs';
 // storage banner on screen.
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface Recorded {
-  key: string;
-  value: unknown;
-}
-
 /**
- * A read-your-writes KV fake with INJECTABLE WRITE FAILURE.
+ * A read-your-writes store with INJECTABLE WRITE FAILURE — `fakeAppStorage`,
+ * i.e. the production `kv` adapter over the SDK's document-store fake.
  *
- * `failSet` decides per (key, value) whether `set` rejects — the only way to
+ * `setFailSet` decides per (key, value) whether `set` rejects — the only way to
  * drive the "the storage write was issued and rejected" arm, which is one of the
  * three mechanisms the record has to tell apart.
+ *
+ * 🔴 `attempts` IS EVERY `set` CALL, including the ones that reject, projected to
+ * its key. `sets` ALONE CANNOT SEE AN ATTEMPT THAT FAILED, and that is exactly
+ * what the money-path case has to assert: with the instrument absent, "no record
+ * was written" and "the record write was rejected" produce an identical `sets`,
+ * so a case built on `sets` would pass vacuously against code that has no
+ * instrument at all.
  */
 function makeStorage() {
-  const store = new Map<string, unknown>();
-  const sets: Recorded[] = [];
-  /**
-   * Every `set` CALL, including the ones that reject.
-   *
-   * 🔴 `sets` ALONE CANNOT SEE AN ATTEMPT THAT FAILED, and that is exactly what
-   * the money-path case has to assert: with the instrument absent, "no record
-   * was written" and "the record write was rejected" produce an identical
-   * `sets`, so a case built on `sets` would pass vacuously against code that has
-   * no instrument at all.
-   */
-  const attempts: string[] = [];
-  let failSet: (key: string, value: unknown) => boolean = () => false;
-
-  const appStorage: AppStorage = {
-    async get<T = unknown>(key: string) {
-      return (store.has(key) ? (store.get(key) as T) : null) as T | null;
-    },
-    async set<T = unknown>(key: string, value: T) {
-      attempts.push(key);
-      if (failSet(key, value)) throw new Error('kv rejected');
-      store.set(key, value);
-      sets.push({ key, value });
-      return { ok: true as const };
-    },
-    async delete(key: string) {
-      return { ok: true as const, deleted: store.delete(key) };
-    },
-    async list(opts?: { prefix?: string; limit?: number; cursor?: string }) {
-      const prefix = opts?.prefix;
-      const keys = [...store.keys()].filter((k) => !prefix || k.startsWith(prefix));
-      return { keys: keys.map((key) => ({ key, updatedAt: new Date() })) };
-    },
-    async getQuota() {
-      return { usedBytes: 0, rowCount: store.size, limitBytes: 50_000_000, limitRows: 1_000_000 };
-    },
-  };
-
+  const base = fakeAppStorage();
   return {
-    appStorage,
-    store,
-    sets,
-    attempts,
-    setFailSet(f: (key: string, value: unknown) => boolean) {
-      failSet = f;
+    appStorage: base.appStorage,
+    store: base.store,
+    sets: base.sets,
+    get attempts(): string[] {
+      return base.attempts.map((a) => a.key);
     },
+    setFailSet: base.setFailSet,
+    /** The SDK fake's request log — to see that the boot sweep has listed. */
+    calls: base.docStore.calls,
   };
 }
 
@@ -171,7 +139,7 @@ const estimateFn = vi
 const cancelFn = vi.fn(async () => undefined);
 
 vi.mock('./lib/sdk-runtime.js', () => ({
-  useAppStorage: () => h.storage!.appStorage,
+  useKvStore: () => h.storage!.appStorage,
   useBlockAnalytics: () => ({ track: vi.fn() }),
   useBlockContext: () => ({ ready: true, viewer: { id: 1 }, theme: 'dark' }),
   useBlockResize: () => {},
@@ -598,6 +566,52 @@ describe('the boot sweep keeps the store bounded', () => {
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
     await waitFor(() => expect(turnKeys()).toHaveLength(MAX_TURN_RECORDS));
+  });
+});
+
+describe('🔴 the boot sweep never deletes a record just because its session is not listed', () => {
+  // A session can be missing from `sensei:sessions` while its records are LIVE:
+  // the doc does not exist yet (a viewer who sends on 0.2.0 before the cutover
+  // copy), or a cross-tab last-writer-wins overwrite dropped a row. A sweep that
+  // treated "not listed" as "orphaned" deleted pending, CHARGED turn records —
+  // the instrument's whole evidence. Leftovers of a bounded purge are left to
+  // the 200-record cap instead (oldest first, bounded by count, not time), which
+  // needs no session list.
+  function pendingRecords(sessionId: string) {
+    for (let i = 0; i < 5; i += 1) {
+      const s = { sessionId, messageId: `m-${i}`, submittedAt: 1_700_000_000_000 + i };
+      st().store.set(turnRecordKey(s), { ...s, workflowIds: [`wf-${i}`], outcome: 'pending' });
+    }
+  }
+  async function bootAndLetTheSweepFinish() {
+    render(<App />);
+    await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+    // The sweep starts with a `list` of the turns prefix; wait for it, then give
+    // any deletes it would issue time to land. Positive control: the `list`
+    // assertion fails if the sweep never ran, so "0 deleted" is not vacuous.
+    await waitFor(() =>
+      expect(
+        st().calls.some((c) => c.method === 'GET' && c.query.keyPrefix === TURNS_PREFIX),
+      ).toBe(true),
+    );
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  it('with NO session list document at all, all 5 records survive', async () => {
+    pendingRecords('session-unlisted');
+    await bootAndLetTheSweepFinish();
+    expect(turnKeys()).toHaveLength(5);
+    expect(st().calls.filter((c) => c.method === 'DELETE')).toEqual([]);
+  });
+
+  it('with a list that names OTHER sessions, all 5 records survive', async () => {
+    st().store.set('sensei:sessions', {
+      sessions: [{ id: 'session-listed', title: 'T', model: 'm', createdAt: 1, updatedAt: 2 }],
+    });
+    pendingRecords('session-unlisted');
+    await bootAndLetTheSweepFinish();
+    expect(turnKeys()).toHaveLength(5);
+    expect(st().calls.filter((c) => c.method === 'DELETE')).toEqual([]);
   });
 });
 
