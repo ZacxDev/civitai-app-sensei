@@ -119,7 +119,10 @@ describe('list: keyPrefix, one page per call, the page cap respected', () => {
     let cursor: string | undefined;
     let pages = 0;
     do {
-      // Asking for MORE than the cap must not be refused — the legacy KV took 500.
+      // Asking for MORE than the cap must not be refused: the store refuses
+      // limit > 100, and sensei's sweeps ask for more and swallow the refusal.
+      // (The legacy KV refused the 500 too — capped at 200 since 2026-06-13 —
+      // so its sweeps never ran.)
       const page = await kv.list({ prefix: 'sensei:turns:', limit: 500, ...(cursor ? { cursor } : {}) });
       expect(page.keys.length).toBeLessThanOrEqual(KV_LIST_LIMIT_MAX);
       for (const e of page.keys) {

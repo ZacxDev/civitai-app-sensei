@@ -557,6 +557,13 @@ describe('the boot sweep keeps the store bounded', () => {
     // is a claim about the FUNCTION; this is the only thing that says the app
     // ever runs it. Nothing else in the app reads `sensei:turns:*`, so an
     // uncalled sweep is a leak nobody would notice.
+    //
+    // The session EXISTS: since 0.2.0 the boot prune also sweeps records whose
+    // session is gone (orphans of a bounded purge), so records of a session that
+    // is not in the list would be removed as orphans rather than as over-cap.
+    st().store.set('sensei:sessions', {
+      sessions: [{ id: 'session-old', title: 'Old', model: 'm', createdAt: 1, updatedAt: 2 }],
+    });
     for (let i = 0; i < MAX_TURN_RECORDS + 3; i += 1) {
       const s = { sessionId: 'session-old', messageId: `m-${i}`, submittedAt: 1_700_000_000_000 + i };
       st().store.set(turnRecordKey(s), { ...s, workflowIds: [], outcome: 'saved' });

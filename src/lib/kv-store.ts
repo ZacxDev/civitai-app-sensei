@@ -36,9 +36,11 @@ export const KV_COLLECTION = 'kv';
  * The largest page `list` may ask for.
  *
  * 🔴 A LARGER `limit` IS REFUSED, NOT CLAMPED: the document store answers
- * `invalid_request` ("limit must be 1–100") where the legacy KV accepted 500. The
- * prune sweep in `turn-records.ts` swallows every rejection by design, so an
- * unclamped 500 would have turned it into a silent no-op. `info().limits
+ * `invalid_request` ("limit must be 1–100"). The sweeps in `turn-records.ts`
+ * swallow every rejection by design, so an unclamped request is a SILENT no-op —
+ * which is exactly what happened on the legacy KV: its list route has capped
+ * `limit` at 200 since 2026-06-13, sensei asked for 500, and pruning/purging
+ * never ran there. `info().limits
  * .listLimitMax` is the server's live figure; 100 is the contract's, and asking
  * for at most that is correct whatever the live figure is above it.
  */

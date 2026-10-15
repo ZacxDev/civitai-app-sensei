@@ -1,9 +1,12 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import type { AppStorage } from './sdk-runtime.js';
 import { fakeAppStorage } from '../test-helpers.js';
 import {
+  HOUSEKEEPING_DELETES_PER_MINUTE,
   MAX_TURN_RECORDS,
   PRUNE_DELETE_BUDGET,
+  PURGE_DELETE_BUDGET,
+  __resetHousekeepingPacer,
   TURNS_PREFIX,
   pruneTurnRecords,
   purgeSessionTurnRecords,
@@ -12,6 +15,10 @@ import {
   submittedAtFromKey,
   turnRecordKey,
 } from './turn-records.js';
+
+beforeEach(() => {
+  __resetHousekeepingPacer();
+});
 
 const seed = { sessionId: 'session-1', messageId: 'msg-1', submittedAt: 1_700_000_000_000 };
 
@@ -231,5 +238,72 @@ describe('purgeSessionTurnRecords is scoped to one conversation', () => {
     });
     expect(await purgeSessionTurnRecords(storage.appStorage, 'session-1')).toBe(1);
     expect([...storage.store.keys()]).toEqual([turnRecordKey(ten)]);
+  });
+});
+
+describe('🔴 housekeeping deletes leave the viewer write-rate headroom', () => {
+  function records(count: number, sessionId: string, from = 1_700_000_000_000) {
+    const out: Record<string, unknown> = {};
+    for (let i = 0; i < count; i += 1) {
+      const s = { sessionId, messageId: `msg-${i}`, submittedAt: from + i };
+      out[turnRecordKey(s)] = { ...s, workflowIds: [], outcome: 'saved' };
+    }
+    return out;
+  }
+  const turnKeysOf = (storage: ReturnType<typeof fakeAppStorage>, sessionId: string) =>
+    [...storage.store.keys()].filter((k) => k.startsWith(sessionTurnsPrefix(sessionId)));
+
+  it('the budgets are the small, literal figures the rate argument rests on', () => {
+    // 120 private writes/min/viewer on the store; 20 for housekeeping leaves 100.
+    expect([HOUSEKEEPING_DELETES_PER_MINUTE, PRUNE_DELETE_BUDGET, PURGE_DELETE_BUDGET]).toEqual([
+      20, 20, 20,
+    ]);
+  });
+
+  it('a purge of a long chat deletes at most its budget, leaving the rest as orphans', async () => {
+    const storage = fakeAppStorage({ ...records(57, 'session-gone'), ...records(3, 'session-kept') });
+    expect(await purgeSessionTurnRecords(storage.appStorage, 'session-gone')).toBe(PURGE_DELETE_BUDGET);
+    expect(turnKeysOf(storage, 'session-gone')).toHaveLength(57 - PURGE_DELETE_BUDGET);
+    expect(turnKeysOf(storage, 'session-kept')).toHaveLength(3);
+  });
+
+  it('prune and purge SHARE one per-minute allowance', async () => {
+    const storage = fakeAppStorage({
+      // 15 over the cap in total, across both sessions.
+      ...records(MAX_TURN_RECORDS + 15 - 30, 'session-a'),
+      ...records(30, 'session-b', 1_800_000_000_000),
+    });
+    expect(await pruneTurnRecords(storage.appStorage)).toBe(15);
+    // 15 spent this minute, so the purge gets the remaining 5 and no more.
+    expect(await purgeSessionTurnRecords(storage.appStorage, 'session-b')).toBe(
+      HOUSEKEEPING_DELETES_PER_MINUTE - 15,
+    );
+    expect(await pruneTurnRecords(storage.appStorage)).toBe(0);
+  });
+
+  it('a later mount sweeps the orphans a bounded purge left behind, oldest first', async () => {
+    const storage = fakeAppStorage({ ...records(30, 'session-gone'), ...records(2, 'session-live') });
+    __resetHousekeepingPacer();
+    const deleted = await pruneTurnRecords(storage.appStorage, {
+      liveSessionIds: new Set(['session-live']),
+      loadedAt: 1_900_000_000_000,
+    });
+    expect(deleted).toBe(PRUNE_DELETE_BUDGET);
+    expect(turnKeysOf(storage, 'session-gone')).toHaveLength(30 - PRUNE_DELETE_BUDGET);
+    expect(turnKeysOf(storage, 'session-live')).toHaveLength(2);
+    // The survivors are the NEWEST orphans: oldest went first.
+    expect(turnKeysOf(storage, 'session-gone').map(submittedAtFromKey).sort((a, b) => a - b)[0]).toBe(
+      1_700_000_000_000 + PRUNE_DELETE_BUDGET,
+    );
+  });
+
+  it('a record written AFTER the list was loaded is never an orphan (another tab)', async () => {
+    const storage = fakeAppStorage(records(3, 'session-new-elsewhere', 2_000_000_000_000));
+    expect(
+      await pruneTurnRecords(storage.appStorage, {
+        liveSessionIds: new Set(),
+        loadedAt: 1_999_999_999_999,
+      }),
+    ).toBe(0);
   });
 });

@@ -37,8 +37,16 @@ export interface RawKvDocument {
  * for anything that does not depend on read-after-write ordering; use
  * `staleReadAppStorage` below for anything that does.
  */
-export function fakeAppStorage(seed: Record<string, unknown> = {}) {
-  const docStore: FakeStorage = createFakeStorage({ manifest });
+export function fakeAppStorage(
+  seed: Record<string, unknown> = {},
+  opts: {
+    /** Apply the server's rate limits (120 private writes/min/viewer, deletes included). */
+    enforceRateLimits?: boolean;
+    /** The clock rate-limit windows read. Lets a test seed in one window and act in the next. */
+    now?: () => number;
+  } = {},
+) {
+  const docStore: FakeStorage = createFakeStorage({ manifest, ...opts });
   const kv = createKvStorage(() => docStore.storage);
 
   /**

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, vi } from 'vitest';
 
 import { resetHarnessTransport } from './dev-transport.js';
 import { resetSdkRuntime } from './lib/sdk-runtime.js';
+import { __resetHousekeepingPacer } from './lib/turn-records.js';
 
 beforeEach(() => {
   resetHarnessTransport();
@@ -18,6 +19,9 @@ beforeEach(() => {
   // `bootSkeleton.test.tsx`, the one file that renders the real `App` against the
   // real bindings.
   resetSdkRuntime();
+  // The turn-record sweeps share one rolling-minute delete allowance, held at
+  // module level; without this one test's deletes would starve the next's.
+  __resetHousekeepingPacer();
   if (!window.matchMedia) {
     window.matchMedia = makeMatchMedia(true) as typeof window.matchMedia;
   }
