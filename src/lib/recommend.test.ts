@@ -583,6 +583,15 @@ describe('recommend — wiring into the tool loop', () => {
     expect(params.additionalProperties).toBe(false);
     // The rewrite instruction is the design — pinned so a "tidy" of the copy cannot drop it.
     expect(RECOMMEND_TOOL_DECLARATION.function.description).toMatch(/description of the IMAGE, not the user's question/);
+    // 🔴 A VAGUE request is guessed, not bounced back (operator decision, 0.1.33):
+    // the old "ask the user instead of calling" sentence made the model answer
+    // "what models are best for professional content" with a clarifying question
+    // and no lookup. Whole sentence pinned so a reword cannot restore the bounce.
+    expect(RECOMMEND_TOOL_DECLARATION.function.description).toContain(
+      "If the request is vague (for example 'models for professional content'), do not ask first: pick one " +
+        'representative concrete image for it, call with that, and offer in your answer to narrow it down.',
+    );
+    expect(RECOMMEND_TOOL_DECLARATION.function.description).not.toMatch(/ask the user instead/i);
   });
 
   it('the viewer is shown the image description, the way a search shows its query', () => {

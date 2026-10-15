@@ -94,7 +94,12 @@ describe('DEFAULT_SYSTEM_PROMPT — must describe the retrieval the app actually
 
     // And the probe's own record of what it sent agrees — both arms that scored
     // v7 — so an edit made to both the .txt and the constant still goes red.
-    for (const file of ['needs-v7-2026-10-15.json', 'tool-choice-v7-2026-10-15.json']) {
+    for (const file of [
+      'needs-v7-2026-10-15.json',
+      'tool-choice-v7-2026-10-15.json',
+      'needs-v7-decl2-2026-10-15.json',
+      'tool-choice-v7-decl2-2026-10-15.json',
+    ]) {
       const recorded = (
         JSON.parse(
           readFileSync(new URL(`../eval/results/tool-choice/${file}`, import.meta.url), 'utf8'),

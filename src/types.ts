@@ -217,12 +217,28 @@ export interface AppSettings {
  * from chance) and the hosted-models presentation instruction, which this
  * first-round probe cannot observe at all (no tool executes).
  *
- * On the v1 21-question set, v7 scored 24/27 recommend-first, 15/15
- * search_models, 2/21 over-triggers. All 3 misses are PROD1 (the model asked a
- * clarifying question). That is NOT a v7 regression: the UNCHANGED 0.1.32 tree
- * (v6 + old declaration) re-run the same day also scored PROD1 0/3 (24/27,
- * 15/15, 1/21 — `tool-choice-v6-trunkdecl-rerun-2026-10-15.json`), so the 3/3
- * recorded for v6 on 2026-10-14 did not reproduce a day later.
+ * 🔴 THE DECLARATION THEN CHANGED UNDER v7 (operator decision): its "if you
+ * cannot tell what the image should show, ask the user instead of calling"
+ * sentence became "if the request is vague, do not ask first: pick one
+ * representative concrete image, call with that, and offer to narrow it down".
+ * v7's bytes did NOT change. With the old sentence, PROD1 ("what models are
+ * best for professional content") was 0/3 in every arm on 2026-10-15 — the
+ * UNCHANGED 0.1.32 tree included (`tool-choice-v6-trunkdecl-rerun-2026-10-15.json`),
+ * so v6's 3/3 recorded on 2026-10-14 did not reproduce. v1 21-question set:
+ *
+ *   |                         | trunk rerun | v7, old sentence | v7, new sentence |
+ *   | recommend-first         | 24/27       | 24/27            | 26/27            |
+ *   |   of which PROD1        | 0/3         | 0/3              | 3/3              |
+ *   | search_models           | 15/15       | 15/15            | 15/15            |
+ *   | over-triggers           | 1/21        | 2/21             | 3/21             |
+ *
+ * Every over-trigger in all three arms is T4 ("why do my generated hands look
+ * distorted") calling search_models. The new sentence is NOT what moved it: a
+ * 12-repeat T4-only control the same day gave 10/12 over-triggers with the new
+ * sentence and 11/12 with the old one restored
+ * (`tool-choice-T4-control-{new,old}decl-2026-10-15.json`) — T4's base rate that
+ * day was high, and n=3 sampled 1, 2 or 3 of it. The `needs` arm on the final
+ * declaration (`needs-v7-decl2-2026-10-15.json`): 33/33, noise 0/12.
  *
  * `eval/prompt.rewrite.v7.txt` carries v7's exact bytes and `types.test.ts`
  * asserts the constant equals it and the probe's recorded prompts.

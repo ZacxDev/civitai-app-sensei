@@ -164,6 +164,13 @@ const MAX_GOOD_AT_CHARS = 200;
  * prompt, which is eval-attributed byte-for-byte (`types.ts`) and must not be
  * edited in place. A tool's own description is the documented channel for how
  * to call it, and the host's `search_models` uses it the same way.
+ *
+ * 🔴 A VAGUE REQUEST IS GUESSED, NOT BOUNCED (operator decision, 0.1.33). Until
+ * 0.1.32 this said "if you cannot tell what the image should show, ask the user
+ * instead of calling", and "what models are best for professional content" got a
+ * clarifying question and no lookup. Now the model picks one representative
+ * image, calls, and offers to narrow it down — an answer the viewer can correct
+ * beats a question they have to answer before seeing anything.
  */
 export const RECOMMEND_TOOL_DECLARATION: ToolDeclaration = {
   type: 'function',
@@ -176,7 +183,8 @@ export const RECOMMEND_TOOL_DECLARATION: ToolDeclaration = {
       'before calling, turn the request into a concrete picture — subject, setting, style, lighting, mood. For ' +
       "example, for 'sfw models to use for advertising collateral' describe an image such as 'clean commercial " +
       "product photo of a perfume bottle on a white marble counter, soft studio lighting, minimal background'. " +
-      'If you cannot tell what the image should show, ask the user instead of calling. Returns up to ' +
+      'If the request is vague (for example \'models for professional content\'), do not ask first: pick one ' +
+      'representative concrete image for it, call with that, and offer in your answer to narrow it down. Returns up to ' +
       `${SHOWN_PER_KIND} suggestions per kind. When the request implies a capability, pass needs; the result may ` +
       'then also list hosted models — single-model generators used directly, with no add-ons.',
     parameters: {
