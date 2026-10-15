@@ -27,7 +27,8 @@ import type { AppStorage } from './sdk-runtime.js';
 // not an instrument.
 //
 // WHAT THE RECORD DISCRIMINATES, given a reconciliation that joins each record
-// to the message array of its own session (`eval/reconcile-turns.sql`):
+// to the message array of its own session (`eval/reconcile-turns.sql` — which,
+// as its header says, still reads the legacy store and so sees no 0.2.0 record):
 //   - record present, no matching message, `workflowIds` NON-EMPTY, outcome
 //     `pending`      ⇒ (a) the continuation never ran — tab closed / unmount /
 //                          superseded turn. Buzz was spent.
@@ -409,8 +410,8 @@ export async function pruneTurnRecords(
  *
  * PURGE RATHER THAN TOMBSTONE, deliberately. Marking the records instead would
  * keep a deleted conversation's history readable, but it needs the
- * reconciliation to carry and trust a second piece of state; purging makes the
- * predicate true by construction with nothing extra to keep in step. The cost is
+ * reconciliation to carry and trust a second piece of state; a completed purge
+ * removes the false positive with nothing extra to keep in step. The cost is
  * named: a genuine loss inside a conversation that is later deleted becomes
  * undetectable. That is accepted because the transcript it would have been
  * reconciled against is gone too, so nothing could be recovered from knowing.

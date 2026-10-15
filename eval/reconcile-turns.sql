@@ -200,8 +200,10 @@ SELECT
   t.outcome,
   t.workflow_ids,
   -- Distinguishes "the transcript exists and this message is not in it" from
-  -- "there is no transcript at all", which is what a regressed delete-purge
-  -- would look like.
+  -- "there is no transcript at all". In this (legacy) table no transcript is
+  -- the normal state of every chat deleted since 2026-09-04 (purge never ran
+  -- here), and also of a turn whose first save failed — so `false` alone is
+  -- neither a regression signal nor grounds to discount the row.
   EXISTS (
     SELECT 1 FROM app_sensei.kv s
     WHERE s.block_instance_id = t.block_instance_id
