@@ -8,12 +8,23 @@ import {
 } from './types.js';
 
 /**
- * 🔴 THE V5 PARAGRAPH'S EXACT BYTES, held in the test rather than read back from
- * `types.ts`, so the assertion cannot be satisfied by whatever the constant
- * happens to say. Full-prompt equality with `eval/prompt.rewrite.v5.txt` is
- * pinned separately below; this is the brief-ranked addition itself.
+ * 🔴 THE V5 PARAGRAPH'S EXACT BYTES — the multi-facet paragraph v6 replaced. v6
+ * must NOT carry it (its "run at least two lookups" instruction is the one that
+ * sent a recommendation question to popularity-sorted searches), and the v5
+ * legacy entry MUST.
  */
 const V5_PARAGRAPH = `When a question asks which models to use — the best, the recommended, the top ones — do not answer from a single ranked lookup. Run at least two differently-shaped lookups before answering: one in the use case's own words, and one by a different facet, such as recency, base model family or a different sort. Weigh fit rather than presenting download counts as the ranking — what the use case implies, each candidate's base model, how recent it is, and its trade-offs. Be honest about the catalog's limits: results are ordered by popularity, so a brand-new or barely-used model will not surface in a ranked lookup — say so when it matters to the question. This turn allows at most three tool results in total, so a couple of differently-shaped lookups is the ceiling, not five.`;
+
+
+/**
+ * 🔴 THE V6 ROUTING PARAGRAPH'S EXACT BYTES, held in the test rather than read
+ * back from `types.ts`, so the assertion cannot be satisfied by whatever the
+ * constant happens to say. Pinned whole because it carries a claim about the
+ * wire — `recommend_resources` is named CONDITIONALLY ("If you have been given")
+ * since `composeLocalTools` does not always send it — and a guard on a word
+ * would be walked around by rewording that condition away.
+ */
+const V6_PARAGRAPH = `Choosing the tool. If you have been given a recommend_resources tool, call it FIRST whenever someone asks which models, checkpoints, LoRAs or other add-ons to use for a kind of image or a use case — "models for book-cover art", "a checkpoint for product photography", "which LoRA for a watercolor look". Turn the request into a concrete image description (subject, setting, style, lighting, mood) and pass that, not the question. Call it on its own; a popularity lookup alongside it adds nothing the reader asked for. Use search_models instead for a model the reader named, an id, stats, versions or a model's base model, and for an explicit ranking — most downloaded, most liked, newest, top N — and to check a specific model before you name it. Without recommend_resources, answer which-model questions with search_models, using a couple of differently-shaped lookups — one in the use case's own words and one by a different facet such as base model family or a different sort — and say that results are ordered by popularity, so a brand-new or barely-used model will not surface. Either way, weigh fit rather than presenting download counts as the ranking: what the use case implies, each candidate's base model and its trade-offs. This turn allows at most three tool results in total, so plan for one or two calls, not five.`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 🔴 THE SYSTEM PROMPT IS A CLAIM ABOUT THE WIRE, AND IT HAS BEEN WRONG TWICE
@@ -58,35 +69,48 @@ describe('DEFAULT_SYSTEM_PROMPT — must describe the retrieval the app actually
     expect(DEFAULT_SYSTEM_PROMPT).toMatch(/never invent/i);
   });
 
-  it('🔴 is byte-identical to eval/prompt.rewrite.v5.txt — the arm file the next eval run sends', () => {
-    // 🔴 THE ATTRIBUTION MOVED ONE GENERATION BACK, AND THIS GUARD NOW CARRIES
-    // THE DRIFT. It used to pin the constant itself at 1831 chars as "the prompt
-    // the eval actually measured" — that text was v4, whose recorded numbers
-    // (14/24 → 23/24 lookups, 7 → 0 ungrounded) are attributable to it and to
-    // nothing else. v5 edits the constant IN PLACE, per the change brief, which
-    // voids that attribution for THIS text until a new arm runs. So:
-    //
-    //   - the v4 bytes and their 1831-char measurement are pinned on the
-    //     LEGACY list entry instead, byte-for-byte against the prompt recorded
-    //     in `eval/results/recommend-rewrite-v4-2026-09-01.json` (the arm the
-    //     eval actually paid for) — see the test below;
-    //   - THIS constant is pinned byte-for-byte against
-    //     `eval/prompt.rewrite.v5.txt`, the exact bytes the next
-    //     `run-eval.mjs --prompt-file` arm will send, and at 2610 chars;
-    //   - the v5 paragraph is asserted as exact bytes, not word-presence —
-    //     this repo's guards get walked around by rewording.
-    //
-    // ⚠️ HONESTLY UNMEASURED: v5 has NOT been scored by the eval. No number in
-    // the eval results is its number. Do not cite the v4 numbers for it.
-    const v5 = readFileSync(new URL('../eval/prompt.rewrite.v5.txt', import.meta.url), 'utf8').trim();
-    expect(DEFAULT_SYSTEM_PROMPT).toBe(v5);
-    expect(DEFAULT_SYSTEM_PROMPT).toHaveLength(2610);
-    expect(DEFAULT_SYSTEM_PROMPT).toContain(V5_PARAGRAPH);
+  it('🔴 is byte-identical to eval/prompt.rewrite.v6.txt — the arm file the tool-choice probe sent', () => {
+    // 🔴 WHAT THIS PIN DOES AND DOES NOT ATTRIBUTE. v6 was scored ONLY by
+    // `eval/tool-choice-probe.mjs` (first-round tool choice, direct model call,
+    // no tool execution) — never by `run-eval.mjs`. The probe sent the bytes of
+    // `eval/prompt.rewrite.v6.txt` (`.trim()`ed), so pinning the constant to that
+    // file is what lets `eval/results/tool-choice/tool-choice-v6-iter2-2026-10-14.json`'s
+    // numbers be read as this constant's. v4's run-eval numbers are NOT its
+    // numbers; they stay pinned on v4's legacy entry below.
+    const v6 = readFileSync(new URL('../eval/prompt.rewrite.v6.txt', import.meta.url), 'utf8').trim();
+    expect(DEFAULT_SYSTEM_PROMPT).toBe(v6);
+    expect(DEFAULT_SYSTEM_PROMPT).toHaveLength(3285);
+    expect(DEFAULT_SYSTEM_PROMPT).toContain(V6_PARAGRAPH);
+    expect(DEFAULT_SYSTEM_PROMPT).not.toContain(V5_PARAGRAPH);
 
-    // The two clauses v4 added, which the measured gains were ascribed to —
-    // v5 must not drop them while adding its own.
+    // And the probe's own record of what it sent agrees — so an edit made to
+    // both the .txt and the constant still goes red against the scored arm.
+    const recorded = (
+      JSON.parse(
+        readFileSync(
+          new URL('../eval/results/tool-choice/tool-choice-v6-iter2-2026-10-14.json', import.meta.url),
+          'utf8',
+        ),
+      ) as { systemPrompt: string }
+    ).systemPrompt;
+    expect(DEFAULT_SYSTEM_PROMPT).toBe(recorded);
+
+    // The two clauses v4 added, which its measured gains were ascribed to —
+    // v6 must not drop them while adding its own.
     expect(DEFAULT_SYSTEM_PROMPT).toContain('Recommending a model is a catalog question');
     expect(DEFAULT_SYSTEM_PROMPT).toMatch(/answer as Civitai's own assistant/i);
+  });
+
+  it('🔴 the v5 default is in the migration list, byte-identical to its arm file', () => {
+    // v5 shipped 0.1.27–0.1.31, so viewers who opened Settings then hold it.
+    // Exactly ONE entry carries its bytes, and the migration moves it to v6.
+    const v5 = readFileSync(new URL('../eval/prompt.rewrite.v5.txt', import.meta.url), 'utf8').trim();
+    expect(v5).toHaveLength(2610);
+    expect(v5).toContain(V5_PARAGRAPH);
+    expect(LEGACY_DEFAULT_SYSTEM_PROMPTS.filter((p) => p === v5)).toHaveLength(1);
+    expect(migrateSettings({ ...DEFAULT_SETTINGS, systemPrompt: v5 }).systemPrompt).toBe(
+      DEFAULT_SYSTEM_PROMPT,
+    );
   });
 
   it('🔴 the v4 default is in the migration list, byte-identical to the recorded eval arm', () => {

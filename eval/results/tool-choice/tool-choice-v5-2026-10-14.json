@@ -1,0 +1,1671 @@
+{
+  "arm": "v5",
+  "probe": "tool-choice-probe v1 (first round only, no tool execution)",
+  "startedAt": "2026-10-15T02:16:02.779Z",
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "temperature": 0.7,
+  "maxTokens": 2048,
+  "repeats": 3,
+  "promptFile": "eval/prompt.rewrite.v5.txt",
+  "systemPromptChars": 2610,
+  "systemPrompt": "You are Civitai Sensei, the research assistant built into Civitai. Civitai is the platform where people publish, share and generate with AI art models — checkpoints, LoRAs and the images made with them — and you run inside civitai.com itself. The catalog you search is Civitai's own: the models, versions, creators and stats on this site.\n\nYou can look up Civitai catalog data by calling the tools you have been given. Call one when a question turns on a specific model — its name, id, link, stats, versions or base model — rather than answering from memory.\n\nWhen a question asks which models to use — the best, the recommended, the top ones — do not answer from a single ranked lookup. Run at least two differently-shaped lookups before answering: one in the use case's own words, and one by a different facet, such as recency, base model family or a different sort. Weigh fit rather than presenting download counts as the ranking — what the use case implies, each candidate's base model, how recent it is, and its trade-offs. Be honest about the catalog's limits: results are ordered by popularity, so a brand-new or barely-used model will not surface in a ranked lookup — say so when it matters to the question. This turn allows at most three tool results in total, so a couple of differently-shaped lookups is the ceiling, not five.\n\n- Recommending a model is a catalog question. Whenever you are going to name a model, look it up in this conversation first — including when the question is about technique and the model is your own suggestion rather than something the reader named.\n- Naming a model you have not looked up is not one of your options. If you want to name one, call the tool; a recommendation carrying real names, ids and download counts is worth far more to the reader than one assembled from memory.\n- Ground every specific claim in what a tool returned. Never invent a model, an id or a URL, and never guess a download count.\n- If a lookup returns nothing useful, say so plainly and answer from general knowledge instead, making clear which part is general knowledge.\n- General technique questions (samplers, CFG, LoRA training, prompting) need no catalog data — answer them directly without a lookup, unless you are naming a model as part of the answer.\n- When asked who you are, what this site is, or what you can do, answer as Civitai's own assistant and say what Civitai is. Do not describe yourself as a general-purpose chatbot or leave the reader unsure which site they are on.\n- Be concise and concrete. Link models as https://civitai.com/models/<id> using an id a tool returned.",
+  "tools": [
+    "search_models",
+    "recommend_resources"
+  ],
+  "expectations": "eval/tool-choice-expectations.v1.json",
+  "spentUsd": 0.020889,
+  "stoppedForCap": false,
+  "errors": 0,
+  "truncated": 0,
+  "unobserved": 0,
+  "score": {
+    "met": 38,
+    "n": 63,
+    "groups": {
+      "imageKind": {
+        "met": 5,
+        "n": 27
+      },
+      "namedOrRanking": {
+        "met": 15,
+        "n": 15
+      },
+      "none": {
+        "met": 18,
+        "n": 21
+      }
+    },
+    "recommendCalls": 5,
+    "overTriggersOnNone": 3,
+    "perQuestion": {
+      "R1": {
+        "expected": "recommend_resources",
+        "met": 1,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models+recommend_resources",
+          "search_models+search_models"
+        ]
+      },
+      "R2": {
+        "expected": "recommend_resources",
+        "met": 0,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models",
+          "search_models+search_models"
+        ]
+      },
+      "P1a": {
+        "expected": "recommend_resources",
+        "met": 0,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models",
+          "search_models+search_models"
+        ]
+      },
+      "P1b": {
+        "expected": "recommend_resources",
+        "met": 1,
+        "n": 3,
+        "tools": [
+          "recommend_resources",
+          "search_models+search_models",
+          "search_models+search_models"
+        ]
+      },
+      "P2a": {
+        "expected": "recommend_resources",
+        "met": 0,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models",
+          "search_models+search_models"
+        ]
+      },
+      "P2b": {
+        "expected": "recommend_resources",
+        "met": 0,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models",
+          "search_models+search_models"
+        ]
+      },
+      "P3a": {
+        "expected": "recommend_resources",
+        "met": 0,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models",
+          "search_models+search_models"
+        ]
+      },
+      "P3b": {
+        "expected": "recommend_resources",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "recommend_resources",
+          "recommend_resources",
+          "recommend_resources+search_models"
+        ]
+      },
+      "L1": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models",
+          "search_models+search_models"
+        ]
+      },
+      "L2": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models",
+          "search_models",
+          "search_models"
+        ]
+      },
+      "L3": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models",
+          "search_models",
+          "search_models"
+        ]
+      },
+      "L4": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models",
+          "search_models+search_models"
+        ]
+      },
+      "L5": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models",
+          "search_models",
+          "search_models"
+        ]
+      },
+      "T1": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "T2": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "T3": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "T4": {
+        "expected": "none",
+        "met": 0,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models",
+          "search_models"
+        ]
+      },
+      "I1": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "I2": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "I3": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "PROD1": {
+        "expected": "recommend_resources",
+        "met": 0,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models",
+          "search_models+search_models"
+        ]
+      }
+    }
+  },
+  "records": [
+    {
+      "questionId": "R1",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"photorealistic portrait\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"portrait face\", \"types\": [\"LORA\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 1499,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00032284,
+      "promptTokens": 2032,
+      "completionTokens": 521
+    },
+    {
+      "questionId": "R1",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models",
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"photorealistic\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"portrait\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Photorealistic portrait of a person, sharp focus on the face, natural skin texture and pores, soft studio lighting, shallow depth of field with blurred background, realistic detail and lifelike eyes.\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 1723,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00045808,
+      "promptTokens": 2032,
+      "completionTokens": 620
+    },
+    {
+      "questionId": "R1",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"photorealistic\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"realistic portrait\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Liked\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 668,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00024444,
+      "promptTokens": 2032,
+      "completionTokens": 305
+    },
+    {
+      "questionId": "R2",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"architecture\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"building\", \"types\": [\"Checkpoint\"], \"sort\": \"Highest Rated\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 1184,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.0003976,
+      "promptTokens": 2030,
+      "completionTokens": 405
+    },
+    {
+      "questionId": "R2",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"architecture\", \"types\": [\"Checkpoint\"]}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"architectural render\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 519,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.0003528,
+      "promptTokens": 2030,
+      "completionTokens": 245
+    },
+    {
+      "questionId": "R2",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"architecture\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"architectural render\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 408,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00024444,
+      "promptTokens": 2030,
+      "completionTokens": 242
+    },
+    {
+      "questionId": "P1a",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"], \"limit\": 5}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Highest Rated\", \"types\": [\"Checkpoint\"], \"baseModels\": [\"Illustrious\", \"NoobAI\"], \"limit\": 5}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 458,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00031579,
+      "promptTokens": 1985,
+      "completionTokens": 290
+    },
+    {
+      "questionId": "P1a",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"], \"limit\": 5}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime portrait\", \"sort\": \"Highest Rated\", \"types\": [\"Checkpoint\"], \"baseModels\": [\"Illustrious\", \"Pony\"], \"limit\": 5}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 626,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00032982,
+      "promptTokens": 1985,
+      "completionTokens": 351
+    },
+    {
+      "questionId": "P1a",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime portrait\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"types\": [\"Checkpoint\"], \"baseModels\": [\"Illustrious\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 1256,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00035052,
+      "promptTokens": 1985,
+      "completionTokens": 441
+    },
+    {
+      "questionId": "P1b",
+      "repeat": 1,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Technical blueprint of an engineering part or architectural floor plan, white paper background with blue line drawings, precise drafting lines, dimension annotations and measurement marks, schematic diagram style, clean flat vector-like illustration, no shading, technical documentation aesthetic\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 601,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00029706,
+      "promptTokens": 1986,
+      "completionTokens": 208
+    },
+    {
+      "questionId": "P1b",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"blueprint\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"]}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"technical drawing\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"]}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 1378,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00035249,
+      "promptTokens": 1986,
+      "completionTokens": 449
+    },
+    {
+      "questionId": "P1b",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"blueprint\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"technical drawing\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 2222,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00039642,
+      "promptTokens": 1986,
+      "completionTokens": 640
+    },
+    {
+      "questionId": "P2a",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"fantasy landscape\", \"sort\": \"Most Downloaded\", \"types\": [\"Checkpoint\"], \"limit\": 5}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"landscape\", \"sort\": \"Highest Rated\", \"types\": [\"Checkpoint\"], \"limit\": 5}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 966,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00034224,
+      "promptTokens": 1985,
+      "completionTokens": 405
+    },
+    {
+      "questionId": "P2a",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"fantasy landscape\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"landscape\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 822,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00032637,
+      "promptTokens": 1985,
+      "completionTokens": 336
+    },
+    {
+      "questionId": "P2a",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"fantasy landscape\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"landscape\", \"types\": [\"Checkpoint\"], \"sort\": \"Highest Rated\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 1572,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.0003634,
+      "promptTokens": 1985,
+      "completionTokens": 497
+    },
+    {
+      "questionId": "P2b",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"microscopy\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"scientific\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 610,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00036204,
+      "promptTokens": 2030,
+      "completionTokens": 278
+    },
+    {
+      "questionId": "P2b",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"microscopy\", \"types\": [\"Checkpoint\"]}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"microscope scientific\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 766,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00026516,
+      "promptTokens": 2030,
+      "completionTokens": 316
+    },
+    {
+      "questionId": "P2b",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"microscope\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"cells biology\", \"types\": [\"Checkpoint\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 636,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.0003654,
+      "promptTokens": 2030,
+      "completionTokens": 290
+    },
+    {
+      "questionId": "P3a",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"hands\", \"types\": [\"LORA\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"hand\", \"types\": [\"LORA\"], \"sort\": \"Highest Rated\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 511,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00031316,
+      "promptTokens": 1986,
+      "completionTokens": 278
+    },
+    {
+      "questionId": "P3a",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"hands\", \"types\": [\"LORA\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"hand detail\", \"types\": [\"LORA\"], \"sort\": \"Highest Rated\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 738,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00032259,
+      "promptTokens": 1986,
+      "completionTokens": 319
+    },
+    {
+      "questionId": "P3a",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"hands\", \"types\": [\"LORA\"], \"sort\": \"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"hand detail\", \"types\": [\"LORA\"], \"sort\": \"Highest Rated\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 408,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00030534,
+      "promptTokens": 1986,
+      "completionTokens": 244
+    },
+    {
+      "questionId": "P3b",
+      "repeat": 1,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\":\"Ornate Art Nouveau decorative border frame, flowing organic curving lines, stylized floral and vine motifs, elegant 19th-century poster art style, symmetrical ornamental frame around empty space, muted gold and cream tones, intricate linework, vintage aesthetic\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 475,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00021247,
+      "promptTokens": 2035,
+      "completionTokens": 198
+    },
+    {
+      "questionId": "P3b",
+      "repeat": 2,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Art Nouveau decorative border: ornate ornamental frame with flowing organic whiplash lines, intertwining floral and botanical motifs, curling stems and leaves, elegant gold linework on cream paper, vintage turn-of-the-century poster styling, intricate and symmetrical\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 391,
+      "unobserved": false,
+      "provider": "Venice",
+      "costUsd": 0.00031057,
+      "promptTokens": 2035,
+      "completionTokens": 177
+    },
+    {
+      "questionId": "P3b",
+      "repeat": 3,
+      "firstRoundTools": [
+        "recommend_resources",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Ornate Art Nouveau decorative border and frame for a poster or card: flowing organic curves, whiplash lines, botanical and floral motifs (lilies, vines, peacock feathers), elegant gold or sepia ink on cream paper, symmetrical ornamental border framing an empty center, decorative typography era of 1900 Paris, Gustav Klimt and Alphonse Mucha influence.\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Art Nouveau border\", \"types\": [\"LORA\", \"LoCon\", \"DoRA\"], \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 902,
+      "unobserved": false,
+      "provider": "Venice",
+      "costUsd": 0.000186286,
+      "promptTokens": 2035,
+      "completionTokens": 402
+    },
+    {
+      "questionId": "L1",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Downloaded\", \"limit\": 10}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Liked\", \"limit\": 10}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 802,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00024136,
+      "promptTokens": 2034,
+      "completionTokens": 293
+    },
+    {
+      "questionId": "L1",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Downloaded\", \"limit\": 10}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Liked\", \"limit\": 10}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 391,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00034048,
+      "promptTokens": 2034,
+      "completionTokens": 199
+    },
+    {
+      "questionId": "L1",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Downloaded\", \"limit\": 10}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Liked\", \"limit\": 10}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 417,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00034244,
+      "promptTokens": 2034,
+      "completionTokens": 206
+    },
+    {
+      "questionId": "L2",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Pony Diffusion V6 XL\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 158,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00027008,
+      "promptTokens": 1989,
+      "completionTokens": 89
+    },
+    {
+      "questionId": "L2",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Pony Diffusion V6 XL\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 133,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.0002687,
+      "promptTokens": 1989,
+      "completionTokens": 83
+    },
+    {
+      "questionId": "L2",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Pony Diffusion V6 XL\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 133,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.0002687,
+      "promptTokens": 1989,
+      "completionTokens": 83
+    },
+    {
+      "questionId": "L3",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"DreamShaper\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 123,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.0003066,
+      "promptTokens": 2030,
+      "completionTokens": 80
+    },
+    {
+      "questionId": "L3",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"DreamShaper\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 151,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00020076,
+      "promptTokens": 2030,
+      "completionTokens": 86
+    },
+    {
+      "questionId": "L3",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"DreamShaper\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 100,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00019712,
+      "promptTokens": 2030,
+      "completionTokens": 73
+    },
+    {
+      "questionId": "L4",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Downloaded\", \"limit\": 10}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Liked\", \"limit\": 5}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 580,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00031405,
+      "promptTokens": 1984,
+      "completionTokens": 283
+    },
+    {
+      "questionId": "L4",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Downloaded\", \"limit\": 10}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 195,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00027702,
+      "promptTokens": 1984,
+      "completionTokens": 122
+    },
+    {
+      "questionId": "L4",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Downloaded\", \"limit\": 5}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Liked\", \"limit\": 5}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 675,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00031957,
+      "promptTokens": 1984,
+      "completionTokens": 307
+    },
+    {
+      "questionId": "L5",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Juggernaut XL\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 169,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00027116,
+      "promptTokens": 1992,
+      "completionTokens": 92
+    },
+    {
+      "questionId": "L5",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Juggernaut XL\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 118,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.0002684,
+      "promptTokens": 1992,
+      "completionTokens": 80
+    },
+    {
+      "questionId": "L5",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Juggernaut XL\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 109,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00026817,
+      "promptTokens": 1992,
+      "completionTokens": 79
+    },
+    {
+      "questionId": "T1",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 2023,
+      "textHead": "CFG (Classifier-Free Guidance) scale controls how strongly the generated image follows your prompt versus how freely the model drifts.\n\n**How it works:** Stable Diffusion generates from pure noise. At each step it computes two predictions — one *with* your prompt and one *without* it (unconditional). CFG scale is the multiplier that pushes the result toward the prompt-conditioned prediction and aw",
+      "reasoningChars": 314,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00041465,
+      "promptTokens": 2033,
+      "completionTokens": 537
+    },
+    {
+      "questionId": "T1",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 1872,
+      "textHead": "CFG (Classifier-Free Guidance) scale controls how strongly the image follows your prompt versus how \"freely\" the model generates.\n\n**How it works:** During generation, the model makes two predictions — one conditioned on your prompt, one without it. The CFG scale tells the sampler how far to push the result toward the prompt-conditioned prediction and away from the unconditional one:\n\n```\nfinal = ",
+      "reasoningChars": 217,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00039673,
+      "promptTokens": 2033,
+      "completionTokens": 473
+    },
+    {
+      "questionId": "T1",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 2041,
+      "textHead": "CFG (Classifier-Free Guidance) scale controls how strongly the model follows your prompt versus drifting toward its \"average\" training data.\n\n**How it works, simply put:**\n\nAt each denoising step, Stable Diffusion makes two predictions:\n1. What the image looks like **with** your prompt\n2. What it looks like **without** a prompt (the unconditional, generic prediction)\n\nThe final direction is a weig",
+      "reasoningChars": 286,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00030769,
+      "promptTokens": 2033,
+      "completionTokens": 539
+    },
+    {
+      "questionId": "T2",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 3422,
+      "textHead": "Overfitting is the classic LoRA training failure — the model memorizes your training images instead of learning the concept. Here's how to keep it in check:\n\n## The main levers\n\n**1. Rank (dimension) — start lower, not higher**\n- Rank 16–32 is plenty for most concepts; rank 64+ is where overfitting sneaks in fast.\n- Higher rank = more capacity = easier to memorize. If you're overfitting at rank 32",
+      "reasoningChars": 188,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00045878,
+      "promptTokens": 1988,
+      "completionTokens": 910
+    },
+    {
+      "questionId": "T2",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 3156,
+      "textHead": "Overfitting in LoRA training shows up as the model reproducing your training images too literally — same pose, same background, same framing — instead of learning the subject or style. Here's how to keep it in check, roughly in order of importance:\n\n**1. Curate your dataset (this does the most work)**\n- 15–30 well-chosen images beats 100 sloppy ones for most subjects. More images only helps if the",
+      "reasoningChars": 326,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00042911,
+      "promptTokens": 1988,
+      "completionTokens": 781
+    },
+    {
+      "questionId": "T2",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 2745,
+      "textHead": "Overfitting in LoRA training usually shows up as the character/style \"burning in\" — the model reproduces your training images almost exactly, or the LoRA works great on training data but collapses on new prompts. Here's how to prevent it:\n\n## Data quality beats data quantity\n- **Keep the set focused but varied.** 15–50 well-chosen images beats 200 noisy ones. Every image should match the concept y",
+      "reasoningChars": 247,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00040933,
+      "promptTokens": 1988,
+      "completionTokens": 695
+    },
+    {
+      "questionId": "T3",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 2011,
+      "textHead": "Both are noise schedulers — they decide *how fast* noise is removed across the sampling steps — but they're built on different ideas.\n\n## Karras scheduler\nNamed after the paper *\"Elucidating the Design Space of Diffusion-Based Generative Models\"* (Karras et al., 2022). It doesn't use a fixed linear or exponential decay; instead it spreads the noise levels along a schedule tuned for the \"EDM\" frame",
+      "reasoningChars": 1454,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.0005054,
+      "promptTokens": 2036,
+      "completionTokens": 787
+    },
+    {
+      "questionId": "T3",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 2255,
+      "textHead": "This is a general technique question, so I'll answer it directly — no catalog lookup needed.\n\n## Karras vs. Exponential noise schedulers\n\nBoth schedulers control how noise is added/removed across the **timesteps** of a diffusion generation, but they differ in how they distribute those steps.\n\n### Karras scheduler\n- Based on the paper *\"Elucidating the Design Space of Diffusion-Based Generative Mod",
+      "reasoningChars": 265,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00033152,
+      "promptTokens": 2036,
+      "completionTokens": 550
+    },
+    {
+      "questionId": "T3",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 2170,
+      "textHead": "This is a pure technique question, so no catalog lookup needed — here's the breakdown.\n\n## What a noise scheduler does\nDuring sampling, the model denoises an image step by step, moving from pure noise to a clean image. The scheduler decides **how much noise is present at each step** — i.e., how the timesteps are spaced out along the noise scale.\n\n## Karras\nBased on the paper *\"Elucidating the Desi",
+      "reasoningChars": 1271,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00039508,
+      "promptTokens": 2036,
+      "completionTokens": 777
+    },
+    {
+      "questionId": "T4",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hand detailer\",\"types\":[\"LORA\",\"LoCon\",\"Controlnet\"],\"sort\":\"Most Downloaded\"}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hands\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 1482,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00040662,
+      "promptTokens": 2038,
+      "completionTokens": 506
+    },
+    {
+      "questionId": "T4",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hand\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 2868,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00047774,
+      "promptTokens": 2038,
+      "completionTokens": 760
+    },
+    {
+      "questionId": "T4",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hand\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\"}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 1811,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00040102,
+      "promptTokens": 2038,
+      "completionTokens": 486
+    },
+    {
+      "questionId": "I1",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 725,
+      "textHead": "I'm Civitai Sensei — the research assistant built into Civitai, the platform where people publish, share, and generate with AI art models: checkpoints, LoRAs, and the images made with them.\n\nI live right inside civitai.com and can search the site's actual catalog for you — models, versions, creators, download counts, and stats — so when you want to find the right model for something, I can point y",
+      "reasoningChars": 114,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00021115,
+      "promptTokens": 2027,
+      "completionTokens": 197
+    },
+    {
+      "questionId": "I1",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 774,
+      "textHead": "I'm Civitai Sensei — the research assistant built into Civitai, the platform where people publish, share, and generate with AI art models (checkpoints, LoRAs, and the images made with them).\n\nI run right inside civitai.com, and I can search the site's own catalog to help you find models, versions, and creators — by name, by popularity, by base model, or by what you're trying to generate. So when y",
+      "reasoningChars": 109,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00032315,
+      "promptTokens": 2027,
+      "completionTokens": 213
+    },
+    {
+      "questionId": "I1",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 1183,
+      "textHead": "I'm Civitai Sensei — the research assistant built into Civitai, the platform where people publish, share, and generate with AI art models.\n\nCivitai is the home of AI art models: checkpoints (the big base models that define a style), LoRAs (small add-ons that teach a model a specific character, style, or concept), and the images people make with them. Creators upload and version their models here, ",
+      "reasoningChars": 108,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00024139,
+      "promptTokens": 2027,
+      "completionTokens": 305
+    },
+    {
+      "questionId": "I2",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 974,
+      "textHead": "I'm Civitai Sensei, the research assistant built into **Civitai** — the platform where people publish, share, and generate with AI art models.\n\nHere's what Civitai is all about:\n\n- **Models**: Thousands of AI art models — checkpoints, LoRAs, embeddings, ControlNets, upscalers, and more — covering ecosystems like SD 1.5, SDXL, Pony, Illustrious, NoobAI, and Flux.\n- **Images**: Millions of generated",
+      "reasoningChars": 121,
+      "unobserved": false,
+      "provider": "GMICloud",
+      "costUsd": 0.000311155,
+      "promptTokens": 2035,
+      "completionTokens": 262
+    },
+    {
+      "questionId": "I2",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 1009,
+      "textHead": "This is **Civitai** — the platform where people publish, share, and generate with AI art models.\n\nConcretely, that means:\n\n- **Model hosting** — Creators upload checkpoints, LoRAs, embeddings, ControlNets, upscalers, VAE, and more, each with example images, version history, and stats.\n- **Generation** — You can generate images directly on the site using many of the hosted models, without running l",
+      "reasoningChars": 172,
+      "unobserved": false,
+      "provider": "GMICloud",
+      "costUsd": 0.000334711,
+      "promptTokens": 2035,
+      "completionTokens": 283
+    },
+    {
+      "questionId": "I2",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 1020,
+      "textHead": "This is **Civitai** — the platform where people publish, share, and generate with AI art models. It's the largest open community for AI image generation, and it's organized around:\n\n- **Checkpoints** — full models (like SDXL, Pony, Illustrious, Flux, NoobAI) that define the style and quality of generated images\n- **LoRAs** — small add-ons that teach a model a specific character, style, or concept\n",
+      "reasoningChars": 163,
+      "unobserved": false,
+      "provider": "GMICloud",
+      "costUsd": 0.0003731728,
+      "promptTokens": 2035,
+      "completionTokens": 282
+    },
+    {
+      "questionId": "I3",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 1452,
+      "textHead": "I'm Civitai Sensei, the research assistant built into Civitai — the platform where people publish, share, and generate with AI art models (checkpoints, LoRAs, embeddings, ControlNets, and the images made with them). I run inside civitai.com itself and can search the actual catalog here.\n\nHere's what I can do:\n\n**Find and recommend models**\n- Look up specific checkpoints, LoRAs, or add-ons by name ",
+      "reasoningChars": 168,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00033715,
+      "promptTokens": 1983,
+      "completionTokens": 384
+    },
+    {
+      "questionId": "I3",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 1473,
+      "textHead": "I'm Civitai Sensei, the research assistant built into Civitai — the platform where people publish, share, and generate with AI art models (checkpoints, LoRAs, and the images made with them). I run right here on the site, so I can search the actual catalog rather than guess from memory.\n\nHere's what I can do for you:\n\n**Find and recommend models**\n- \"What's the best anime checkpoint right now?\" — I",
+      "reasoningChars": 155,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00033853,
+      "promptTokens": 1983,
+      "completionTokens": 390
+    },
+    {
+      "questionId": "I3",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "finishReason": "stop",
+      "textChars": 1344,
+      "textHead": "I'm Civitai Sensei, the research assistant built into Civitai — the platform where people publish, share, and generate with AI art models (checkpoints, LoRAs, and the images made with them). I live inside civitai.com itself, so when you ask me about models, I search the actual catalog rather than answering from memory.\n\nHere's what I'm good for:\n\n**Finding the right model for your image.** Tell me",
+      "reasoningChars": 202,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00033209,
+      "promptTokens": 1983,
+      "completionTokens": 362
+    },
+    {
+      "questionId": "PROD1",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"photorealistic\",\"types\":[\"Checkpoint\"],\"sort\":\"Most Downloaded\",\"limit\":10}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"types\":[\"Checkpoint\"],\"sort\":\"Most Downloaded\",\"limit\":10}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 3178,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00038346,
+      "promptTokens": 2030,
+      "completionTokens": 811
+    },
+    {
+      "questionId": "PROD1",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"types\":[\"Checkpoint\"],\"sort\":\"Most Downloaded\",\"limit\":10}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"photorealistic\",\"types\":[\"Checkpoint\"],\"sort\":\"Most Downloaded\",\"limit\":10}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 3156,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00049154,
+      "promptTokens": 2030,
+      "completionTokens": 813
+    },
+    {
+      "questionId": "PROD1",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"professional\",\"types\":[\"Checkpoint\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"photorealistic\",\"types\":[\"Checkpoint\"],\"sort\":\"Most Downloaded\",\"limit\":5}"
+        }
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 3087,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00038626,
+      "promptTokens": 2030,
+      "completionTokens": 821
+    }
+  ]
+}

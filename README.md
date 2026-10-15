@@ -90,6 +90,12 @@ reported as a failure, never as "no models needed".
 It ships **on** since 0.1.31 (0.1.28 released it off; 0.1.30 briefly turned it off again
 while an unrelated upstream outage was misattributed to it): `RECOMMEND_TOOL_ENABLED` in
 `src/lib/recommend.ts` is the switch, and turning it off is that one line plus a release.
+Since 0.1.32 the default system prompt routes "which models / LoRAs / checkpoints
+for this kind of image" questions to `recommend_resources` first — conditionally,
+since the tool is not on every turn's wire — and keeps `search_models` for named
+models, stats and explicit rankings. That routing was measured only by a
+first-round tool-choice probe (`eval/tool-choice-probe.mjs`), not by the live
+eval; the comment on `DEFAULT_SYSTEM_PROMPT` in `src/types.ts` has the numbers.
 
 **Each round is its own submit, separately quoted and separately charged**, so a
 question needing a lookup costs more than one completion. The loop is bounded by

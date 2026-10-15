@@ -101,12 +101,12 @@ const DECLARATIONS = [
 ];
 
 /**
- * 🔴 THE V5 PARAGRAPH'S EXACT BYTES, held in the test rather than read from
- * `types.ts`, so the assertion below cannot be satisfied by whatever the
+ * 🔴 THE V6 ROUTING PARAGRAPH'S EXACT BYTES, held in the test rather than read
+ * from `types.ts`, so the assertion below cannot be satisfied by whatever the
  * constant happens to say — deleting or rewording the paragraph goes red here,
  * on the wire, not only in `types.test.ts`.
  */
-const V5_PARAGRAPH = `When a question asks which models to use — the best, the recommended, the top ones — do not answer from a single ranked lookup. Run at least two differently-shaped lookups before answering: one in the use case's own words, and one by a different facet, such as recency, base model family or a different sort. Weigh fit rather than presenting download counts as the ranking — what the use case implies, each candidate's base model, how recent it is, and its trade-offs. Be honest about the catalog's limits: results are ordered by popularity, so a brand-new or barely-used model will not surface in a ranked lookup — say so when it matters to the question. This turn allows at most three tool results in total, so a couple of differently-shaped lookups is the ceiling, not five.`;
+const V6_PARAGRAPH = `Choosing the tool. If you have been given a recommend_resources tool, call it FIRST whenever someone asks which models, checkpoints, LoRAs or other add-ons to use for a kind of image or a use case — "models for book-cover art", "a checkpoint for product photography", "which LoRA for a watercolor look". Turn the request into a concrete image description (subject, setting, style, lighting, mood) and pass that, not the question. Call it on its own; a popularity lookup alongside it adds nothing the reader asked for. Use search_models instead for a model the reader named, an id, stats, versions or a model's base model, and for an explicit ranking — most downloaded, most liked, newest, top N — and to check a specific model before you name it. Without recommend_resources, answer which-model questions with search_models, using a couple of differently-shaped lookups — one in the use case's own words and one by a different facet such as base model family or a different sort — and say that results are ordered by popularity, so a brand-new or barely-used model will not surface. Either way, weigh fit rather than presenting download counts as the ranking: what the use case implies, each candidate's base model and its trade-offs. This turn allows at most three tool results in total, so plan for one or two calls, not five.`;
 
 function toolCallSnapshot(args: string) {
   return {
@@ -208,23 +208,25 @@ describe('tool calling: the model forms its own query, one submit per round', ()
     expect('tool_choice' in first).toBe(false);
   });
 
-  it('🔴 the tool-enabled system message carries the v5 multi-facet lookup instruction', async () => {
-    // The system prompt is a claim about the wire. The recommendation guidance
-    // the research brief ranked says the model must run at least two
-    // differently-shaped lookups on a "which models" question — so the exact
-    // paragraph must reach the model on a send that actually carries tools.
-    // Exact bytes, not word-presence: this guard is walked around by rewording,
-    // and the budget sentence ("at most three tool results") is the part that
-    // must not silently drift from `MAX_TOOL_RESULT_MESSAGES`.
+  it('🔴 the tool-enabled system message carries the v6 routing paragraph, and the tool it names is on the same wire', async () => {
+    // The system prompt is a claim about the wire. v6 routes "which models"
+    // questions to `recommend_resources` — conditionally ("If you have been
+    // given a recommend_resources tool"), because `composeLocalTools` does not
+    // add it on every turn. Exact bytes, not word-presence: this guard is
+    // walked around by rewording, and the budget sentence ("at most three tool
+    // results") must not silently drift from `MAX_TOOL_RESULT_MESSAGES`.
     pollQueue = [textSnapshot('Here is an answer.')];
     const all = await sendMessage('which models are best for portraits?');
 
     const system = all[0].messages.find((m) => m.role === 'system');
     expect(system).toBeTruthy();
-    expect(system!.content).toContain(V5_PARAGRAPH);
-    // Positive control on the fixture: the wire really carried tools, so this
-    // is the tool-enabled branch and not the degraded no-tools one.
-    expect(all[0].tools?.length ?? 0).toBeGreaterThan(0);
+    expect(system!.content).toContain(V6_PARAGRAPH);
+    expect(MAX_TOOL_RESULT_MESSAGES).toBe(3);
+    // On the shipped default the tool the paragraph routes to IS on this
+    // request, beside the host's — so the shipped send makes the condition true.
+    const names = (all[0].tools ?? []).map((t) => t.function.name);
+    expect(names).toContain('recommend_resources');
+    expect(names).toContain('search_models');
   });
 
   it('drives a tool POST with the MODEL-authored arguments, then resubmits with the result', async () => {

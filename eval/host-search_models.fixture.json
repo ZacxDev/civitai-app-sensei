@@ -1,0 +1,102 @@
+{
+ "type": "function",
+ "function": {
+  "name": "search_models",
+  "description": "Search or rank Civitai's model catalog. Returns models with their id, name, type, base model, creator, download count and like count, restricted to what this viewer is allowed to see. Filter with `types`, `baseModels` or `supportsGeneration`; rank with `sort`; narrow by `period`. For a NAMED model pass `query` ALONE \u2014 adding `sort` there ranks a hundred fuzzy matches and can push the exact model out of the results. For a POPULARITY question pass `sort`: with no `query` to rank the whole catalog, or WITH one to rank within those matches (e.g. the most downloaded anime models is `query: \"anime\"` plus `sort: \"Most Downloaded\"`). Never put a ranking word like \"popular\" or \"best\" in `query` \u2014 that searches for the word itself in model names.",
+  "parameters": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "query": {
+     "description": "Free-text search over model names and keywords. OMIT it to rank the whole catalog \u2014 do not put a ranking word like \"popular\" or \"best\" here, that searches for the word itself.",
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 200
+    },
+    "sort": {
+     "description": "How to rank results (default \"Highest Rated\"). Use \"Most Downloaded\" or \"Most Liked\" for popularity questions, \"Newest\" for recency. Combining it with `query` ranks within the text matches rather than by relevance.",
+     "type": "string",
+     "enum": [
+      "Hot",
+      "Highest Rated",
+      "Most Downloaded",
+      "Most Liked",
+      "Most Discussed",
+      "Most Collected",
+      "Most Images",
+      "Newest",
+      "Oldest",
+      "Recently Added"
+     ]
+    },
+    "types": {
+     "description": "Restrict to these model types",
+     "minItems": 1,
+     "maxItems": 10,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "Checkpoint",
+       "TextualInversion",
+       "Hypernetwork",
+       "AestheticGradient",
+       "LORA",
+       "LoCon",
+       "DoRA",
+       "Controlnet",
+       "Upscaler",
+       "MotionModule",
+       "VAE",
+       "TextEncoder",
+       "UNet",
+       "CLIPVision",
+       "Poses",
+       "Wildcards",
+       "Workflows",
+       "ComfyWorkflows",
+       "Detection",
+       "VisionLanguage",
+       "CLIP",
+       "LLM",
+       "Other"
+      ]
+     }
+    },
+    "baseModels": {
+     "description": "Restrict to these base models, e.g. \"SDXL 1.0\", \"Illustrious\", \"Pony\"",
+     "minItems": 1,
+     "maxItems": 10,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+     }
+    },
+    "period": {
+     "description": "Restrict to models with a version published in this timeframe. Ranking and the returned counts remain ALL-TIME \u2014 this narrows the set, it does not re-rank it.",
+     "type": "string",
+     "enum": [
+      "Day",
+      "Week",
+      "Month",
+      "Year",
+      "AllTime"
+     ]
+    },
+    "supportsGeneration": {
+     "description": "Only models that can be generated with on Civitai",
+     "type": "boolean"
+    },
+    "limit": {
+     "description": "Maximum results to return (default 5, max 10)",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 10
+    }
+   },
+   "additionalProperties": false
+  }
+ }
+}

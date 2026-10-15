@@ -148,25 +148,55 @@ export interface AppSettings {
  * `types.test.ts` pins it in both directions — it must not deny tool access,
  * and it must not reference the deleted pre-attachment mechanism.
  *
- * 🔴 THE EVAL ATTRIBUTION IS NOW ONE GENERATION BEHIND THE CONSTANT, AND THIS
- * COMMENT SAYS SO RATHER THAN HIDING IT. The text up to and including the
- * recommendation bullets was byte-identical to `eval/prompt.rewrite.v4.txt` as
- * that file was actually sent by `eval/run-eval.mjs` (which `.trim()`s it),
- * which is why v4's numbers are attributable to it: on the recommendation arm,
- * catalog lookups 14/24 → 23/24 and ungrounded citations 7 → 0; on the v1 set,
- * 36/36 tool expectation, 0/21 over-trigger, identity 6/6 of released turns.
- * Those bytes now live on as the newest {@link LEGACY_DEFAULT_SYSTEM_PROMPTS}
- * entry, pinned byte-for-byte against the prompt recorded in
- * `eval/results/recommend-rewrite-v4-2026-09-01.json` — the arm the eval
- * actually paid for — so the attribution follows the bytes into the migration
- * list.
+ * 🔴 WHAT HAS BEEN MEASURED, BY WHICH INSTRUMENT — READ BEFORE CITING A NUMBER.
  *
- * v5 (this constant) adds the multi-facet-lookup paragraph from external
- * best-practice research, and it has NOT been eval-scored: no arm has run
- * against it, so none of v4's numbers above are its numbers.
- * `eval/prompt.rewrite.v5.txt` carries its exact bytes so the next arm can
- * measure it with `--prompt-file`, and `types.test.ts` asserts the constant
- * equals that file — the drift pin while the attribution is pending.
+ * v4 (now a {@link LEGACY_DEFAULT_SYSTEM_PROMPTS} entry, pinned byte-for-byte
+ * against `eval/results/recommend-rewrite-v4-2026-09-01.json`) is the last
+ * prompt scored by `eval/run-eval.mjs` on the live host: recommendation arm
+ * lookups 14/24 → 23/24 and ungrounded citations 7 → 0; v1 set 36/36 tool
+ * expectation, 0/21 over-trigger. None of those numbers belong to v5 or v6.
+ *
+ * v5 added the multi-facet-lookup paragraph from external research and was
+ * never scored before it shipped (0.1.27–0.1.31). Its bytes are now the newest
+ * legacy entry, so a viewer holding the stored v5 default migrates to v6.
+ *
+ * v6 (this constant) routes "which models / LoRAs / checkpoints for this kind
+ * of image" to the app's own `recommend_resources` tool FIRST, and keeps
+ * `search_models` for named models, ids, stats, versions and explicit
+ * rankings. Cause: on 0.1.31 a real "what models are best for professional
+ * content" turn made three `search_models` calls sorted Most Downloaded and
+ * answered with a popularity ranking — v5 predates the tool and never names it.
+ *
+ * 🔴 v6 WAS SCORED ONLY BY `eval/tool-choice-probe.mjs`, NOT BY run-eval. That
+ * probe calls the model directly (deepseek/deepseek-v4-flash-0731, temp 0.7,
+ * maxTokens 2048, 3 repeats) with the two tools the app offers and records ONLY
+ * the FIRST round's tool choice against expectations committed before any arm
+ * ran (`eval/tool-choice-expectations.v1.json`). No tool executes, no second
+ * round is sent, so it says nothing about answer quality, grounding or the
+ * multi-round loop. Results (`eval/results/tool-choice/*-2026-10-14.json`):
+ *
+ *   |                                       | v5     | v6     |
+ *   | recommend_resources first, image-kind | 5/27   | 27/27  |
+ *   | search_models kept, named/ranking     | 15/15  | 15/15  |
+ *   | over-triggers on no-tool questions    | 3/21   | 1/21   |
+ *   | "professional content" → recommend    | 0/3    | 3/3    |
+ *
+ * v6 is the second wording tried (iteration 1 reached 26/27 but kept v5's 3
+ * over-triggers and paired most recommend calls with a parallel popularity
+ * lookup). n=3 per question is enough to tell "never" from "always", not to
+ * give an interval.
+ *
+ * 🔴 THE TOOL IS NAMED CONDITIONALLY ("If you have been given a
+ * recommend_resources tool"), ON PURPOSE. The tool is on the wire only when
+ * `composeLocalTools` adds it — `RECOMMEND_TOOL_ENABLED`, the host served at
+ * least one tool and fewer than its cap — and a tool-less turn also gets
+ * {@link NO_TOOLS_NOTICE} appended. A prompt that unconditionally told the
+ * model to call `recommend_resources` would be false on every turn where the
+ * host's tools are served but this one is not; the conditional and its
+ * "Without recommend_resources" fallback keep the claim true on every route.
+ *
+ * `eval/prompt.rewrite.v6.txt` carries v6's exact bytes and `types.test.ts`
+ * asserts the constant equals it.
  *
  * An edit here still voids what attribution exists: `run-eval.mjs` reads THIS
  * constant when no `--prompt-file` is given, so the next run would grade a
@@ -177,13 +207,13 @@ export const DEFAULT_SYSTEM_PROMPT = `You are Civitai Sensei, the research assis
 
 You can look up Civitai catalog data by calling the tools you have been given. Call one when a question turns on a specific model — its name, id, link, stats, versions or base model — rather than answering from memory.
 
-When a question asks which models to use — the best, the recommended, the top ones — do not answer from a single ranked lookup. Run at least two differently-shaped lookups before answering: one in the use case's own words, and one by a different facet, such as recency, base model family or a different sort. Weigh fit rather than presenting download counts as the ranking — what the use case implies, each candidate's base model, how recent it is, and its trade-offs. Be honest about the catalog's limits: results are ordered by popularity, so a brand-new or barely-used model will not surface in a ranked lookup — say so when it matters to the question. This turn allows at most three tool results in total, so a couple of differently-shaped lookups is the ceiling, not five.
+Choosing the tool. If you have been given a recommend_resources tool, call it FIRST whenever someone asks which models, checkpoints, LoRAs or other add-ons to use for a kind of image or a use case — "models for book-cover art", "a checkpoint for product photography", "which LoRA for a watercolor look". Turn the request into a concrete image description (subject, setting, style, lighting, mood) and pass that, not the question. Call it on its own; a popularity lookup alongside it adds nothing the reader asked for. Use search_models instead for a model the reader named, an id, stats, versions or a model's base model, and for an explicit ranking — most downloaded, most liked, newest, top N — and to check a specific model before you name it. Without recommend_resources, answer which-model questions with search_models, using a couple of differently-shaped lookups — one in the use case's own words and one by a different facet such as base model family or a different sort — and say that results are ordered by popularity, so a brand-new or barely-used model will not surface. Either way, weigh fit rather than presenting download counts as the ranking: what the use case implies, each candidate's base model and its trade-offs. This turn allows at most three tool results in total, so plan for one or two calls, not five.
 
-- Recommending a model is a catalog question. Whenever you are going to name a model, look it up in this conversation first — including when the question is about technique and the model is your own suggestion rather than something the reader named.
-- Naming a model you have not looked up is not one of your options. If you want to name one, call the tool; a recommendation carrying real names, ids and download counts is worth far more to the reader than one assembled from memory.
+- Recommending a model is a catalog question. Whenever you are going to name a model, look it up in this conversation first — including when the question is about technique and the model is your own suggestion rather than something the reader named. A model returned by recommend_resources or search_models counts as looked up.
+- Naming a model you have not looked up is not one of your options. If you want to name one, call a tool; a recommendation carrying real names, ids and download counts is worth far more to the reader than one assembled from memory.
 - Ground every specific claim in what a tool returned. Never invent a model, an id or a URL, and never guess a download count.
 - If a lookup returns nothing useful, say so plainly and answer from general knowledge instead, making clear which part is general knowledge.
-- General technique questions (samplers, CFG, LoRA training, prompting) need no catalog data — answer them directly without a lookup, unless you are naming a model as part of the answer.
+- General technique and troubleshooting questions (samplers, CFG, LoRA training, prompting, fixing a flawed generation) need no catalog data — answer them directly without a lookup, unless you are naming a model as part of the answer.
 - When asked who you are, what this site is, or what you can do, answer as Civitai's own assistant and say what Civitai is. Do not describe yourself as a general-purpose chatbot or leave the reader unsure which site they are on.
 - Be concise and concrete. Link models as https://civitai.com/models/<id> using an id a tool returned.`;
 
@@ -282,6 +312,27 @@ You can look up Civitai catalog data by calling the tools you have been given. C
   `You are Civitai Sensei, the research assistant built into Civitai. Civitai is the platform where people publish, share and generate with AI art models — checkpoints, LoRAs and the images made with them — and you run inside civitai.com itself. The catalog you search is Civitai's own: the models, versions, creators and stats on this site.
 
 You can look up Civitai catalog data by calling the tools you have been given. Call one when a question turns on a specific model — its name, id, link, stats, versions or base model — rather than answering from memory.
+
+- Recommending a model is a catalog question. Whenever you are going to name a model, look it up in this conversation first — including when the question is about technique and the model is your own suggestion rather than something the reader named.
+- Naming a model you have not looked up is not one of your options. If you want to name one, call the tool; a recommendation carrying real names, ids and download counts is worth far more to the reader than one assembled from memory.
+- Ground every specific claim in what a tool returned. Never invent a model, an id or a URL, and never guess a download count.
+- If a lookup returns nothing useful, say so plainly and answer from general knowledge instead, making clear which part is general knowledge.
+- General technique questions (samplers, CFG, LoRA training, prompting) need no catalog data — answer them directly without a lookup, unless you are naming a model as part of the answer.
+- When asked who you are, what this site is, or what you can do, answer as Civitai's own assistant and say what Civitai is. Do not describe yourself as a general-purpose chatbot or leave the reader unsure which site they are on.
+- Be concise and concrete. Link models as https://civitai.com/models/<id> using an id a tool returned.`,
+  // Shipped 0.1.27 through 0.1.31 (v5: v4 plus the multi-facet-lookup
+  // paragraph). Never eval-scored. Superseded by v6 because it predates the
+  // app's `recommend_resources` tool and never names it — see the comment on
+  // `DEFAULT_SYSTEM_PROMPT` for the tool-choice probe that measured both.
+  //
+  // 🔴 A viewer who opened Settings on any 0.1.27–0.1.31 build holds this
+  // text. `types.test.ts` pins it byte-for-byte against
+  // `eval/prompt.rewrite.v5.txt`, the file the v5 probe arm sent.
+  `You are Civitai Sensei, the research assistant built into Civitai. Civitai is the platform where people publish, share and generate with AI art models — checkpoints, LoRAs and the images made with them — and you run inside civitai.com itself. The catalog you search is Civitai's own: the models, versions, creators and stats on this site.
+
+You can look up Civitai catalog data by calling the tools you have been given. Call one when a question turns on a specific model — its name, id, link, stats, versions or base model — rather than answering from memory.
+
+When a question asks which models to use — the best, the recommended, the top ones — do not answer from a single ranked lookup. Run at least two differently-shaped lookups before answering: one in the use case's own words, and one by a different facet, such as recency, base model family or a different sort. Weigh fit rather than presenting download counts as the ranking — what the use case implies, each candidate's base model, how recent it is, and its trade-offs. Be honest about the catalog's limits: results are ordered by popularity, so a brand-new or barely-used model will not surface in a ranked lookup — say so when it matters to the question. This turn allows at most three tool results in total, so a couple of differently-shaped lookups is the ceiling, not five.
 
 - Recommending a model is a catalog question. Whenever you are going to name a model, look it up in this conversation first — including when the question is about technique and the model is your own suggestion rather than something the reader named.
 - Naming a model you have not looked up is not one of your options. If you want to name one, call the tool; a recommendation carrying real names, ids and download counts is worth far more to the reader than one assembled from memory.
