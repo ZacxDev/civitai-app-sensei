@@ -801,14 +801,8 @@ export function App({ deps: depsOverride }: AppProps = {}) {
     }
     let cancelled = false;
     (async () => {
-      // For the turn-record sweep below: which sessions exist, as of when. Left
-      // undefined if the load fails, so a failed read never makes every record
-      // look orphaned.
-      let liveSessionIds: Set<string> | undefined;
-      const loadedAt = Date.now();
       try {
         const loaded = await sessionsLib.listSessions(depsRef.current.appStorage);
-        liveSessionIds = new Set(loaded.map((s) => s.id));
         const storedSettings = await depsRef.current.appStorage.get<AppSettings>('sensei:settings');
         if (cancelled) return;
         setSessions(loaded);
@@ -848,12 +842,9 @@ export function App({ deps: depsOverride }: AppProps = {}) {
         // able to delay or fail the boot it rides on. See `MAX_TURN_RECORDS`.
         // It is PACED (`HOUSEKEEPING_DELETES_PER_MINUTE`): deletes count against
         // the same per-viewer write rate as the viewer's own turns, and a sweep
-        // that spent it lost a paid reply. It also sweeps records orphaned by a
-        // bounded `purgeSessionTurnRecords`, which is why it needs the ids.
+        // that spent it lost a paid reply.
         if (!cancelled) {
-          void turnRecordsLib
-            .pruneTurnRecords(depsRef.current.appStorage, { liveSessionIds, loadedAt })
-            .catch(() => {});
+          void turnRecordsLib.pruneTurnRecords(depsRef.current.appStorage).catch(() => {});
         }
       }
     })();

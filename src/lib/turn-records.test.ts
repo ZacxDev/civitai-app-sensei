@@ -260,7 +260,7 @@ describe('🔴 housekeeping deletes leave the viewer write-rate headroom', () =>
     ]);
   });
 
-  it('a purge of a long chat deletes at most its budget, leaving the rest as orphans', async () => {
+  it('a purge of a long chat deletes at most its budget; the rest age out under the cap', async () => {
     const storage = fakeAppStorage({ ...records(57, 'session-gone'), ...records(3, 'session-kept') });
     expect(await purgeSessionTurnRecords(storage.appStorage, 'session-gone')).toBe(PURGE_DELETE_BUDGET);
     expect(turnKeysOf(storage, 'session-gone')).toHaveLength(57 - PURGE_DELETE_BUDGET);
@@ -279,31 +279,5 @@ describe('🔴 housekeeping deletes leave the viewer write-rate headroom', () =>
       HOUSEKEEPING_DELETES_PER_MINUTE - 15,
     );
     expect(await pruneTurnRecords(storage.appStorage)).toBe(0);
-  });
-
-  it('a later mount sweeps the orphans a bounded purge left behind, oldest first', async () => {
-    const storage = fakeAppStorage({ ...records(30, 'session-gone'), ...records(2, 'session-live') });
-    __resetHousekeepingPacer();
-    const deleted = await pruneTurnRecords(storage.appStorage, {
-      liveSessionIds: new Set(['session-live']),
-      loadedAt: 1_900_000_000_000,
-    });
-    expect(deleted).toBe(PRUNE_DELETE_BUDGET);
-    expect(turnKeysOf(storage, 'session-gone')).toHaveLength(30 - PRUNE_DELETE_BUDGET);
-    expect(turnKeysOf(storage, 'session-live')).toHaveLength(2);
-    // The survivors are the NEWEST orphans: oldest went first.
-    expect(turnKeysOf(storage, 'session-gone').map(submittedAtFromKey).sort((a, b) => a - b)[0]).toBe(
-      1_700_000_000_000 + PRUNE_DELETE_BUDGET,
-    );
-  });
-
-  it('a record written AFTER the list was loaded is never an orphan (another tab)', async () => {
-    const storage = fakeAppStorage(records(3, 'session-new-elsewhere', 2_000_000_000_000));
-    expect(
-      await pruneTurnRecords(storage.appStorage, {
-        liveSessionIds: new Set(),
-        loadedAt: 1_999_999_999_999,
-      }),
-    ).toBe(0);
   });
 });

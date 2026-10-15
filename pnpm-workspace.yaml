@@ -1,6 +1,6 @@
 # THE `minimumReleaseAgeExclude` BLOCK HAS ONE LIVE ENTRY: `@civitai/sdk@0.14.0`
-# (the 0.2.0 document-store port; see its own note above the list). It expires
-# 2026-10-16T05:57Z by pnpm's figure — delete it after that.
+# (the 0.2.0 document-store port; see its own note above the list). Delete it
+# after 2026-10-16T06:03Z.
 #
 # The paragraphs below were written on the blocks-react ^0.63.0 / app-sdk ^0.55.0
 # bump (all four of its entries published 2026-10-02 and aged out on 2026-10-03,
@@ -114,9 +114,9 @@
 # Measured both ways on a cold tree: without this line `pnpm install
 # --frozen-lockfile` exits with ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION naming
 # `@civitai/sdk@0.14.0 was published at 2026-10-15T05:57:25.000Z`; with it, rc=0.
-# (npm view says 06:02:36.727Z — the two-registry-fields disagreement noted
-# above; pnpm's is the one that fails.) So the window closes 2026-10-16T05:57Z;
-# after 2026-10-16T06:03Z this entry does nothing under either reading: DELETE IT.
+# npm view gives the publish as 2026-10-15T06:02:36.727Z (pnpm's refusal names
+# 05:57:25Z, an earlier registry field). Taking the later figure, the exclude is
+# needed until ~2026-10-16T06:03Z; after that it does nothing: DELETE IT.
 packages:
   - '.'
 minimumReleaseAgeExclude:

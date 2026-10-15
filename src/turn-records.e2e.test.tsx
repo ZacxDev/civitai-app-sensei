@@ -54,6 +54,8 @@ function makeStorage() {
       return base.attempts.map((a) => a.key);
     },
     setFailSet: base.setFailSet,
+    /** The SDK fake's request log — to see that the boot sweep has listed. */
+    calls: base.docStore.calls,
   };
 }
 
@@ -557,13 +559,6 @@ describe('the boot sweep keeps the store bounded', () => {
     // is a claim about the FUNCTION; this is the only thing that says the app
     // ever runs it. Nothing else in the app reads `sensei:turns:*`, so an
     // uncalled sweep is a leak nobody would notice.
-    //
-    // The session EXISTS: since 0.2.0 the boot prune also sweeps records whose
-    // session is gone (orphans of a bounded purge), so records of a session that
-    // is not in the list would be removed as orphans rather than as over-cap.
-    st().store.set('sensei:sessions', {
-      sessions: [{ id: 'session-old', title: 'Old', model: 'm', createdAt: 1, updatedAt: 2 }],
-    });
     for (let i = 0; i < MAX_TURN_RECORDS + 3; i += 1) {
       const s = { sessionId: 'session-old', messageId: `m-${i}`, submittedAt: 1_700_000_000_000 + i };
       st().store.set(turnRecordKey(s), { ...s, workflowIds: [], outcome: 'saved' });
@@ -571,6 +566,51 @@ describe('the boot sweep keeps the store bounded', () => {
     render(<App />);
     await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
     await waitFor(() => expect(turnKeys()).toHaveLength(MAX_TURN_RECORDS));
+  });
+});
+
+describe('🔴 the boot sweep never deletes a record just because its session is not listed', () => {
+  // A session can be missing from `sensei:sessions` while its records are LIVE:
+  // the doc does not exist yet (a viewer who sends on 0.2.0 before the cutover
+  // copy), or a cross-tab last-writer-wins overwrite dropped a row. A sweep that
+  // treated "not listed" as "orphaned" deleted pending, CHARGED turn records —
+  // the instrument's whole evidence. Leftovers of a bounded purge age out under
+  // the 200-record cap instead (oldest first), which needs no session list.
+  function pendingRecords(sessionId: string) {
+    for (let i = 0; i < 5; i += 1) {
+      const s = { sessionId, messageId: `m-${i}`, submittedAt: 1_700_000_000_000 + i };
+      st().store.set(turnRecordKey(s), { ...s, workflowIds: [`wf-${i}`], outcome: 'pending' });
+    }
+  }
+  async function bootAndLetTheSweepFinish() {
+    render(<App />);
+    await waitFor(() => expect(screen.queryByTestId('app-loading')).toBeNull());
+    // The sweep starts with a `list` of the turns prefix; wait for it, then give
+    // any deletes it would issue time to land. Positive control: the `list`
+    // assertion fails if the sweep never ran, so "0 deleted" is not vacuous.
+    await waitFor(() =>
+      expect(
+        st().calls.some((c) => c.method === 'GET' && c.query.keyPrefix === TURNS_PREFIX),
+      ).toBe(true),
+    );
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  it('with NO session list document at all, all 5 records survive', async () => {
+    pendingRecords('session-unlisted');
+    await bootAndLetTheSweepFinish();
+    expect(turnKeys()).toHaveLength(5);
+    expect(st().calls.filter((c) => c.method === 'DELETE')).toEqual([]);
+  });
+
+  it('with a list that names OTHER sessions, all 5 records survive', async () => {
+    st().store.set('sensei:sessions', {
+      sessions: [{ id: 'session-listed', title: 'T', model: 'm', createdAt: 1, updatedAt: 2 }],
+    });
+    pendingRecords('session-unlisted');
+    await bootAndLetTheSweepFinish();
+    expect(turnKeys()).toHaveLength(5);
+    expect(st().calls.filter((c) => c.method === 'DELETE')).toEqual([]);
   });
 });
 

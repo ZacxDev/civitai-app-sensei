@@ -143,17 +143,23 @@ export const MAX_TURN_RECORDS = 200;
  * limits on; `src/turn-records-rate-limit.e2e.test.tsx` pins it.
  *
  * So both sweeps share ONE rolling-minute allowance of
- * {@link HOUSEKEEPING_DELETES_PER_MINUTE}, leaving ≥100 writes/min for the
- * viewer's own turns however often they mount or delete chats. What a sweep
- * cannot afford now it leaves for a later mount: retention is eventual, a lost
- * answer is not.
+ * {@link HOUSEKEEPING_DELETES_PER_MINUTE}. What a sweep cannot afford now it
+ * leaves for a later mount: retention is eventual, a lost answer is not.
+ *
+ * ⚠ WHAT THE ALLOWANCE DOES AND DOES NOT BOUND, stated honestly. It is MODULE
+ * STATE: per tab (per page load), reset on every reload, and NOT shared across
+ * tabs. The server's 120/min is per VIEWER. So within one tab housekeeping takes
+ * at most 20 deletes a minute and leaves ≥100 for that tab's turns; a viewer
+ * reloading repeatedly, or with several tabs open, can spend 20 per load/tab
+ * against the same 120. The budgets make that a slow drain rather than the
+ * single-mount 100 that lost a reply; they are not a cross-tab guarantee.
  */
 export const HOUSEKEEPING_DELETES_PER_MINUTE = 20;
 
 /** How many keys one prune sweep will delete (and never more than the pacer allows). */
 export const PRUNE_DELETE_BUDGET = 20;
 
-/** How many keys one session purge will delete; the rest go to later prunes as orphans. */
+/** How many keys one session purge will delete; the rest age out under `MAX_TURN_RECORDS`. */
 export const PURGE_DELETE_BUDGET = 20;
 
 const MINUTE_MS = 60_000;
@@ -364,54 +370,31 @@ async function listKeys(appStorage: AppStorage, prefix: string): Promise<string[
   return out;
 }
 
-/** The session id embedded in a turn key (`sensei:turns:<sessionId>:<ts>:<msgId>`). */
-export function sessionIdFromKey(key: string): string {
-  return key.split(':')[2] ?? '';
-}
-
-export interface PruneOptions {
-  /** Keep at most this many records. */
-  max?: number;
-  /**
-   * The session ids the viewer has, as loaded at `loadedAt`. When given, records
-   * of a session NOT in this set, submitted BEFORE `loadedAt`, are ORPHANS — left
-   * behind by a {@link purgeSessionTurnRecords} that hit its budget — and are
-   * swept first. The `loadedAt` cutoff keeps a record written by another tab
-   * after this tab loaded its list from reading as an orphan.
-   */
-  liveSessionIds?: ReadonlySet<string>;
-  loadedAt?: number;
-}
-
 /**
- * Drop orphaned turn records, then the oldest beyond {@link MAX_TURN_RECORDS}.
+ * Drop the oldest turn records beyond {@link MAX_TURN_RECORDS}.
  *
  * Returns how many keys it deleted. Deletes at most {@link PRUNE_DELETE_BUDGET}
- * per call and never more than the shared housekeeping pacer allows, so one
- * mount cannot spend the viewer's write rate clearing a backlog; a larger
- * backlog converges over successive mounts instead.
+ * per call and never more than the housekeeping pacer allows, so one mount
+ * cannot spend the viewer's write rate clearing a backlog; a larger backlog
+ * converges over successive mounts instead.
+ *
+ * 🔴 IT DOES NOT CONSULT THE SESSION LIST, ON PURPOSE. A version that also swept
+ * "orphans" (records whose session was not in `sensei:sessions`) deleted LIVE,
+ * charged, `pending` records whenever a session was merely unlisted — no list
+ * document yet (a viewer sending on 0.2.0 before the cutover copy), or a
+ * cross-tab last-writer-wins overwrite. Leftovers of a bounded
+ * {@link purgeSessionTurnRecords} age out under the cap like any other record.
+ * `turn-records.e2e.test.tsx` pins "unlisted is not deleted".
  */
 export async function pruneTurnRecords(
   appStorage: AppStorage,
-  opts: PruneOptions | number = {},
+  max: number = MAX_TURN_RECORDS,
 ): Promise<number> {
-  const { max = MAX_TURN_RECORDS, liveSessionIds, loadedAt } =
-    typeof opts === 'number' ? { max: opts } : opts;
   const keys = await listKeys(appStorage, TURNS_PREFIX);
+  if (keys.length <= max) return 0;
 
-  const isOrphan = (k: string) =>
-    liveSessionIds !== undefined &&
-    loadedAt !== undefined &&
-    !liveSessionIds.has(sessionIdFromKey(k)) &&
-    submittedAtFromKey(k) < loadedAt;
-  const oldestFirst = (a: string, b: string) => submittedAtFromKey(a) - submittedAtFromKey(b);
-
-  const orphans = keys.filter(isOrphan).sort(oldestFirst);
-  const kept = keys.filter((k) => !isOrphan(k)).sort(oldestFirst);
-  const overCap = kept.slice(0, Math.max(0, kept.length - max));
-  const doomed = [...orphans, ...overCap];
-  if (doomed.length === 0) return 0;
-  return pacedDelete(appStorage, doomed, PRUNE_DELETE_BUDGET);
+  const oldestFirst = [...keys].sort((a, b) => submittedAtFromKey(a) - submittedAtFromKey(b));
+  return pacedDelete(appStorage, oldestFirst.slice(0, keys.length - max), PRUNE_DELETE_BUDGET);
 }
 
 /**
@@ -433,11 +416,11 @@ export async function pruneTurnRecords(
  *
  * 🔴 BOUNDED AND PACED like the prune ({@link PURGE_DELETE_BUDGET}, the shared
  * {@link HOUSEKEEPING_DELETES_PER_MINUTE}): a chat with hundreds of turns must
- * not spend the viewer's write rate in one click. What is left over is an
- * ORPHAN — its session is gone from the list — and the next mount's
- * {@link pruneTurnRecords} sweeps orphans first. Until then those records can
- * read as "lost" to the reconciliation, for at most the gap between this delete
- * and the viewer's next visit.
+ * not spend the viewer's write rate in one click. What is left over stays until
+ * it ages out under {@link MAX_TURN_RECORDS} through the ordinary oldest-first
+ * prune. Until then those records can read as "lost" to the reconciliation — a
+ * bounded, named cost, chosen over any sweep keyed on the session list (see
+ * {@link pruneTurnRecords} for why that one deleted live records).
  *
  * Returns how many keys it deleted.
  */
