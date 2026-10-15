@@ -146,3 +146,68 @@ export function scoreNeeds(records, expectedNeeds) {
   }
   return { capability, none, noRecommendCall, needsOnUngraded, perQuestion };
 }
+
+/**
+ * The route's hosted-model ranking, reimplemented from civitai
+ * `matchHostedModels` (see `eval/hosted-model-catalog.snapshot.json`): rank by
+ * the number of DISTINCT needs an entry covers, catalog order breaking ties;
+ * drop entries covering none; top 3. Returns names.
+ *
+ * @param {string[]} needs
+ * @param {Array<{name: string, capabilities: string[]}>} catalog
+ */
+export function rankHosted(needs, catalog) {
+  const wanted = new Set(needs);
+  return catalog
+    .map((e, order) => ({ name: e.name, order, matched: e.capabilities.filter((c) => wanted.has(c)).length }))
+    .filter((x) => x.matched > 0)
+    .sort((a, b) => b.matched - a.matched || a.order - b.order)
+    .slice(0, 3)
+    .map((x) => x.name);
+}
+
+/**
+ * Score `needs` focus (see `focusRule` in tool-choice-expectations.needs-focus-v1.json).
+ *
+ * @param {Array<{questionId: string, needs: string[] | null}>} records
+ * @param {{requiredNeeds: Record<string,string[]>, rightModels: Record<string,string[]>}} expect
+ * @param {Array<{name: string, capabilities: string[]}>} catalog
+ */
+export function scoreFocus(records, expect, catalog) {
+  const needsHit = { met: 0, n: 0 };
+  const rightTop3 = { met: 0, n: 0 };
+  let sizeSum = 0;
+  let noRecommendCall = 0;
+  const perQuestion = {};
+  for (const r of records) {
+    const required = expect.requiredNeeds?.[r.questionId];
+    const right = expect.rightModels?.[r.questionId];
+    if (!required || !right) continue;
+    const pq = (perQuestion[r.questionId] ??= { required, right, needsHit: 0, rightTop3: 0, n: 0, needs: [], top3: [] });
+    if (r.needs === null) {
+      noRecommendCall += 1;
+      pq.needs.push('no-call');
+      continue;
+    }
+    const top3 = rankHosted(r.needs, catalog);
+    const hit = required.every((c) => r.needs.includes(c)) && r.needs.length <= 2;
+    const ok = top3.some((name) => right.includes(name));
+    needsHit.n += 1;
+    rightTop3.n += 1;
+    needsHit.met += hit ? 1 : 0;
+    rightTop3.met += ok ? 1 : 0;
+    sizeSum += r.needs.length;
+    pq.n += 1;
+    pq.needsHit += hit ? 1 : 0;
+    pq.rightTop3 += ok ? 1 : 0;
+    pq.needs.push(r.needs.length ? r.needs.join('+') : '[]');
+    pq.top3.push(top3.join(' / ') || '-');
+  }
+  return {
+    needsHit,
+    rightTop3,
+    meanNeeds: needsHit.n ? Number((sizeSum / needsHit.n).toFixed(2)) : null,
+    noRecommendCall,
+    perQuestion,
+  };
+}

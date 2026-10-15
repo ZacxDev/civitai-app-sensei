@@ -150,8 +150,22 @@ export const HOSTED_MODEL_CAPABILITIES = [
 ] as const;
 export type HostedModelCapability = (typeof HOSTED_MODEL_CAPABILITIES)[number];
 
-/** At most this many `needs` per call. The route allows all 8; a request that implies more than 4 is not a focused one. */
-export const MAX_NEEDS = 4;
+/**
+ * At most this many `needs` per call — the declaration's `maxItems`, and a hard
+ * cut in {@link parseNeeds} (first ones kept, since the model is told to put the
+ * most important first).
+ *
+ * 🔴 2, NOT THE ROUTE'S 8, BECAUSE OF HOW THE ROUTE RANKS. It orders hosted
+ * models by how many distinct needs each covers, so every extra need favours a
+ * generalist that lists many capabilities over the specialist the request
+ * hinges on. Measured live on 0.1.33 (cap 4): "change my selfie's background,
+ * keep my face" sent [image_editing, photoreal, reference_images,
+ * high_resolution] and the route ranked HiDream O1 / MAI / Muse — Nano Banana,
+ * the likeness-keeping editor, never surfaced. A request that genuinely needs a
+ * third capability loses its least important one; that costs less than letting
+ * breadth outrank fit.
+ */
+export const MAX_NEEDS = 2;
 
 /** The route returns up to 3; this is the ceiling on what reaches the model, whatever it sends. */
 export const SHOWN_HOSTED = 3;
@@ -185,7 +199,7 @@ export const RECOMMEND_TOOL_DECLARATION: ToolDeclaration = {
       "product photo of a perfume bottle on a white marble counter, soft studio lighting, minimal background'. " +
       'If the request is vague (for example \'models for professional content\'), do not ask first: pick one ' +
       'representative concrete image for it, call with that, and offer in your answer to narrow it down. Returns up to ' +
-      `${SHOWN_PER_KIND} suggestions per kind. When the request implies a capability, pass needs; the result may ` +
+      `${SHOWN_PER_KIND} suggestions per kind. When a capability matters, pass needs; the result may ` +
       'then also list hosted models — single-model generators used directly, with no add-ons.',
     parameters: {
       type: 'object',
@@ -210,12 +224,14 @@ export const RECOMMEND_TOOL_DECLARATION: ToolDeclaration = {
           items: { type: 'string', enum: [...HOSTED_MODEL_CAPABILITIES] },
           maxItems: MAX_NEEDS,
           description:
-            'Capabilities the image clearly requires, only when the request implies them: legible_text (words, ' +
-            'a headline or a name in the image), design_layout (a logo, poster, infographic or UI mockup), ' +
-            'photoreal (a photorealistic result), image_editing (changing a picture the user already has), ' +
-            'character_consistency (the same character across several images), high_resolution (4K or larger), ' +
-            'transparent_background (a sticker or cutout), reference_images (working from photos the user ' +
-            'supplies). Omit it when nothing like that is implied — a style, subject or genre alone is not a need.',
+            'Only the one or two capabilities the request hinges on, most important first — not every one that ' +
+            'could apply; extras rank the wrong models ahead. Keeping a face, the same person or the same ' +
+            'character is character_consistency (plus image_editing when changing their own photo). Values: ' +
+            'legible_text (words or a name in the image), design_layout (logo, poster, infographic, UI mockup), ' +
+            'photoreal, image_editing (changing a picture the user has), character_consistency, high_resolution ' +
+            '(4K or larger), transparent_background (sticker, cutout, transparent PNG), reference_images (new ' +
+            'images from supplied photos when no face or character must be kept). Omit it when nothing like ' +
+            'that is implied — a style, subject or genre alone is not a need.',
         },
       },
       required: ['image_description'],

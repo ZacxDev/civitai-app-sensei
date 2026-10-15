@@ -237,8 +237,16 @@ export interface AppSettings {
  * 12-repeat T4-only control the same day gave 10/12 over-triggers with the new
  * sentence and 11/12 with the old one restored
  * (`tool-choice-T4-control-{new,old}decl-2026-10-15.json`) — T4's base rate that
- * day was high, and n=3 sampled 1, 2 or 3 of it. The `needs` arm on the final
+ * day was high, and n=3 sampled 1, 2 or 3 of it. The `needs` arm on the 0.1.33
  * declaration (`needs-v7-decl2-2026-10-15.json`): 33/33, noise 0/12.
+ *
+ * 0.1.34 changed the declaration again, not v7: `needs` is capped at 2 and told
+ * to carry only what the request hinges on (`MAX_NEEDS` in `lib/recommend.ts`
+ * has why). Same probe, v7 bytes unchanged (`*-focusdecl-2026-10-15.json`):
+ * v1 set 27/27, 15/15, 1/21 over-triggers (T4); `needs` set 33/33, noise 0/12;
+ * the new focus set (`tool-choice-expectations.needs-focus-v1.json`) put the
+ * right hosted model in the simulated top 3 on 24/24 turns, from 17/24 on the
+ * 0.1.33 declaration (`focus-trunkdecl-2026-10-15.json`).
  *
  * `eval/prompt.rewrite.v7.txt` carries v7's exact bytes and `types.test.ts`
  * asserts the constant equals it and the probe's recorded prompts.
