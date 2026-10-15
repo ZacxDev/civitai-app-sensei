@@ -101,12 +101,12 @@ const DECLARATIONS = [
 ];
 
 /**
- * 🔴 THE V6 ROUTING PARAGRAPH'S EXACT BYTES, held in the test rather than read
+ * 🔴 THE V7 ROUTING PARAGRAPH'S EXACT BYTES, held in the test rather than read
  * from `types.ts`, so the assertion below cannot be satisfied by whatever the
  * constant happens to say — deleting or rewording the paragraph goes red here,
  * on the wire, not only in `types.test.ts`.
  */
-const V6_PARAGRAPH = `Choosing the tool. If you have been given a recommend_resources tool, call it FIRST whenever someone asks which models, checkpoints, LoRAs or other add-ons to use for a kind of image or a use case — "models for book-cover art", "a checkpoint for product photography", "which LoRA for a watercolor look". Turn the request into a concrete image description (subject, setting, style, lighting, mood) and pass that, not the question. Call it on its own; a popularity lookup alongside it adds nothing the reader asked for. Use search_models instead for a model the reader named, an id, stats, versions or a model's base model, and for an explicit ranking — most downloaded, most liked, newest, top N — and to check a specific model before you name it. Without recommend_resources, answer which-model questions with search_models, using a couple of differently-shaped lookups — one in the use case's own words and one by a different facet such as base model family or a different sort — and say that results are ordered by popularity, so a brand-new or barely-used model will not surface. Either way, weigh fit rather than presenting download counts as the ranking: what the use case implies, each candidate's base model and its trade-offs. This turn allows at most three tool results in total, so plan for one or two calls, not five.`;
+const V7_PARAGRAPH = `Choosing the tool. If you have been given a recommend_resources tool, call it FIRST whenever someone asks which models, checkpoints, LoRAs or other add-ons to use for a kind of image or a use case — "models for book-cover art", "a checkpoint for product photography", "which LoRA for a watercolor look". Turn the request into a concrete image description (subject, setting, style, lighting, mood) and pass that, not the question. When the request implies a capability — words or a headline in the image, a logo, poster, infographic or UI layout, photorealism, editing a picture the reader already has, one character kept consistent across images, 4K, a transparent background, or working from the reader's reference photos — also pass it in needs. When the result lists hosted models, mention the ones that fit alongside the add-ons, or instead of them when no add-on ecosystem fits. Call it on its own; a popularity lookup alongside it adds nothing the reader asked for. Use search_models instead for a model the reader named, an id, stats, versions or a model's base model, and for an explicit ranking — most downloaded, most liked, newest, top N — and to check a specific model before you name it. Without recommend_resources, answer which-model questions with search_models, using a couple of differently-shaped lookups — one in the use case's own words and one by a different facet such as base model family or a different sort — and say that results are ordered by popularity, so a brand-new or barely-used model will not surface. Either way, weigh fit rather than presenting download counts as the ranking: what the use case implies, each candidate's base model and its trade-offs. This turn allows at most three tool results in total, so plan for one or two calls, not five.`;
 
 function toolCallSnapshot(args: string) {
   return {
@@ -208,9 +208,9 @@ describe('tool calling: the model forms its own query, one submit per round', ()
     expect('tool_choice' in first).toBe(false);
   });
 
-  it('🔴 the tool-enabled system message carries the v6 routing paragraph, and the tool it names is on the same wire', async () => {
-    // The system prompt is a claim about the wire. v6 routes "which models"
-    // questions to `recommend_resources` — conditionally ("If you have been
+  it('🔴 the tool-enabled system message carries the v7 routing paragraph, and the tool it names is on the same wire', async () => {
+    // The system prompt is a claim about the wire. v7 (like v6) routes "which models"
+    // questions to `recommend_resources`, and tells the model to pass its `needs` — conditionally ("If you have been
     // given a recommend_resources tool"), because `composeLocalTools` does not
     // add it on every turn. Exact bytes, not word-presence: this guard is
     // walked around by rewording, and the budget sentence ("at most three tool
@@ -220,7 +220,7 @@ describe('tool calling: the model forms its own query, one submit per round', ()
 
     const system = all[0].messages.find((m) => m.role === 'system');
     expect(system).toBeTruthy();
-    expect(system!.content).toContain(V6_PARAGRAPH);
+    expect(system!.content).toContain(V7_PARAGRAPH);
     expect(MAX_TOOL_RESULT_MESSAGES).toBe(3);
     // On the shipped default the tool the paragraph routes to IS on this
     // request, beside the host's — so the shipped send makes the condition true.

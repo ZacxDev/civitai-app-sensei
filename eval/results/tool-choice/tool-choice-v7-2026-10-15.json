@@ -1,0 +1,1619 @@
+{
+  "arm": "v7",
+  "probe": "tool-choice-probe v1 (first round only, no tool execution)",
+  "startedAt": "2026-10-15T04:09:32.452Z",
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "temperature": 0.7,
+  "maxTokens": 2048,
+  "repeats": 3,
+  "promptFile": "eval/prompt.rewrite.v7.txt",
+  "systemPromptChars": 3739,
+  "systemPrompt": "You are Civitai Sensei, the research assistant built into Civitai. Civitai is the platform where people publish, share and generate with AI art models — checkpoints, LoRAs and the images made with them — and you run inside civitai.com itself. The catalog you search is Civitai's own: the models, versions, creators and stats on this site.\n\nYou can look up Civitai catalog data by calling the tools you have been given. Call one when a question turns on a specific model — its name, id, link, stats, versions or base model — rather than answering from memory.\n\nChoosing the tool. If you have been given a recommend_resources tool, call it FIRST whenever someone asks which models, checkpoints, LoRAs or other add-ons to use for a kind of image or a use case — \"models for book-cover art\", \"a checkpoint for product photography\", \"which LoRA for a watercolor look\". Turn the request into a concrete image description (subject, setting, style, lighting, mood) and pass that, not the question. When the request implies a capability — words or a headline in the image, a logo, poster, infographic or UI layout, photorealism, editing a picture the reader already has, one character kept consistent across images, 4K, a transparent background, or working from the reader's reference photos — also pass it in needs. When the result lists hosted models, mention the ones that fit alongside the add-ons, or instead of them when no add-on ecosystem fits. Call it on its own; a popularity lookup alongside it adds nothing the reader asked for. Use search_models instead for a model the reader named, an id, stats, versions or a model's base model, and for an explicit ranking — most downloaded, most liked, newest, top N — and to check a specific model before you name it. Without recommend_resources, answer which-model questions with search_models, using a couple of differently-shaped lookups — one in the use case's own words and one by a different facet such as base model family or a different sort — and say that results are ordered by popularity, so a brand-new or barely-used model will not surface. Either way, weigh fit rather than presenting download counts as the ranking: what the use case implies, each candidate's base model and its trade-offs. This turn allows at most three tool results in total, so plan for one or two calls, not five.\n\n- Recommending a model is a catalog question. Whenever you are going to name a model, look it up in this conversation first — including when the question is about technique and the model is your own suggestion rather than something the reader named. A model returned by recommend_resources or search_models counts as looked up.\n- Naming a model you have not looked up is not one of your options. If you want to name one, call a tool; a recommendation carrying real names, ids and download counts is worth far more to the reader than one assembled from memory.\n- Ground every specific claim in what a tool returned. Never invent a model, an id or a URL, and never guess a download count.\n- If a lookup returns nothing useful, say so plainly and answer from general knowledge instead, making clear which part is general knowledge.\n- General technique and troubleshooting questions (samplers, CFG, LoRA training, prompting, fixing a flawed generation) need no catalog data — answer them directly without a lookup, unless you are naming a model as part of the answer.\n- When asked who you are, what this site is, or what you can do, answer as Civitai's own assistant and say what Civitai is. Do not describe yourself as a general-purpose chatbot or leave the reader unsure which site they are on.\n- Be concise and concrete. Link models as https://civitai.com/models/<id> using an id a tool returned.",
+  "tools": [
+    "search_models",
+    "recommend_resources"
+  ],
+  "expectations": "eval/tool-choice-expectations.v1.json",
+  "spentUsd": 0.020406,
+  "stoppedForCap": false,
+  "errors": 0,
+  "truncated": 0,
+  "unobserved": 0,
+  "score": {
+    "met": 58,
+    "n": 63,
+    "groups": {
+      "imageKind": {
+        "met": 24,
+        "n": 27
+      },
+      "namedOrRanking": {
+        "met": 15,
+        "n": 15
+      },
+      "none": {
+        "met": 19,
+        "n": 21
+      }
+    },
+    "recommendCalls": 24,
+    "overTriggersOnNone": 2,
+    "perQuestion": {
+      "R1": {
+        "expected": "recommend_resources",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "recommend_resources",
+          "recommend_resources",
+          "recommend_resources+search_models"
+        ]
+      },
+      "R2": {
+        "expected": "recommend_resources",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "recommend_resources",
+          "recommend_resources",
+          "recommend_resources"
+        ]
+      },
+      "P1a": {
+        "expected": "recommend_resources",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "recommend_resources",
+          "recommend_resources",
+          "recommend_resources"
+        ]
+      },
+      "P1b": {
+        "expected": "recommend_resources",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "recommend_resources",
+          "recommend_resources",
+          "recommend_resources"
+        ]
+      },
+      "P2a": {
+        "expected": "recommend_resources",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "recommend_resources",
+          "recommend_resources",
+          "recommend_resources"
+        ]
+      },
+      "P2b": {
+        "expected": "recommend_resources",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "recommend_resources",
+          "recommend_resources",
+          "recommend_resources"
+        ]
+      },
+      "P3a": {
+        "expected": "recommend_resources",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "recommend_resources",
+          "recommend_resources",
+          "recommend_resources"
+        ]
+      },
+      "P3b": {
+        "expected": "recommend_resources",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "recommend_resources",
+          "recommend_resources",
+          "recommend_resources"
+        ]
+      },
+      "L1": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models+search_models",
+          "search_models+search_models",
+          "search_models+search_models"
+        ]
+      },
+      "L2": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models",
+          "search_models",
+          "search_models"
+        ]
+      },
+      "L3": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models",
+          "search_models",
+          "search_models"
+        ]
+      },
+      "L4": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models",
+          "search_models",
+          "search_models"
+        ]
+      },
+      "L5": {
+        "expected": "search_models",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "search_models",
+          "search_models",
+          "search_models"
+        ]
+      },
+      "T1": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "T2": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "T3": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "T4": {
+        "expected": "none",
+        "met": 1,
+        "n": 3,
+        "tools": [
+          "none",
+          "search_models",
+          "search_models"
+        ]
+      },
+      "I1": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "I2": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "I3": {
+        "expected": "none",
+        "met": 3,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      },
+      "PROD1": {
+        "expected": "recommend_resources",
+        "met": 0,
+        "n": 3,
+        "tools": [
+          "none",
+          "none",
+          "none"
+        ]
+      }
+    }
+  },
+  "needsScore": {
+    "capability": {
+      "met": 0,
+      "n": 0,
+      "extra": 0
+    },
+    "none": {
+      "clean": 0,
+      "n": 0,
+      "noise": 0
+    },
+    "noRecommendCall": 0,
+    "needsOnUngraded": 12,
+    "perQuestion": {}
+  },
+  "records": [
+    {
+      "questionId": "R1",
+      "repeat": 1,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\":\"Photorealistic portrait of a person, head and shoulders framing, natural skin texture with visible pores, soft diffused studio lighting, shallow depth of field, sharp focus on the eyes, realistic hair strands, subtle film grain, high detail close-up, 4K resolution\",\"needs\":[\"photoreal\",\"high_resolution\"]}"
+        }
+      ],
+      "needs": [
+        "photoreal",
+        "high_resolution"
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 545,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00039544,
+      "promptTokens": 2512,
+      "completionTokens": 246
+    },
+    {
+      "questionId": "R1",
+      "repeat": 2,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\":\"Photorealistic portrait of a person, natural skin texture with visible pores, realistic eyes and catchlights, natural or soft studio lighting, shallow depth of field, sharp focus on the face, lifelike hair strands, candid or editorial mood\",\"needs\":[\"photoreal\"]}"
+        }
+      ],
+      "needs": [
+        "photoreal"
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 491,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.0003876,
+      "promptTokens": 2512,
+      "completionTokens": 218
+    },
+    {
+      "questionId": "R1",
+      "repeat": 3,
+      "firstRoundTools": [
+        "recommend_resources",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\":\"Photorealistic portrait of a person, natural skin texture with visible pores and fine detail, catchlights in the eyes, soft directional window lighting, shallow depth of field with creamy bokeh background, sharp focus on the face, medium-format camera look, realistic color\",\"needs\":[\"photoreal\"]}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"photorealistic portrait\",\"sort\":\"Most Downloaded\",\"types\":[\"Checkpoint\"]}"
+        }
+      ],
+      "needs": [
+        "photoreal"
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 1704,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00034428,
+      "promptTokens": 2512,
+      "completionTokens": 557
+    },
+    {
+      "questionId": "R2",
+      "repeat": 1,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"photorealistic architectural visualization render of a modern building exterior at dusk, glass and concrete facade, clean material surfaces, natural daylight and subtle interior lighting, sharp details, professional 3D render quality\", \"needs\": [\"photoreal\", \"high_resolution\"]}"
+        }
+      ],
+      "needs": [
+        "photoreal",
+        "high_resolution"
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 743,
+      "unobserved": false,
+      "provider": "Parasail",
+      "costUsd": 0.00042532,
+      "promptTokens": 2520,
+      "completionTokens": 259
+    },
+    {
+      "questionId": "R2",
+      "repeat": 2,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Photorealistic architectural visualization render of a modern building: clean exterior with glass, concrete and wood facades plus a bright interior scene with furniture, soft natural daylight, sharp material textures, wide-angle professional archviz quality, crisp details and realistic scale.\", \"needs\": [\"photoreal\", \"high_resolution\"]}"
+        }
+      ],
+      "needs": [
+        "photoreal",
+        "high_resolution"
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 752,
+      "unobserved": false,
+      "provider": "Parasail",
+      "costUsd": 0.00022104,
+      "promptTokens": 2520,
+      "completionTokens": 270
+    },
+    {
+      "questionId": "R2",
+      "repeat": 3,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Photorealistic architectural visualization of a modern minimalist house exterior at dusk, clean geometric lines, glass and concrete facade, warm interior lighting, natural landscape around it, sharp materials and reflections, high detail, professional render quality\", \"needs\": [\"photoreal\", \"high_resolution\"]}"
+        }
+      ],
+      "needs": [
+        "photoreal",
+        "high_resolution"
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 673,
+      "unobserved": false,
+      "provider": "Parasail",
+      "costUsd": 0.00021348,
+      "promptTokens": 2520,
+      "completionTokens": 243
+    },
+    {
+      "questionId": "P1a",
+      "repeat": 1,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Anime-style portrait of a young woman, close-up of the face and shoulders, large expressive eyes, colorful hair, clean lineart with cel shading, soft rim lighting, detailed character art style, vibrant colors, studio-quality anime illustration\"}"
+        }
+      ],
+      "needs": [],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 649,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00039886,
+      "promptTokens": 2507,
+      "completionTokens": 235
+    },
+    {
+      "questionId": "P1a",
+      "repeat": 2,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Anime-style character portrait, head-and-shoulders close-up of a single character with expressive eyes and detailed hair, clean linework, vibrant cel-shaded colors, soft lighting, character-focused composition with a simple background.\"}"
+        }
+      ],
+      "needs": [],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 361,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.0002541,
+      "promptTokens": 2507,
+      "completionTokens": 166
+    },
+    {
+      "questionId": "P1a",
+      "repeat": 3,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"A close-up portrait of an anime character, face and shoulders filling the frame, large expressive eyes, clean line art, smooth cel shading, vibrant colors, detailed hair, soft lighting, anime illustration style, upper-body crop on a simple background.\"}"
+        }
+      ],
+      "needs": [],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 491,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00038794,
+      "promptTokens": 2507,
+      "completionTokens": 196
+    },
+    {
+      "questionId": "P1b",
+      "repeat": 1,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"A clean technical blueprint drawing: an engineering or architectural schematic on a white or blue background, precise thin black line work, dimension lines, cross-sections, mechanical parts and labeled annotations, crisp and legible, no shading or photorealism.\", \"needs\": [\"legible_text\", \"design_layout\"]}"
+        }
+      ],
+      "needs": [
+        "legible_text",
+        "design_layout"
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 551,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00039676,
+      "promptTokens": 2508,
+      "completionTokens": 227
+    },
+    {
+      "questionId": "P1b",
+      "repeat": 2,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"technical engineering blueprint drawing, white and light-blue schematic lines on a deep blue background, precise drafting linework, dimension annotations and labels, cross-sections and mechanical parts layout, clean technical diagram, high-detail line art\", \"needs\": [\"legible_text\", \"design_layout\"]}"
+        }
+      ],
+      "needs": [
+        "legible_text",
+        "design_layout"
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 820,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00028476,
+      "promptTokens": 2508,
+      "completionTokens": 275
+    },
+    {
+      "questionId": "P1b",
+      "repeat": 3,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"A technical blueprint or engineering schematic: precise white linework and drafting marks on a deep blue background, architectural or mechanical drawing with dimension lines, grid, labels and annotations, clean vector-like technical illustration style, crisp and legible\", \"needs\": [\"legible_text\", \"design_layout\"]}"
+        }
+      ],
+      "needs": [
+        "legible_text",
+        "design_layout"
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 472,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.0004102,
+      "promptTokens": 2508,
+      "completionTokens": 211
+    },
+    {
+      "questionId": "P2a",
+      "repeat": 1,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Epic fantasy landscape: a sweeping vista of floating islands and a distant magical castle beneath a dramatic, storm-lit sky, misty mountains, cascading waterfalls, glowing bioluminescent flora, painterly digital concept-art style with rich saturated colors and cinematic volumetric lighting.\"}"
+        }
+      ],
+      "needs": [],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 815,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.0004067,
+      "promptTokens": 2507,
+      "completionTokens": 263
+    },
+    {
+      "questionId": "P2a",
+      "repeat": 2,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Epic fantasy landscape, sweeping vista of misty mountain valleys, floating islands and a distant magical castle, dramatic god-ray lighting through clouds, painterly concept-art style, rich color grading, high detail\"}"
+        }
+      ],
+      "needs": [],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 353,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00037702,
+      "promptTokens": 2507,
+      "completionTokens": 157
+    },
+    {
+      "questionId": "P2a",
+      "repeat": 3,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Epic fantasy landscape vista: towering misty mountains, a magical glowing forest and a distant castle on a cliff, dramatic golden-hour and magical lighting, painterly concept-art style, rich color grading, cinematic wide composition, atmospheric depth.\"}"
+        }
+      ],
+      "needs": [],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 522,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.0002625,
+      "promptTokens": 2507,
+      "completionTokens": 196
+    },
+    {
+      "questionId": "P2b",
+      "repeat": 1,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Close-up scientific microscopy image of biological cells and tissue structures viewed through a microscope, high magnification, sharp detailed laboratory research imagery, realistic colors and lighting, clean clinical background, scientific documentation style\", \"needs\": [\"photoreal\", \"high_resolution\"]}"
+        }
+      ],
+      "needs": [
+        "photoreal",
+        "high_resolution"
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 602,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00027146,
+      "promptTokens": 2507,
+      "completionTokens": 228
+    },
+    {
+      "questionId": "P2b",
+      "repeat": 2,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Detailed scientific microscopy image of biological cells and tissue as seen through a microscope, stained samples, high magnification, sharp fine detail, laboratory research imaging, realistic scientific photograph\", \"needs\": [\"photoreal\", \"high_resolution\"]}"
+        }
+      ],
+      "needs": [
+        "photoreal",
+        "high_resolution"
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 1115,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00042098,
+      "promptTokens": 2507,
+      "completionTokens": 314
+    },
+    {
+      "questionId": "P2b",
+      "repeat": 3,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"A scientific microscopy image of stained biological cells and tissue samples viewed at high magnification, crisp fine detail of cellular structures, realistic laboratory imaging, clean neutral background, informative scientific documentation look\", \"needs\": [\"photoreal\"]}"
+        }
+      ],
+      "needs": [
+        "photoreal"
+      ],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 1183,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00044646,
+      "promptTokens": 2507,
+      "completionTokens": 341
+    },
+    {
+      "questionId": "P3a",
+      "repeat": 1,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"A close-up of a person's hands in a natural pose, well-formed fingers with correct anatomy and proportions, no extra or merged digits, realistic skin detail, soft natural lighting, clean background\"}"
+        }
+      ],
+      "needs": [],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 860,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.0002632,
+      "promptTokens": 2508,
+      "completionTokens": 262
+    },
+    {
+      "questionId": "P3a",
+      "repeat": 2,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"A close-up of a person's hands, anatomically correct fingers and palms with natural proportions, detailed skin texture, a natural relaxed pose, sharp focus, realistic lighting.\"}"
+        }
+      ],
+      "needs": [],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 1001,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00027552,
+      "promptTokens": 2508,
+      "completionTokens": 306
+    },
+    {
+      "questionId": "P3a",
+      "repeat": 3,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\": \"Close-up shot of a person's hands in a natural pose, anatomically correct fingers with realistic proportions, detailed knuckles and nails, sharp focus, natural skin texture.\"}"
+        }
+      ],
+      "needs": [],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 757,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.0004032,
+      "promptTokens": 2508,
+      "completionTokens": 250
+    },
+    {
+      "questionId": "P3b",
+      "repeat": 1,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\":\"ornate Art Nouveau decorative border, elegant frame with flowing organic whiplash curves, intertwined floral and vine motifs, delicate gold linework on a cream background, symmetrical yet fluid composition, vintage poster framing style, intricate detail\"}"
+        }
+      ],
+      "needs": [],
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 857,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00026797,
+      "promptTokens": 2513,
+      "completionTokens": 284
+    },
+    {
+      "questionId": "P3b",
+      "repeat": 2,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\":\"ornate Art Nouveau decorative border frame, flowing organic floral linework, elegant curling plant stems and leaves, symmetrical corner ornaments, muted gold and sepia palette, vintage 1900s poster framing, fine detailed engraving line art style\"}"
+        }
+      ],
+      "needs": [],
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 1017,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00027693,
+      "promptTokens": 2513,
+      "completionTokens": 316
+    },
+    {
+      "questionId": "P3b",
+      "repeat": 3,
+      "firstRoundTools": [
+        "recommend_resources"
+      ],
+      "toolCalls": [
+        {
+          "name": "recommend_resources",
+          "arguments": "{\"image_description\":\"Elegant Art Nouveau ornamental border and frame, decorative corner flourishes, flowing organic curves, swirling floral and vine motifs, intricate linework, muted gold and cream tones, vintage poster aesthetic, ornate decorative panel surrounding an empty center\"}"
+        }
+      ],
+      "needs": [],
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 571,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00024753,
+      "promptTokens": 2513,
+      "completionTokens": 211
+    },
+    {
+      "questionId": "L1",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Downloaded\", \"limit\": 10}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Liked\", \"limit\": 5}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 647,
+      "unobserved": false,
+      "provider": "Parasail",
+      "costUsd": 0.0004256,
+      "promptTokens": 2524,
+      "completionTokens": 258
+    },
+    {
+      "questionId": "L1",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Downloaded\", \"limit\": 5}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Liked\", \"limit\": 5}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 773,
+      "unobserved": false,
+      "provider": "Parasail",
+      "costUsd": 0.0002286,
+      "promptTokens": 2524,
+      "completionTokens": 295
+    },
+    {
+      "questionId": "L1",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models",
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Downloaded\", \"limit\": 5}"
+        },
+        {
+          "name": "search_models",
+          "arguments": "{\"sort\": \"Most Liked\", \"limit\": 5}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 467,
+      "unobserved": false,
+      "provider": "Parasail",
+      "costUsd": 0.00020872,
+      "promptTokens": 2524,
+      "completionTokens": 224
+    },
+    {
+      "questionId": "L2",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Pony Diffusion V6 XL\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 141,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00032851,
+      "promptTokens": 2467,
+      "completionTokens": 84
+    },
+    {
+      "questionId": "L2",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Pony Diffusion V6 XL\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 136,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00032828,
+      "promptTokens": 2467,
+      "completionTokens": 83
+    },
+    {
+      "questionId": "L2",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"Pony Diffusion V6 XL\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 179,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00033035,
+      "promptTokens": 2467,
+      "completionTokens": 92
+    },
+    {
+      "questionId": "L3",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"DreamShaper\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 184,
+      "unobserved": false,
+      "provider": "Together",
+      "costUsd": 0.00010229,
+      "promptTokens": 2520,
+      "completionTokens": 91
+    },
+    {
+      "questionId": "L3",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"DreamShaper\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 151,
+      "unobserved": false,
+      "provider": "Together",
+      "costUsd": 0.00009951,
+      "promptTokens": 2520,
+      "completionTokens": 85
+    },
+    {
+      "questionId": "L3",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"DreamShaper\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 156,
+      "unobserved": false,
+      "provider": "Together",
+      "costUsd": 0.00009951,
+      "promptTokens": 2520,
+      "completionTokens": 85
+    },
+    {
+      "questionId": "L4",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Downloaded\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 181,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00021868,
+      "promptTokens": 2506,
+      "completionTokens": 104
+    },
+    {
+      "questionId": "L4",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Downloaded\", \"limit\": 10}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 189,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00022428,
+      "promptTokens": 2506,
+      "completionTokens": 124
+    },
+    {
+      "questionId": "L4",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\": \"anime\", \"sort\": \"Most Downloaded\", \"limit\": 10}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 187,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00024192,
+      "promptTokens": 2506,
+      "completionTokens": 123
+    },
+    {
+      "questionId": "L5",
+      "repeat": 1,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"Juggernaut XL\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 159,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00021473,
+      "promptTokens": 2517,
+      "completionTokens": 92
+    },
+    {
+      "questionId": "L5",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"Juggernaut XL\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 214,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00021837,
+      "promptTokens": 2517,
+      "completionTokens": 105
+    },
+    {
+      "questionId": "L5",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"Juggernaut XL\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 181,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00021613,
+      "promptTokens": 2517,
+      "completionTokens": 97
+    },
+    {
+      "questionId": "T1",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 2019,
+      "textHead": "CFG stands for **Classifier-Free Guidance** — it's the knob that controls how hard the model tries to match your prompt.\n\n## How it works\n\nDuring generation, Stable Diffusion actually makes two predictions at every step:\n\n1. **Conditioned prediction** — what the image should look like *given your prompt*\n2. **Unconditioned prediction** — what it would look like with *no prompt at all* (its \"defaul",
+      "reasoningChars": 278,
+      "unobserved": false,
+      "provider": "Together",
+      "costUsd": 0.00023123,
+      "promptTokens": 2521,
+      "completionTokens": 551
+    },
+    {
+      "questionId": "T1",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 2064,
+      "textHead": "CFG (Classifier-Free Guidance) scale controls how strongly the model follows your prompt versus its own \"default\" tendencies.\n\n**How it works:** At each denoising step, the model makes two predictions — one conditioned on your prompt, one unconditioned (no prompt). The final prediction is:\n\n`final = unconditional + CFG × (prompt_conditioned − unconditional)`\n\nSo the CFG value is the multiplier on ",
+      "reasoningChars": 167,
+      "unobserved": false,
+      "provider": "Together",
+      "costUsd": 0.00022582,
+      "promptTokens": 2521,
+      "completionTokens": 536
+    },
+    {
+      "questionId": "T1",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 1791,
+      "textHead": "CFG (Classifier-Free Guidance) scale controls how strongly the image follows your prompt versus how freely the model improvises.\n\n**How it works:** During generation, the model predicts noise twice — once conditioned on your prompt, once unconditioned (no prompt). CFG scale is the multiplier on the difference between those two predictions. The higher the value, the more the final result is pushed ",
+      "reasoningChars": 235,
+      "unobserved": false,
+      "provider": "Together",
+      "costUsd": 0.00020594,
+      "promptTokens": 2521,
+      "completionTokens": 465
+    },
+    {
+      "questionId": "T2",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 2915,
+      "textHead": "Overfitting in LoRA training shows up as the model reproducing your training images almost exactly — same pose, same background, same artifacts — instead of learning the underlying concept. Here's how to keep it in check:\n\n**1. Data quality beats data quantity**\n- Aim for 20–50 well-curated images, not 200 random ones. A small, consistent set trains cleaner than a huge noisy one.\n- Remove duplicat",
+      "reasoningChars": 184,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00039089,
+      "promptTokens": 2513,
+      "completionTokens": 723
+    },
+    {
+      "questionId": "T2",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 3050,
+      "textHead": "Overfitting in LoRA training shows up as the character/style looking great in training images but breaking down elsewhere — the model memorizes the exact poses, backgrounds, and camera angles instead of learning the subject. Here's how to fight it, roughly in order of impact:\n\n**Dataset quality (the biggest lever)**\n- Use **15–30 images** for a character, 30–50 for a style. More isn't automaticall",
+      "reasoningChars": 312,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00040237,
+      "promptTokens": 2513,
+      "completionTokens": 764
+    },
+    {
+      "questionId": "T2",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 2734,
+      "textHead": "Overfitting in LoRA training usually shows up as the model reproducing your training images almost exactly — stiff poses, baked-in backgrounds, the same outfit every time — while failing on new prompts. Here's how to avoid it, in rough order of impact:\n\n**1. Dataset quality beats dataset size**\n- More diverse images of the subject (different angles, lighting, outfits, backgrounds) matters far more",
+      "reasoningChars": 277,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00038809,
+      "promptTokens": 2513,
+      "completionTokens": 713
+    },
+    {
+      "questionId": "T3",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 1985,
+      "textHead": "No catalog lookup needed here — this is a sampler/scheduler technique question, so I'll answer directly.\n\n## The short version\n\nBoth schedulers control *how the noise level decreases* across your sampling steps, but they take different paths:\n\n- **Karras** follows the noise schedule from the Karras et al. 2022 paper (\"Elucidating the Design Space of Diffusion-Based Generative Models\"). It's a curv",
+      "reasoningChars": 1727,
+      "unobserved": false,
+      "provider": "Together",
+      "costUsd": 0.0003161,
+      "promptTokens": 2526,
+      "completionTokens": 852
+    },
+    {
+      "questionId": "T3",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 2369,
+      "textHead": "This is a general technique question, so I'll answer directly — no catalog lookup needed.\n\n## What a noise scheduler does\n\nThe scheduler (also called a sigma schedule) decides the *sequence of noise levels* the sampler steps through as it denoises your image. The sampler (Euler, DPM++, etc.) is the method for moving between those levels; the scheduler is the map of where the stops are. You can mix",
+      "reasoningChars": 2174,
+      "unobserved": false,
+      "provider": "Together",
+      "costUsd": 0.00037549,
+      "promptTokens": 2526,
+      "completionTokens": 1070
+    },
+    {
+      "questionId": "T3",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 2373,
+      "textHead": "This is a general technique question, so I'll answer directly — no catalog lookup needed.\n\n## The short version\n\nBoth are **noise schedulers** — they control *how* the denoising steps are spaced out across the generation, not the sampler algorithm itself. The sampler (Euler, DPM++, etc.) decides *how* to denoise at each step; the scheduler decides *when* each step happens.\n\n## Karras\n\n- Based on t",
+      "reasoningChars": 294,
+      "unobserved": false,
+      "provider": "Together",
+      "costUsd": 0.00025285,
+      "promptTokens": 2526,
+      "completionTokens": 632
+    },
+    {
+      "questionId": "T4",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 3161,
+      "textHead": "Hands are the classic weak spot in AI image generation — it's not you, it's an inherent weakness of the models. Here's why it happens and what actually helps.\n\n## Why hands break\n\n- **Small, information-dense anatomy.** A hand is a huge amount of detail (fingers, knuckles, joints, overlapping shapes) squeezed into a tiny part of the image. At typical resolutions, the model simply doesn't have enou",
+      "reasoningChars": 2717,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00057692,
+      "promptTokens": 2516,
+      "completionTokens": 1386
+    },
+    {
+      "questionId": "T4",
+      "repeat": 2,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hand detailer\",\"types\":[\"LORA\",\"LoCon\",\"Controlnet\"],\"sort\":\"Most Downloaded\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 0,
+      "textHead": "",
+      "reasoningChars": 1759,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.000328,
+      "promptTokens": 2516,
+      "completionTokens": 497
+    },
+    {
+      "questionId": "T4",
+      "repeat": 3,
+      "firstRoundTools": [
+        "search_models"
+      ],
+      "toolCalls": [
+        {
+          "name": "search_models",
+          "arguments": "{\"query\":\"hands\",\"types\":[\"LORA\"],\"sort\":\"Most Downloaded\"}"
+        }
+      ],
+      "needs": null,
+      "finishReason": "tool_calls",
+      "textChars": 2,
+      "textHead": "\n\n",
+      "reasoningChars": 1948,
+      "unobserved": false,
+      "provider": "CoreWeave",
+      "costUsd": 0.00047184,
+      "promptTokens": 2516,
+      "completionTokens": 517
+    },
+    {
+      "questionId": "I1",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 869,
+      "textHead": "I'm Civitai Sensei — the research assistant built right into civitai.com. I help you find your way around Civitai's catalog of AI art models.\n\nCivitai is the platform where people publish, share, and generate with AI art models — checkpoints, LoRAs, embeddings, and the images made with them. I can:\n\n- **Look up models** you've heard about — a checkpoint, LoRA, or creator — and give you its link, s",
+      "reasoningChars": 106,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00039844,
+      "promptTokens": 2502,
+      "completionTokens": 236
+    },
+    {
+      "questionId": "I1",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 899,
+      "textHead": "I'm Civitai Sensei — the research assistant built into **Civitai**, the platform where people publish, share, and generate with AI art models (checkpoints, LoRAs, and the images made with them). I run right inside civitai.com.\n\nWhat I can do for you:\n\n- **Find models** — search Civitai's catalog for checkpoints, LoRAs, and other add-ons by name, style, or use case, and show you stats like download",
+      "reasoningChars": 83,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.0004004,
+      "promptTokens": 2502,
+      "completionTokens": 243
+    },
+    {
+      "questionId": "I1",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 952,
+      "textHead": "I'm Civitai Sensei — the research assistant built into Civitai.\n\nCivitai is the platform where people publish, share, and generate with AI art models: checkpoints, LoRAs, embeddings, and the images made with them. You're on civitai.com right now.\n\nWhat I can do for you here:\n\n- **Find models** — search the Civitai catalog by name, type, or base model (SD 1.5, SDXL, Pony, Illustrious, Flux, etc.)\n-",
+      "reasoningChars": 79,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00028224,
+      "promptTokens": 2502,
+      "completionTokens": 269
+    },
+    {
+      "questionId": "I2",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 1062,
+      "textHead": "You're on **Civitai** — the platform where people publish, share, and generate with AI art models. It's home to thousands of **checkpoints** (the base models that define an art style), **LoRAs** and **embeddings** (small add-ons that teach a style, character, or concept), plus **ControlNets**, **upscalers**, and more — along with the images people make using them.\n\nCreators upload their models her",
+      "reasoningChars": 118,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00041202,
+      "promptTokens": 2503,
+      "completionTokens": 284
+    },
+    {
+      "questionId": "I2",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 912,
+      "textHead": "This is **Civitai** — the platform where people publish, share, and generate with AI art models.\n\nHere's what you can find on it:\n\n- **Models** — checkpoints (full image-generation models), LoRAs, embeddings, ControlNets, upscalers, VAEs, and more, spanning ecosystems like SD 1.5, SDXL, Pony, Illustrious, NoobAI, and Flux.\n- **Images** — millions of AI-generated images, each with the prompt, setti",
+      "reasoningChars": 92,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00025886,
+      "promptTokens": 2503,
+      "completionTokens": 249
+    },
+    {
+      "questionId": "I2",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 1118,
+      "textHead": "You're on **Civitai** — the largest open platform for AI-generated art and the models that make it.\n\nHere's what Civitai is about:\n\n- **Model library** — thousands of community-published checkpoints, LoRAs, embeddings, ControlNets, upscalers and more, built for ecosystems like SD 1.5, SDXL, Pony, Illustrious, NoobAI and Flux. Each model page shows versions, base model, creator, and stats like down",
+      "reasoningChars": 138,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00041622,
+      "promptTokens": 2503,
+      "completionTokens": 299
+    },
+    {
+      "questionId": "I3",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 1499,
+      "textHead": "I'm Civitai Sensei, the research assistant built into Civitai — the platform where people publish, share, and generate with AI art models (checkpoints, LoRAs, and the images made with them). I run right here on civitai.com and can look up the actual catalog data on this site.\n\nHere's what I can help you with:\n\n**Finding models**\n- Which checkpoint or LoRA suits a look you want — a photoreal portra",
+      "reasoningChars": 176,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00039742,
+      "promptTokens": 2461,
+      "completionTokens": 387
+    },
+    {
+      "questionId": "I3",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 1148,
+      "textHead": "I'm Civitai Sensei, the research assistant built into Civitai — the platform where people publish, share, and generate with AI art models (checkpoints, LoRAs, embeddings, ControlNets, and the images made with them). I run right here on civitai.com, searching the site's own catalog.\n\nHere's what I can help you with:\n\n**Finding models and add-ons**\n- \"Which LoRA gives a watercolor look?\" or \"What ch",
+      "reasoningChars": 203,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00038454,
+      "promptTokens": 2461,
+      "completionTokens": 331
+    },
+    {
+      "questionId": "I3",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 1075,
+      "textHead": "I'm Civitai Sensei, the research assistant built into Civitai — the platform where people publish, share, and generate with AI art models (checkpoints, LoRAs, embeddings, and the images made with them).\n\nHere's what I can help you with:\n\n**Finding models & resources**\n- Which checkpoint or LoRA to use for a specific look — e.g. \"a model for cinematic portrait photography\" or \"a LoRA for watercolor",
+      "reasoningChars": 153,
+      "unobserved": false,
+      "provider": "Wafer",
+      "costUsd": 0.00037833,
+      "promptTokens": 2461,
+      "completionTokens": 304
+    },
+    {
+      "questionId": "PROD1",
+      "repeat": 1,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 1033,
+      "textHead": "\"Professional content\" can mean a few different things, and the best models differ a lot depending on which you mean. To point you at the right ones, could you tell me a bit more about what you're making? For example:\n\n- **Product photography** — clean shots of a product on a neutral background, studio lighting (implies photorealism)\n- **Corporate / editorial photography** — realistic people, offi",
+      "reasoningChars": 2958,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.0005761,
+      "promptTokens": 2505,
+      "completionTokens": 805
+    },
+    {
+      "questionId": "PROD1",
+      "repeat": 2,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 885,
+      "textHead": "\"Professional content\" can mean a few very different things, and the right models depend on which one you're after. Could you narrow it down a bit?\n\nFor example:\n- **Product photography** — photoreal shots of a product on a clean background for ads or e-commerce\n- **Corporate / branding** — logos, posters, infographics, presentation decks with legible text and layout\n- **Photoreal people** — heads",
+      "reasoningChars": 1069,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00030674,
+      "promptTokens": 2505,
+      "completionTokens": 419
+    },
+    {
+      "questionId": "PROD1",
+      "repeat": 3,
+      "firstRoundTools": [],
+      "toolCalls": [],
+      "needs": null,
+      "finishReason": "stop",
+      "textChars": 880,
+      "textHead": "\"Professional content\" can mean a lot of different things, and the best models differ a lot depending on which one you mean. To point you at the right checkpoints and LoRAs, could you narrow it down a bit?\n\nFor example, are you after:\n\n- **Product / commercial photography** — clean shots of a product, e.g. a perfume bottle or watch on a nice surface, studio lighting\n- **Corporate / business visual",
+      "reasoningChars": 2083,
+      "unobserved": false,
+      "provider": "Cohere",
+      "costUsd": 0.00050442,
+      "promptTokens": 2505,
+      "completionTokens": 613
+    }
+  ]
+}

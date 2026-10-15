@@ -12,6 +12,12 @@
  *     --prompt-file eval/prompt.rewrite.v5.txt --out eval/results/tool-choice/tool-choice-v5.json
  *   node eval/tool-choice-probe.mjs --self-test     # scorer controls, no network
  *
+ * With `--expectations eval/tool-choice-expectations.needs-v1.json` it also
+ * records the `needs` argument of every first-round recommend_resources call
+ * and scores it against that file's `expectedNeeds` (`scoreNeeds`). Every
+ * record carries `needs` regardless of which expectations file is used, so the
+ * v1 21-question run also reports any `needs` it emitted (`needsOnUngraded`).
+ *
  * 🔴 WHY NOT run-eval.mjs: that runner drives the live host and spends Buzz on
  * every submit. This one spends a fraction of a cent per call on the operator's
  * own OpenRouter key, and answers one narrower question.
@@ -30,7 +36,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { registerHooks } from 'node:module';
-import { score } from './tool-choice-score.mjs';
+import { needsOf, score, scoreNeeds } from './tool-choice-score.mjs';
 
 // ── self-test: the instrument's own controls, no network ─────────────────────
 if (process.argv.includes('--self-test')) {
@@ -64,6 +70,33 @@ if (process.argv.includes('--self-test')) {
     overTriggersOnNone: s.overTriggersOnNone,
   };
   const ok = JSON.stringify(got) === JSON.stringify(want);
+  // `needs` scorer controls: a KNOWN answer, including a hit, a miss, an extra,
+  // noise, a clean none, a tool miss and an ungraded record.
+  const n = scoreNeeds(
+    [
+      { questionId: 'NA', needs: ['legible_text'] }, // met
+      { questionId: 'NA', needs: ['photoreal'] }, // miss + extra
+      { questionId: 'NA', needs: ['legible_text', 'photoreal'] }, // met + extra
+      { questionId: 'NA', needs: null }, // tool miss
+      { questionId: 'NZ', needs: [] }, // clean
+      { questionId: 'NZ', needs: ['photoreal'] }, // noise
+      { questionId: 'OLD', needs: ['design_layout'] }, // ungraded, tallied
+    ],
+    { NA: ['legible_text', 'design_layout'], NZ: [] },
+  );
+  const needsGot = [n.capability.met, n.capability.n, n.capability.extra, n.none.clean, n.none.n, n.none.noise, n.noRecommendCall, n.needsOnUngraded];
+  const needsWant = [2, 3, 2, 1, 2, 1, 1, 1];
+  const needsOk = JSON.stringify(needsGot) === JSON.stringify(needsWant);
+  const extractOk =
+    JSON.stringify(needsOf([{ name: 'search_models', arguments: '{}' }])) === 'null' &&
+    JSON.stringify(
+      needsOf([
+        { name: 'recommend_resources', arguments: '{"image_description":"x","needs":["photoreal"]}' },
+        { name: 'recommend_resources', arguments: '{"needs":["photoreal","legible_text"]}' },
+        { name: 'recommend_resources', arguments: 'not json' },
+      ]),
+    ) === '["photoreal","legible_text"]' &&
+    JSON.stringify(needsOf([{ name: 'recommend_resources', arguments: '{"image_description":"x"}' }])) === '[]';
   // Negative control: an unknown question id must throw, not score silently.
   let threw = false;
   try {
@@ -71,8 +104,10 @@ if (process.argv.includes('--self-test')) {
   } catch {
     threw = true;
   }
-  console.log(JSON.stringify({ got, want, scorerMatches: ok, unknownIdThrows: threw }));
-  process.exit(ok && threw ? 0 : 1);
+  console.log(
+    JSON.stringify({ got, want, scorerMatches: ok, unknownIdThrows: threw, needsGot, needsWant, needsOk, extractOk }),
+  );
+  process.exit(ok && threw && needsOk && extractOk ? 0 : 1);
 }
 
 // ── import the shipped declaration ───────────────────────────────────────────
@@ -114,7 +149,8 @@ const REPEATS = Number(arg('repeats', '3'));
 const SPEND_CAP_USD = Number(arg('spend-cap', '0.40'));
 const CONCURRENCY = Number(arg('concurrency', '4'));
 const PROMPT_FILE = arg('prompt-file');
-const EXPECT = JSON.parse(readFileSync(arg('expectations', 'eval/tool-choice-expectations.v1.json'), 'utf8'));
+const EXPECT_PATH = arg('expectations', 'eval/tool-choice-expectations.v1.json');
+const EXPECT = JSON.parse(readFileSync(EXPECT_PATH, 'utf8'));
 
 function apiKey() {
   if (process.env.OPENROUTER_API_KEY) return process.env.OPENROUTER_API_KEY.trim();
@@ -219,6 +255,7 @@ async function worker() {
       repeat: rep,
       firstRoundTools,
       toolCalls: calls.map((c) => ({ name: c.function?.name, arguments: c.function?.arguments })),
+      needs: needsOf(calls.map((c) => ({ name: c.function?.name, arguments: c.function?.arguments }))),
       finishReason: choice.finish_reason ?? null,
       textChars: (choice.message?.content ?? '').length,
       textHead: (choice.message?.content ?? '').slice(0, 400),
@@ -240,6 +277,7 @@ const order = new Map(questions.map((q, i) => [q.id, i]));
 records.sort((a, b) => order.get(a.questionId) - order.get(b.questionId) || a.repeat - b.repeat);
 const scored = records.filter((r) => !r.error && !r.unobserved);
 const s = score(scored, EXPECT.expected);
+const ns = scoreNeeds(scored, EXPECT.expectedNeeds ?? {});
 
 const out = {
   arm: ARM,
@@ -253,13 +291,14 @@ const out = {
   systemPromptChars: SYSTEM_PROMPT.length,
   systemPrompt: SYSTEM_PROMPT,
   tools: toolNames,
-  expectations: 'eval/tool-choice-expectations.v1.json',
+  expectations: EXPECT_PATH,
   spentUsd: Number(spentUsd.toFixed(6)),
   stoppedForCap,
   errors: records.filter((r) => r.error).length,
   truncated: records.filter((r) => r.finishReason === 'length').length,
   unobserved: records.filter((r) => r.unobserved).length,
   score: s,
+  needsScore: ns,
   records,
 };
 mkdirSync(dirname(OUT), { recursive: true });
@@ -274,4 +313,12 @@ console.log(
 );
 for (const [id, pq] of Object.entries(s.perQuestion)) {
   console.log(`  ${id.padEnd(6)} expect=${pq.expected.padEnd(19)} ${pq.met}/${pq.n}  ${pq.tools.join(', ')}`);
+}
+console.log(
+  `needs: capability met ${ns.capability.met}/${ns.capability.n} (with extras ${ns.capability.extra}) ` +
+    `| none clean ${ns.none.clean}/${ns.none.n} (noise ${ns.none.noise}) | no recommend call ${ns.noRecommendCall} ` +
+    `| needs on ungraded questions ${ns.needsOnUngraded}`,
+);
+for (const [id, pq] of Object.entries(ns.perQuestion)) {
+  console.log(`  ${id.padEnd(6)} anyOf=${(pq.expectedAnyOf.join('|') || '[]').padEnd(36)} ${pq.met}/${pq.n}  ${pq.needs.join(', ')}`);
 }

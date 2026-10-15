@@ -8,9 +8,13 @@ import {
   HOST_MAX_TOOL_DESCRIPTION_CHARS,
   HOST_MAX_TOOL_PARAMETERS_CHARS,
   buildResourceIntentRequests,
+  MAX_NEEDS,
+  SHOWN_HOSTED,
   composeLocalTools,
   executeRecommend,
+  parseHostedModels,
   parseRecommendArgs,
+  type ShownHostedModel,
 } from './recommend.js';
 import {
   MAX_LOOKUP_LABEL_CHARS,
@@ -19,7 +23,7 @@ import {
   readQueryArgument,
   type ToolCall,
 } from './tools.js';
-import { groundedIdsFromToolResult } from './grounding.js';
+import { groundedIdsFromToolResult, ungroundedModelIds } from './grounding.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // `recommend_resources` — the app-executed recommendation tool.
@@ -133,7 +137,7 @@ afterEach(() => {
 describe('recommend — request bodies come from the model\'s arguments', () => {
   it('no base model ⇒ ONE add-on request, body exactly { prompt }', () => {
     const parsed = parseRecommendArgs({ image_description: `  ${DESCRIPTION}  ` });
-    expect(parsed).toEqual({ ok: true, value: { imageDescription: DESCRIPTION, baseModel: null } });
+    expect(parsed).toEqual({ ok: true, value: { imageDescription: DESCRIPTION, baseModel: null, needs: [] } });
     if (!parsed.ok) throw new Error('unreachable');
     expect(buildResourceIntentRequests(parsed.value)).toEqual([
       { kind: 'addon', body: { prompt: DESCRIPTION } },
@@ -568,14 +572,14 @@ describe('recommend — wiring into the tool loop', () => {
     expect(groundedIdsFromToolResult(results[1])).toEqual(['12']);
   });
 
-  it('the declaration requires image_description and allows only the two arguments', () => {
+  it('the declaration requires image_description and allows only its three arguments', () => {
     const params = RECOMMEND_TOOL_DECLARATION.function.parameters as {
       required: string[];
       properties: Record<string, unknown>;
       additionalProperties: boolean;
     };
     expect(params.required).toEqual(['image_description']);
-    expect(Object.keys(params.properties).sort()).toEqual(['base_model', 'image_description']);
+    expect(Object.keys(params.properties).sort()).toEqual(['base_model', 'image_description', 'needs']);
     expect(params.additionalProperties).toBe(false);
     // The rewrite instruction is the design — pinned so a "tidy" of the copy cannot drop it.
     expect(RECOMMEND_TOOL_DECLARATION.function.description).toMatch(/description of the IMAGE, not the user's question/);
@@ -616,5 +620,237 @@ describe('recommend — wiring into the tool loop', () => {
     const out = await pending;
     // The plain abort shape the loop discards — no retry advice, no "failed" section.
     expect(JSON.parse(out)).toEqual({ error: 'Aborted' });
+  });
+});
+
+// ── 5. Hosted models: `needs` out, `hostedModels` back (PROVISIONAL contract) ─
+//
+// 🔴 The fixture below is shaped like the civitai change that adds the catalog
+// (not yet deployed): `{ key, name, maker, modelId, url, goodAt, capabilities }`.
+// Hosted model ids are distinct from every suggestion id and version id in this
+// file, so a grounding or projection that read the wrong list cannot pass by
+// coincidence.
+
+function hostedItem(modelId: number, extra: Record<string, unknown> = {}) {
+  return {
+    key: `Eco${modelId}`,
+    name: `Hosted ${modelId}`,
+    maker: `Maker ${modelId}`,
+    modelId,
+    url: `https://civitai.com/models/${modelId}`,
+    goodAt: `Good at thing ${modelId}.`,
+    capabilities: ['legible_text', 'image_editing'],
+    ...extra,
+  };
+}
+
+describe('recommend — hosted models', () => {
+  it('🔴 the declaration pins the capability enum, its bound, and stays inside the host limits', () => {
+    const params = RECOMMEND_TOOL_DECLARATION.function.parameters as {
+      properties: { needs: { type: string; items: { type: string; enum: string[] }; maxItems: number } };
+      required: string[];
+    };
+    expect(params.properties.needs.type).toBe('array');
+    expect(params.properties.needs.items).toEqual({
+      type: 'string',
+      enum: [
+        'legible_text',
+        'design_layout',
+        'photoreal',
+        'image_editing',
+        'character_consistency',
+        'high_resolution',
+        'transparent_background',
+        'reference_images',
+      ],
+    });
+    expect(params.properties.needs.maxItems).toBe(4);
+    expect(params.required).not.toContain('needs');
+    const fn = RECOMMEND_TOOL_DECLARATION.function;
+    expect(fn.description!.length).toBeLessThanOrEqual(HOST_MAX_TOOL_DESCRIPTION_CHARS);
+    expect(JSON.stringify(fn.parameters).length).toBeLessThanOrEqual(HOST_MAX_TOOL_PARAMETERS_CHARS);
+  });
+
+  it('needs: unknown values dropped, duplicates collapsed, capped at MAX_NEEDS; a non-list refused before any request', async () => {
+    const parsed = parseRecommendArgs({
+      image_description: DESCRIPTION,
+      needs: ['legible_text', 'not_a_capability', ' photoreal ', 'legible_text', 7, 'image_editing', 'high_resolution', 'design_layout'],
+    });
+    if (!parsed.ok) throw new Error('expected ok');
+    expect(parsed.value.needs).toEqual(['legible_text', 'photoreal', 'image_editing', 'high_resolution']);
+    expect(parsed.value.needs).toHaveLength(MAX_NEEDS);
+    for (const needs of [undefined, null, []]) {
+      const p = parseRecommendArgs({ image_description: DESCRIPTION, needs });
+      expect(p.ok && p.value.needs).toEqual([]);
+    }
+    install(() => json(okBody([])));
+    const out = await executeRecommend({ image_description: DESCRIPTION, needs: 'legible_text' }, AUTH);
+    expect(out).toEqual({ ok: false, kind: 'arguments', reason: 'needs must be a list of capability names, or omitted' });
+    expect(requests).toHaveLength(0);
+  });
+
+  it('🔴 needs is SENT only when non-empty, and only on the add-on request', async () => {
+    install(() => json(okBody([suggestion(101, 9001)])));
+    for (const needs of [undefined, [], ['nonsense']]) {
+      requests = [];
+      await executeRecommend({ image_description: DESCRIPTION, ...(needs ? { needs } : {}) }, AUTH);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].body).toEqual({ prompt: DESCRIPTION });
+    }
+    requests = [];
+    await executeRecommend(
+      { image_description: DESCRIPTION, base_model: 'SDXL 1.0', needs: ['legible_text', 'design_layout'] },
+      AUTH,
+    );
+    expect(requests.map((r) => r.body)).toEqual(
+      expect.arrayContaining([
+        { prompt: DESCRIPTION, baseModel: 'SDXL 1.0', needs: ['legible_text', 'design_layout'] },
+        { prompt: DESCRIPTION, baseModel: 'SDXL 1.0', kind: 'checkpoint' },
+      ]),
+    );
+    expect(requests).toHaveLength(2);
+  });
+
+  it('parseHostedModels: absent / not a list ⇒ null (no section)', () => {
+    expect(parseHostedModels(okBody([]))).toBeNull();
+    expect(parseHostedModels({ ...okBody([]), hostedModels: { 0: hostedItem(1532032) } })).toBeNull();
+    expect(parseHostedModels({ ...okBody([]), hostedModels: 'GPT Image' })).toBeNull();
+    expect(parseHostedModels(null)).toBeNull();
+    expect(parseHostedModels('x')).toBeNull();
+  });
+
+  it('🔴 parseHostedModels: a malformed item is DROPPED, valid ones kept, url rebuilt from modelId', () => {
+    const got = parseHostedModels({
+      ...okBody([]),
+      hostedModels: [
+        hostedItem(1532032, { capabilities: ['legible_text', 'bogus', 'image_editing'] }),
+        hostedItem(0),
+        hostedItem(1111, { modelId: '1111' }),
+        hostedItem(2222, { name: '   ' }),
+        hostedItem(3333, { maker: undefined }),
+        hostedItem(4444, { goodAt: 5 }),
+        null,
+        'GPT Image',
+        [hostedItem(5555)],
+        // A url pointing somewhere else is NOT what gets shown.
+        hostedItem(1903424, { url: 'https://civitai.com/models/999999', capabilities: 'photoreal' }),
+      ],
+    });
+    expect(got).toEqual([
+      {
+        modelId: 1532032,
+        name: 'Hosted 1532032',
+        maker: 'Maker 1532032',
+        goodAt: 'Good at thing 1532032.',
+        url: 'https://civitai.com/models/1532032',
+        capabilities: ['legible_text', 'image_editing'],
+      },
+      {
+        modelId: 1903424,
+        name: 'Hosted 1903424',
+        maker: 'Maker 1903424',
+        goodAt: 'Good at thing 1903424.',
+        url: 'https://civitai.com/models/1903424',
+      },
+    ]);
+  });
+
+  it('parseHostedModels: at most SHOWN_HOSTED, duplicates by modelId collapsed', () => {
+    const got = parseHostedModels({
+      hostedModels: [hostedItem(11), hostedItem(11), hostedItem(12), hostedItem(13), hostedItem(14)],
+    });
+    expect(got!.map((h) => h.modelId)).toEqual([11, 12, 13]);
+    expect(SHOWN_HOSTED).toBe(3);
+  });
+
+  it('🔴 field ABSENT (today\'s route) with needs sent ⇒ no hosted section, result byte-identical to a call without needs', async () => {
+    const body = okBody([suggestion(121, 9121)]);
+    const without = await render(() => json(body), { image_description: DESCRIPTION });
+    requests = [];
+    const withNeeds = await render(() => json(body), { image_description: DESCRIPTION, needs: ['legible_text'] });
+    expect(requests[0].body).toEqual({ prompt: DESCRIPTION, needs: ['legible_text'] });
+    expect(withNeeds).toBe(without);
+    expect(JSON.parse(withNeeds)).not.toHaveProperty('hostedModels');
+  });
+
+  it('valid hosted items render as their own labelled section beside add-ons', async () => {
+    const out = await render(
+      () => json({ ...okBody([suggestion(131, 9131)]), hostedModels: [hostedItem(1532032), hostedItem(1669468)] }),
+      { image_description: DESCRIPTION, needs: ['legible_text'] },
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed.addons.items.map((i: { modelId: number }) => i.modelId)).toEqual([131]);
+    expect(parsed.hostedModels.status).toBe('ok');
+    expect(parsed.hostedModels.items.map((h: ShownHostedModel) => [h.modelId, h.name, h.maker, h.url])).toEqual([
+      [1532032, 'Hosted 1532032', 'Maker 1532032', 'https://civitai.com/models/1532032'],
+      [1669468, 'Hosted 1669468', 'Maker 1669468', 'https://civitai.com/models/1669468'],
+    ]);
+    expect(parsed.hostedModels.note).toMatch(/hosted single-model ecosystems/);
+    expect(parsed.hostedModels.note).toMatch(/no add-ons/);
+  });
+
+  it('🔴 GROUNDING SEAM: hosted model links are grounded tool results, and nothing else is', async () => {
+    const out = await render(
+      () =>
+        json({
+          ...okBody([suggestion(141, 9141)]),
+          hostedModels: [hostedItem(1532032), hostedItem(7, { name: '' }), hostedItem(1903424)],
+        }),
+      { image_description: DESCRIPTION, needs: ['image_editing'] },
+    );
+    const grounded = new Set(groundedIdsFromToolResult(out));
+    expect([...grounded].sort()).toEqual(['141', '1532032', '1903424']);
+    // What the renderer's link check does with a reply citing them.
+    const reply =
+      'Try [GPT Image](https://civitai.com/models/1532032) or [Nano Banana](https://civitai.com/models/1903424), ' +
+      'with [Model 141](https://civitai.com/models/141); avoid https://civitai.com/models/7.';
+    expect(ungroundedModelIds(reply, grounded)).toEqual(['7']);
+  });
+
+  it('🔴 a DEGRADED add-on answer still carries the hosted list: add-ons say failed, hosted are shown', async () => {
+    const out = await render(() => json({ ...DEGRADED, hostedModels: [hostedItem(1951069)] }), {
+      image_description: DESCRIPTION,
+      needs: ['high_resolution'],
+    });
+    const parsed = JSON.parse(out);
+    expect(parsed).not.toHaveProperty('error');
+    expect(parsed.addons.status).toBe('failed');
+    expect(parsed.addons.note).toMatch(/NOT a finding/);
+    expect(parsed.hostedModels.items.map((h: ShownHostedModel) => h.modelId)).toEqual([1951069]);
+    expect(groundedIdsFromToolResult(out)).toEqual(['1951069']);
+  });
+
+  it('an EMPTY (or all-malformed) hosted list says none matched and grounds nothing; it does not rescue a failed lookup', async () => {
+    for (const hostedModels of [[], [hostedItem(0), { name: 'no id' }]]) {
+      requests = [];
+      const out = await render(() => json({ ...okBody([suggestion(151, 9151)]), hostedModels }), {
+        image_description: DESCRIPTION,
+        needs: ['photoreal'],
+      });
+      const parsed = JSON.parse(out);
+      expect(parsed.hostedModels).toEqual({
+        status: 'none_matched',
+        note: 'No hosted model matched these needs. Do not suggest one from memory.',
+      });
+      expect(groundedIdsFromToolResult(out)).toEqual(['151']);
+    }
+    const failed = await render(() => json({ ...DEGRADED, hostedModels: [] }), {
+      image_description: DESCRIPTION,
+      needs: ['photoreal'],
+    });
+    expect(Object.keys(JSON.parse(failed))).toEqual(['error']);
+  });
+
+  it('a hosted list on a response that was NOT asked for one is ignored', async () => {
+    const out = await render(
+      (body) =>
+        body?.kind === 'checkpoint'
+          ? json({ ...okBody([suggestion(161, 9161)]), hostedModels: [hostedItem(1532032)] })
+          : json({ ...okBody([suggestion(162, 9162)]), hostedModels: [hostedItem(1903424)] }),
+      { image_description: DESCRIPTION, base_model: 'SDXL 1.0' },
+    );
+    const parsed = JSON.parse(out);
+    expect(parsed).not.toHaveProperty('hostedModels');
+    expect(groundedIdsFromToolResult(out).sort()).toEqual(['161', '162']);
   });
 });
