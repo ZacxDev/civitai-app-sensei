@@ -9,12 +9,10 @@
 -- two of the sixteen questions that ever reached production were generated,
 -- charged, and never landed.
 --
--- 🔴 SINCE 0.2.0 THIS READS THE LEGACY STORE. Sensei now writes its records and
--- transcripts to the App Blocks DOCUMENT STORE (private collection `kv`, data
--- wrapped as `{ "value": <the old value> }` — `src/lib/kv-store.ts`), not to
--- `app_sensei.kv`. Run as-is it sees only pre-0.2.0 records (plus whatever the
--- cutover copy left behind there); repointing it at the document store, with the
--- `value` unwrap, is open work and not done here.
+-- 🔴 This query reads the legacy `app_sensei.kv` table, which 0.2.0 no longer
+-- writes, and because prune/purge never ran there its loss counts include the
+-- records of every chat deleted since 2026-09-04; it has not been repointed at
+-- the document store.
 --
 -- WHERE TO RUN IT. Against the App Blocks KV database — schema `app_sensei`,
 -- table `kv` — as a READ-ONLY query:
@@ -76,29 +74,6 @@
 -- treats a non-finite `submittedAt` as old for the same stated reason: for a
 -- detector, a spurious row is caught the moment someone reads it, while a
 -- suppressed one is invisible by construction.
---
--- 🔴 DELETED SESSIONS DO LEAVE RECORDS HERE, AND QUERY A COUNTS THEM. Since
--- 0.2.0 `deleteSession`'s purge of `sensei:turns:<sessionId>:*` is CAPPED (20
--- deletes per call, sharing a 20/min allowance with the boot prune — the store's
--- write rate is per viewer and a delete counts). A chat with more than 20 turns,
--- or several chats deleted within a minute, leaves records whose transcript is
--- gone. They are bounded by COUNT, not time: they go only when the viewer has
--- written enough newer turns to push them past the 200-record cap, which at
--- observed rates can take months. Until then each such record whose turn was
--- charged reads as a loss in query A — usually `c_overwritten` (`outcome =
--- 'saved'`), since a finished turn was saved before its chat was deleted.
--- (Separately, an in-flight turn's continuation can re-create a record after the
--- purge, but it re-creates the transcript with it, so that one still matches.)
---
--- THEY ARE NOT EXCLUDED FROM QUERY A'S COUNTS, deliberately, and this is the
--- fallback the 2026-10-15 review allowed: the transcript-exists test lives only
--- in query A2 (`session_transcript_exists`), and adding it to A would also have
--- to change section B and `eval/reconcile-turns.mjs`, whose parity is what
--- `src/reconcile-turns.seam.test.ts` pins. So: BEFORE believing a non-zero
--- loss column, read A2 and discount every row with
--- `session_transcript_exists = false` — those are deleted chats, not lost
--- answers. A spike in exactly those rows after a release means the purge
--- regressed further.
 --
 -- ⚠️ TWO COPIES OF ONE PREDICATE, AND WHAT ACTUALLY HOLDS THEM TOGETHER.
 -- `eval/reconcile-turns.mjs` is this predicate in JavaScript so the unit suite

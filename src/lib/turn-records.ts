@@ -420,9 +420,9 @@ export async function pruneTurnRecords(
  * not spend the viewer's write rate in one click. What is left over is bounded
  * by COUNT, not by time: it goes only when the viewer has written enough newer
  * turns to push it past {@link MAX_TURN_RECORDS}, through the ordinary
- * oldest-first prune — at observed rates that can be months. Until then those
- * records read as losses in `eval/reconcile-turns.sql` query A (whose header
- * says how to discount them via A2's `session_transcript_exists`). A named cost,
+ * oldest-first prune — at observed rates that can be months. Until then a
+ * reconciliation of these records against transcripts counts them as losses. A
+ * named cost,
  * chosen over any sweep keyed on the session list (see {@link pruneTurnRecords}
  * for why that one deleted live records).
  *
