@@ -1,0 +1,133 @@
+{
+  "source": "civitai/civitai src/shared/constants/hosted-model-catalog.constants.ts at 9f1295e5d3 (#6015, unchanged at origin/main 7930b5cd5a), extracted mechanically: name, modelId and capabilities per entry, in catalog order (the tie-break). Matcher: src/server/services/resource-intent-hosted-models.ts matchHostedModels \u2014 rank by distinct needs matched desc, then catalog order; drop zero matches; top 3. A snapshot: re-extract when the catalog changes.",
+  "catalog": [
+    {
+      "name": "GPT Image",
+      "modelId": 1532032,
+      "capabilities": [
+        "legible_text",
+        "image_editing"
+      ]
+    },
+    {
+      "name": "Nano Banana",
+      "modelId": 1903424,
+      "capabilities": [
+        "character_consistency",
+        "image_editing"
+      ]
+    },
+    {
+      "name": "Imagen 4",
+      "modelId": 1669468,
+      "capabilities": [
+        "photoreal",
+        "legible_text"
+      ]
+    },
+    {
+      "name": "Seedream",
+      "modelId": 1951069,
+      "capabilities": [
+        "high_resolution",
+        "legible_text"
+      ]
+    },
+    {
+      "name": "Grok Imagine",
+      "modelId": 2435474,
+      "capabilities": [
+        "reference_images"
+      ]
+    },
+    {
+      "name": "MAI-Image-2.5",
+      "modelId": 2673730,
+      "capabilities": [
+        "photoreal",
+        "legible_text",
+        "image_editing"
+      ]
+    },
+    {
+      "name": "Muse Image",
+      "modelId": 2909814,
+      "capabilities": [
+        "image_editing",
+        "reference_images"
+      ]
+    },
+    {
+      "name": "Reve 2.1",
+      "modelId": 2781889,
+      "capabilities": [
+        "design_layout",
+        "high_resolution",
+        "legible_text"
+      ]
+    },
+    {
+      "name": "Ideogram 4.5",
+      "modelId": 2872974,
+      "capabilities": [
+        "legible_text",
+        "design_layout",
+        "image_editing",
+        "reference_images"
+      ]
+    },
+    {
+      "name": "Ming Image Design",
+      "modelId": 2961930,
+      "capabilities": [
+        "design_layout",
+        "legible_text",
+        "transparent_background"
+      ]
+    },
+    {
+      "name": "Wan 2.7 Image",
+      "modelId": 2516180,
+      "capabilities": [
+        "legible_text",
+        "design_layout",
+        "image_editing"
+      ]
+    },
+    {
+      "name": "FLUX 3 Image",
+      "modelId": 2839203,
+      "capabilities": [
+        "image_editing"
+      ]
+    },
+    {
+      "name": "ERNIE-Image",
+      "modelId": 2548387,
+      "capabilities": []
+    },
+    {
+      "name": "Microsoft Lens",
+      "modelId": 2655865,
+      "capabilities": []
+    },
+    {
+      "name": "Mage Flow",
+      "modelId": 2812690,
+      "capabilities": [
+        "image_editing",
+        "high_resolution"
+      ]
+    },
+    {
+      "name": "HiDream O1 Image",
+      "modelId": 2618495,
+      "capabilities": [
+        "image_editing",
+        "reference_images",
+        "character_consistency",
+        "high_resolution"
+      ]
+    }
+  ]
+}

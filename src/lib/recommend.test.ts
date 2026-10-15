@@ -673,7 +673,20 @@ describe('recommend — hosted models', () => {
         'reference_images',
       ],
     });
-    expect(params.properties.needs.maxItems).toBe(4);
+    expect(params.properties.needs.maxItems).toBe(2);
+    // 🔴 FOCUS, pinned whole (0.1.34): the route ranks hosted models by needs
+    // matched, so a model that lists every plausible capability surfaces the
+    // broadest generalist. Measured live: a keep-my-face selfie edit sent four
+    // needs and Nano Banana never ranked. Both sentences below are the fix.
+    const needsDescription = (params.properties.needs as unknown as { description: string }).description;
+    expect(needsDescription).toContain(
+      'Only the one or two capabilities the request hinges on, most important first — not every one that ' +
+        'could apply; extras rank the wrong models ahead.',
+    );
+    expect(needsDescription).toContain(
+      'Keeping a face, the same person or the same character is character_consistency (plus image_editing ' +
+        'when changing their own photo).',
+    );
     expect(params.required).not.toContain('needs');
     const fn = RECOMMEND_TOOL_DECLARATION.function;
     expect(fn.description!.length).toBeLessThanOrEqual(HOST_MAX_TOOL_DESCRIPTION_CHARS);
@@ -686,7 +699,8 @@ describe('recommend — hosted models', () => {
       needs: ['legible_text', 'not_a_capability', ' photoreal ', 'legible_text', 7, 'image_editing', 'high_resolution', 'design_layout'],
     });
     if (!parsed.ok) throw new Error('expected ok');
-    expect(parsed.value.needs).toEqual(['legible_text', 'photoreal', 'image_editing', 'high_resolution']);
+    // The FIRST two known values survive — the model is told most important first.
+    expect(parsed.value.needs).toEqual(['legible_text', 'photoreal']);
     expect(parsed.value.needs).toHaveLength(MAX_NEEDS);
     for (const needs of [undefined, null, []]) {
       const p = parseRecommendArgs({ image_description: DESCRIPTION, needs });

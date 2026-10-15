@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "name": "recommend_resources `needs` focus expectations v1",
+  "purpose": "Does the model pass only the capabilities a request hinges on, so the route's hosted-model ranking (distinct needs matched, then catalog order, top 3) surfaces the obviously-right hosted model? Written and committed BEFORE any probe arm ran. Read by eval/tool-choice-probe.mjs (--expectations) and scored by eval/tool-choice-score.mjs scoreFocus against eval/hosted-model-catalog.snapshot.json.",
+  "origin": "Live 0.1.33 turn: 'I want to change the background of my selfie to a sunny beach but keep my face exactly the same' sent needs [image_editing, photoreal, reference_images, high_resolution]; the route ranked HiDream O1, MAI-Image-2.5 and Muse Image, and Nano Banana / GPT Image never surfaced.",
+  "focusRule": {
+    "needsHit": "Met when every capability in requiredNeeds[id] is in the union of the first round's recommend_resources `needs`, AND that union has at most 2 entries.",
+    "rightTop3": "Met when the simulated route ranking of that union, over the catalog snapshot, puts at least one name in rightModels[id] in its top 3. Empty or absent needs rank nothing and miss.",
+    "meanNeeds": "Mean size of the union over records that called recommend_resources.",
+    "excluded": "Records that made no recommend_resources call are counted (noRecommendCall) and excluded from all three; turns cut off by max_tokens before any tool call are unobserved, as in v1."
+  },
+  "sets": [],
+  "extraQuestions": [
+    { "id": "F1", "text": "I want to change the background of my selfie to a sunny beach but keep my face exactly the same. Which model should I use?", "why": "The live failing turn, as a which-model question." },
+    { "id": "F2", "text": "what model can make me look like a medieval knight from my photo", "why": "Face-preserving restyle from the user's own photo." },
+    { "id": "F3", "text": "which model can change my outfit in a photo but keep my face", "why": "Face-preserving edit." },
+    { "id": "F4", "text": "which model is best for a product photo of a bottle of hot sauce with the brand name 'Fuego' readable on the label", "why": "Text inside a photoreal image." },
+    { "id": "F5", "text": "what model should I use to mock up an app UI screen for a budgeting app", "why": "UI layout." },
+    { "id": "F6", "text": "which model can make a logo with my shop name 'Bloom & Co' in it", "why": "Logo with a name: a layout job." },
+    { "id": "F7", "text": "I need a transparent PNG icon of a rocket for my website. Which model?", "why": "Transparent background." },
+    { "id": "F8", "text": "which model can keep our mascot, a cartoon fox, looking the same across a set of ads", "why": "Character consistency across images." }
+  ],
+  "expected": {
+    "F1": "recommend_resources",
+    "F2": "recommend_resources",
+    "F3": "recommend_resources",
+    "F4": "recommend_resources",
+    "F5": "recommend_resources",
+    "F6": "recommend_resources",
+    "F7": "recommend_resources",
+    "F8": "recommend_resources"
+  },
+  "requiredNeeds": {
+    "F1": ["character_consistency"],
+    "F2": ["character_consistency"],
+    "F3": ["character_consistency"],
+    "F4": ["legible_text"],
+    "F5": ["design_layout"],
+    "F6": ["design_layout"],
+    "F7": ["transparent_background"],
+    "F8": ["character_consistency"]
+  },
+  "rightModels": {
+    "F1": ["Nano Banana", "GPT Image"],
+    "F2": ["Nano Banana", "GPT Image"],
+    "F3": ["Nano Banana", "GPT Image"],
+    "F4": ["GPT Image", "Imagen 4", "MAI-Image-2.5", "Ideogram 4.5"],
+    "F5": ["Ideogram 4.5", "Ming Image Design"],
+    "F6": ["Ideogram 4.5", "Ming Image Design"],
+    "F7": ["Ming Image Design"],
+    "F8": ["Nano Banana"]
+  },
+  "notes": {
+    "F1-F3": "image_editing beside character_consistency is allowed (they are editing an existing photo); a third capability fails needsHit.",
+    "F4": "Right models are the catalog entries whose goodAt claims legible in-image text in a photographic image. design_layout or photoreal beside legible_text is allowed.",
+    "F6": "legible_text beside design_layout is allowed; legible_text ALONE fails needsHit because it ranks GPT Image / Imagen 4 / Seedream, none of them a logo tool.",
+    "F8": "design_layout beside character_consistency is allowed."
+  }
+}

@@ -36,7 +36,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { registerHooks } from 'node:module';
-import { needsOf, score, scoreNeeds } from './tool-choice-score.mjs';
+import { needsOf, rankHosted, score, scoreFocus, scoreNeeds } from './tool-choice-score.mjs';
 
 // ── self-test: the instrument's own controls, no network ─────────────────────
 if (process.argv.includes('--self-test')) {
@@ -104,10 +104,30 @@ if (process.argv.includes('--self-test')) {
   } catch {
     threw = true;
   }
-  console.log(
-    JSON.stringify({ got, want, scorerMatches: ok, unknownIdThrows: threw, needsGot, needsWant, needsOk, extractOk }),
+  // Focus scorer controls, against the REAL catalog snapshot. The first case is
+  // the live 0.1.33 turn: its four needs must rank HiDream O1 / MAI / Muse and
+  // NOT Nano Banana — the defect this scorer exists to see.
+  const catalog = JSON.parse(readFileSync('eval/hosted-model-catalog.snapshot.json', 'utf8')).catalog;
+  const liveTop3 = rankHosted(['image_editing', 'photoreal', 'reference_images', 'high_resolution'], catalog);
+  const f = scoreFocus(
+    [
+      { questionId: 'FA', needs: ['image_editing', 'photoreal', 'reference_images', 'high_resolution'] }, // miss, miss
+      { questionId: 'FA', needs: ['character_consistency', 'image_editing'] }, // hit, hit
+      { questionId: 'FA', needs: ['image_editing'] }, // miss (required absent), hit (GPT Image top)
+      { questionId: 'FA', needs: [] }, // miss, miss
+      { questionId: 'FA', needs: ['character_consistency', 'image_editing', 'photoreal'] }, // miss (3 > 2), hit (Nano Banana top)
+      { questionId: 'FA', needs: null }, // no call
+    ],
+    { requiredNeeds: { FA: ['character_consistency'] }, rightModels: { FA: ['Nano Banana', 'GPT Image'] } },
+    catalog,
   );
-  process.exit(ok && threw && needsOk && extractOk ? 0 : 1);
+  const focusGot = [liveTop3.join('|'), f.needsHit.met, f.needsHit.n, f.rightTop3.met, f.rightTop3.n, f.meanNeeds, f.noRecommendCall];
+  const focusWant = ['HiDream O1 Image|MAI-Image-2.5|Muse Image', 1, 5, 3, 5, 2, 1];
+  const focusOk = JSON.stringify(focusGot) === JSON.stringify(focusWant);
+  console.log(
+    JSON.stringify({ got, want, scorerMatches: ok, unknownIdThrows: threw, needsGot, needsWant, needsOk, extractOk, focusGot, focusWant, focusOk }),
+  );
+  process.exit(ok && threw && needsOk && extractOk && focusOk ? 0 : 1);
 }
 
 // ── import the shipped declaration ───────────────────────────────────────────
@@ -278,6 +298,8 @@ records.sort((a, b) => order.get(a.questionId) - order.get(b.questionId) || a.re
 const scored = records.filter((r) => !r.error && !r.unobserved);
 const s = score(scored, EXPECT.expected);
 const ns = scoreNeeds(scored, EXPECT.expectedNeeds ?? {});
+const CATALOG = JSON.parse(readFileSync('eval/hosted-model-catalog.snapshot.json', 'utf8')).catalog;
+const fs = scoreFocus(scored, EXPECT, CATALOG);
 
 const out = {
   arm: ARM,
@@ -299,6 +321,7 @@ const out = {
   unobserved: records.filter((r) => r.unobserved).length,
   score: s,
   needsScore: ns,
+  focusScore: fs,
   records,
 };
 mkdirSync(dirname(OUT), { recursive: true });
@@ -321,4 +344,13 @@ console.log(
 );
 for (const [id, pq] of Object.entries(ns.perQuestion)) {
   console.log(`  ${id.padEnd(6)} anyOf=${(pq.expectedAnyOf.join('|') || '[]').padEnd(36)} ${pq.met}/${pq.n}  ${pq.needs.join(', ')}`);
+}
+if (fs.needsHit.n + fs.noRecommendCall > 0) {
+  console.log(
+    `focus: needs hit ${fs.needsHit.met}/${fs.needsHit.n} | right hosted model in top 3 ${fs.rightTop3.met}/${fs.rightTop3.n} ` +
+      `| mean |needs| ${fs.meanNeeds} | no recommend call ${fs.noRecommendCall}`,
+  );
+  for (const [id, pq] of Object.entries(fs.perQuestion)) {
+    console.log(`  ${id.padEnd(4)} hit ${pq.needsHit}/${pq.n} top3 ${pq.rightTop3}/${pq.n}  ${pq.needs.join(', ')}  ->  ${pq.top3.join(' ; ')}`);
+  }
 }
